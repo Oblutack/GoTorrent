@@ -1,22 +1,23 @@
 package main
 
 import (
-	"flag" // For parsing command-line arguments
+	"flag"
 	"fmt"
-	"log" // For fatal errors
+	"log"
+	"strings" // Potreban za strings.HasPrefix
 
-	"github.com/Oblutack/GoTorrent/internal/metainfo" // Import our metainfo package
+	"github.com/Oblutack/GoTorrent/internal/metainfo"
+	"github.com/Oblutack/GoTorrent/internal/tracker"
 )
 
 func main() {
-	// Define a string flag for the torrent file path
-	// -torrent <path>
 	torrentFilePath := flag.String("torrent", "", "Path to the .torrent file")
-	flag.Parse() // Parse the command-line flags
+	listenPort := flag.Uint("port", 6881, "Port number for incoming peer connections")
+	flag.Parse()
 
 	if *torrentFilePath == "" {
-		log.Println("Usage: gottrent -torrent <path_to_torrent_file>")
-		flag.PrintDefaults() // Print default usage information
+		log.Println("Usage: gottrent -torrent <path_to_torrent_file> [-port <listen_port>]")
+		flag.PrintDefaults()
 		return
 	}
 
@@ -54,9 +55,7 @@ func main() {
 		fmt.Printf("Creation Date (Unix): %d\n", metaInfo.CreationDate)
 	}
 
-	// InfoHash is currently all zeros, but let's print it anyway
-	fmt.Printf("InfoHash (hex): %x\n", metaInfo.InfoHash) // %x for hex representation of byte array
-
+	fmt.Printf("InfoHash (hex): %x\n", metaInfo.InfoHash)
 	fmt.Printf("Torrent Name: %s\n", metaInfo.Info.Name)
 	fmt.Printf("Piece Length: %d bytes\n", metaInfo.Info.PieceLength)
 	fmt.Printf("Total Length: %d bytes\n", metaInfo.TotalLength)
@@ -67,13 +66,143 @@ func main() {
 
 	if len(metaInfo.Info.Files) > 0 {
 		fmt.Println("Files:")
+		// TODO: Proper path joining for display
+		// currentPath := "" // if multi-file and Name is a directory
 		for i, file := range metaInfo.Info.Files {
-			fmt.Printf("  %d. Path: %s, Length: %d bytes\n", i+1, file.Path, file.Length) // TODO: Join file.Path
+			// This will just print the array of path segments.
+			// For a nice display, you'd join them with os.PathSeparator.
+			// Example: strings.Join(file.Path, string(os.PathSeparator))
+			fmt.Printf("  %d. Path: %v, Length: %d bytes\n", i+1, file.Path, file.Length)
 		}
-	} else {
+	} else if metaInfo.Info.Length > 0 { // Ensure it's a single file with positive length
 		fmt.Printf("Single File Length: %d bytes\n", metaInfo.Info.Length)
 	}
 	fmt.Println("-----------------------------------------------------")
 
-	// TODO: Further steps - connect to tracker, peers, etc.
+	// ==============================================================
+	// KORAK 2: KOMUNIKACIJA SA TRACKEROM
+	// ==============================================================
+	log.Println("Attempting to announce to tracker(s)...")
+
+	peerID, err := tracker.GeneratePeerID()
+	if err != nil {
+		log.Fatalf("Error generating Peer ID: %v\n", err)
+	}
+	log.Printf("Generated Peer ID (first 8 chars): %s (hex: %x)\n", string(peerID[:8]), peerID)
+
+
+	trackerReq := tracker.TrackerRequest{
+		InfoHash:   metaInfo.InfoHash,
+		PeerID:     peerID,
+		Port:       uint16(*listenPort),
+		Uploaded:   0,
+		Downloaded: 0,
+		Left:       metaInfo.TotalLength,
+		Compact:    1,
+		Event:      "started",
+		NumWant:    50, // Request around 50 peers
+	}
+
+	// Collect all potential HTTP/HTTPS announce URLs
+	var httpAnnounceURLs []string
+	if metaInfo.Announce != "" && (strings.HasPrefix(metaInfo.Announce, "http://") || strings.HasPrefix(metaInfo.Announce, "https://")) {
+		httpAnnounceURLs = append(httpAnnounceURLs, metaInfo.Announce)
+	}
+	for _, tier := range metaInfo.AnnounceList {
+		for _, trackerURL := range tier {
+			if strings.HasPrefix(trackerURL, "http://") || strings.HasPrefix(trackerURL, "https://") {
+				// Avoid duplicates if Announce is also in AnnounceList
+				isDuplicate := false
+				for _, existingURL := range httpAnnounceURLs {
+					if existingURL == trackerURL {
+						isDuplicate = true
+						break
+					}
+				}
+				if !isDuplicate {
+					httpAnnounceURLs = append(httpAnnounceURLs, trackerURL)
+				}
+			} else {
+				log.Printf("Skipping non-HTTP(S) tracker: %s\n", trackerURL)
+			}
+		}
+	}
+
+	if len(httpAnnounceURLs) == 0 {
+		log.Fatalf("No HTTP/HTTPS tracker announce URLs found in torrent file. UDP trackers are not yet supported.")
+	}
+
+	var trackerResponse *tracker.TrackerResponse
+	var successfulAnnounceURL string
+	var lastAnnounceErr error
+
+	for _, announceURL := range httpAnnounceURLs {
+		log.Printf("Announcing to: %s\n", announceURL)
+		currentResponse, err := tracker.Announce(announceURL, trackerReq)
+		if err != nil {
+			log.Printf("Warning: Failed to announce to %s: %v\n", announceURL, err)
+			lastAnnounceErr = err // Save the last error
+			continue              // Try the next tracker
+		}
+		
+		// If tracker returns a failure reason, it's still a "successful" HTTP communication
+		// but a logical failure from the tracker's perspective.
+		if currentResponse.FailureReason != "" {
+			log.Printf("Tracker at %s returned failure: %s\n", announceURL, currentResponse.FailureReason)
+            lastAnnounceErr = fmt.Errorf("tracker failure at %s: %s", announceURL, currentResponse.FailureReason)
+			// We might still want to try other trackers if one explicitly fails.
+            // For now, let's treat this as a reason to try the next one.
+            // If all trackers return failure reasons, we'll report the last one.
+            trackerResponse = nil // Ensure we don't use a failed response
+			continue
+		}
+		
+		trackerResponse = currentResponse
+		successfulAnnounceURL = announceURL
+		break // Successfully announced (or got a non-HTTP error response like 'failure reason')
+	}
+
+	if trackerResponse == nil {
+		log.Fatalf("Failed to announce to any available HTTP/HTTPS tracker. Last error: %v\n", lastAnnounceErr)
+	}
+	log.Printf("Successfully received response from: %s\n", successfulAnnounceURL)
+
+
+	// Print tracker response
+	fmt.Println("-----------------------------------------------------")
+	fmt.Println("Tracker Response:")
+	fmt.Println("-----------------------------------------------------")
+	// FailureReason should have been handled above, but double check
+	if trackerResponse.FailureReason != "" {
+		fmt.Printf("Tracker Failure: %s\n", trackerResponse.FailureReason)
+		return
+	}
+	if trackerResponse.WarningMessage != "" {
+		fmt.Printf("Tracker Warning: %s\n", trackerResponse.WarningMessage)
+	}
+	fmt.Printf("Interval: %d seconds\n", trackerResponse.Interval)
+	if trackerResponse.MinInterval > 0 {
+		fmt.Printf("Min Interval: %d seconds\n", trackerResponse.MinInterval)
+	}
+	if trackerResponse.TrackerID != "" {
+		fmt.Printf("Tracker ID: %s\n", trackerResponse.TrackerID)
+	}
+	fmt.Printf("Seeders (Complete): %d\n", trackerResponse.Complete)
+	fmt.Printf("Leechers (Incomplete): %d\n", trackerResponse.Incomplete)
+
+	fmt.Printf("Received %d peers:\n", len(trackerResponse.Peers))
+	maxPeersToShow := 10
+	if len(trackerResponse.Peers) < maxPeersToShow {
+		maxPeersToShow = len(trackerResponse.Peers)
+	}
+	for i := 0; i < maxPeersToShow; i++ {
+		peer := trackerResponse.Peers[i]
+		fmt.Printf("  - Peer %d: IP: %s, Port: %d\n", i+1, peer.IP.String(), peer.Port)
+	}
+	if len(trackerResponse.Peers) > maxPeersToShow {
+		fmt.Printf("  ... and %d more peers.\n", len(trackerResponse.Peers)-maxPeersToShow)
+	}
+	fmt.Println("-----------------------------------------------------")
+
+	// TODO: Next step - connect to peers
 }
