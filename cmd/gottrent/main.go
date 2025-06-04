@@ -7,6 +7,7 @@ import (
 	"strings" // Potreban za strings.HasPrefix
 
 	"github.com/Oblutack/GoTorrent/internal/metainfo"
+	"github.com/Oblutack/GoTorrent/internal/peer"
 	"github.com/Oblutack/GoTorrent/internal/tracker"
 )
 
@@ -204,5 +205,37 @@ func main() {
 	}
 	fmt.Println("-----------------------------------------------------")
 
-	// TODO: Next step - connect to peers
+	// ==============================================================
+	// KORAK 3: POVEZIVANJE SA PEEROM I HANDSHAKE
+	// ==============================================================
+	if trackerResponse == nil || len(trackerResponse.Peers) == 0 {
+		log.Println("No peers received from tracker, or tracker announce failed. Exiting.")
+		return
+	}
+
+	// Pokušajmo da se povežemo sa prvim peerom sa liste
+	// TODO: Implementirati logiku za pokušavanje više peerova ako prvi ne uspe,
+	//       i za upravljanje sa više konekcija istovremeno.
+	firstPeerInfo := trackerResponse.Peers[0] 
+
+	log.Printf("Attempting to connect and handshake with peer: %s:%d\n", 
+		firstPeerInfo.IP.String(), firstPeerInfo.Port)
+
+	// peerID je naš PeerID koji smo ranije generisali
+	// metaInfo.InfoHash je InfoHash torrenta
+	peerClient, err := peer.NewClient(firstPeerInfo, metaInfo.InfoHash, peerID)
+	if err != nil {
+		log.Printf("Failed to connect or handshake with peer %s:%d: %v\n",
+			firstPeerInfo.IP.String(), firstPeerInfo.Port, err)
+		// Ovde bismo mogli da probamo sledećeg peera, ali za sada izlazimo.
+		return
+	}
+	defer peerClient.Close() // Osiguraj da se konekcija zatvori kada main() završi
+
+	log.Printf("Successfully connected and handshaked with peer! Remote Peer ID: %x\n", peerClient.RemoteID)
+	fmt.Println("-----------------------------------------------------")
+
+
+	// TODO: Sledeći korak - razmena poruka sa peerom (Bitfield, Interested, Unchoke, Request, Piece...)
+	log.Println("Peer connection established. Further P2P communication not yet implemented.")
 }
