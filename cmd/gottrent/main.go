@@ -1,15 +1,28 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
-	"strings" // Potreban za strings.HasPrefix
+	"net"
+	"strings"
+
+	// "os" // Za os.PathSeparator ako ga koristimo u ispisu fajlova
 
 	"github.com/Oblutack/GoTorrent/internal/metainfo"
-	"github.com/Oblutack/GoTorrent/internal/peer"
+	"github.com/Oblutack/GoTorrent/internal/peer" // Uključuje i tipove poruka
 	"github.com/Oblutack/GoTorrent/internal/tracker"
 )
+
+// Helper function to find minimum of two integers
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
 
 func main() {
 	torrentFilePath := flag.String("torrent", "", "Path to the .torrent file")
@@ -29,7 +42,7 @@ func main() {
 		log.Fatalf("Error loading torrent file: %v\n", err)
 	}
 
-	// Print some basic information from the parsed MetaInfo
+	// Print MetaInfo
 	fmt.Println("-----------------------------------------------------")
 	fmt.Println("Torrent MetaInfo:")
 	fmt.Println("-----------------------------------------------------")
@@ -60,37 +73,30 @@ func main() {
 	fmt.Printf("Torrent Name: %s\n", metaInfo.Info.Name)
 	fmt.Printf("Piece Length: %d bytes\n", metaInfo.Info.PieceLength)
 	fmt.Printf("Total Length: %d bytes\n", metaInfo.TotalLength)
-	fmt.Printf("Number of Pieces: %d\n", len(metaInfo.PieceHashes))
+	numPiecesInTorrent := len(metaInfo.PieceHashes)
+	fmt.Printf("Number of Pieces: %d\n", numPiecesInTorrent)
 	if metaInfo.Info.Private == 1 {
 		fmt.Println("Private Torrent: Yes")
 	}
 
 	if len(metaInfo.Info.Files) > 0 {
 		fmt.Println("Files:")
-		// TODO: Proper path joining for display
-		// currentPath := "" // if multi-file and Name is a directory
 		for i, file := range metaInfo.Info.Files {
-			// This will just print the array of path segments.
-			// For a nice display, you'd join them with os.PathSeparator.
-			// Example: strings.Join(file.Path, string(os.PathSeparator))
+			// Za lepši ispis putanje: import "os"; import "path/filepath"; fmt.Println(filepath.Join(file.Path...))
 			fmt.Printf("  %d. Path: %v, Length: %d bytes\n", i+1, file.Path, file.Length)
 		}
-	} else if metaInfo.Info.Length > 0 { // Ensure it's a single file with positive length
+	} else if metaInfo.Info.Length > 0 {
 		fmt.Printf("Single File Length: %d bytes\n", metaInfo.Info.Length)
 	}
 	fmt.Println("-----------------------------------------------------")
 
-	// ==============================================================
-	// KORAK 2: KOMUNIKACIJA SA TRACKEROM
-	// ==============================================================
+	// Tracker Communication
 	log.Println("Attempting to announce to tracker(s)...")
-
 	peerID, err := tracker.GeneratePeerID()
 	if err != nil {
 		log.Fatalf("Error generating Peer ID: %v\n", err)
 	}
 	log.Printf("Generated Peer ID (first 8 chars): %s (hex: %x)\n", string(peerID[:8]), peerID)
-
 
 	trackerReq := tracker.TrackerRequest{
 		InfoHash:   metaInfo.InfoHash,
@@ -101,10 +107,9 @@ func main() {
 		Left:       metaInfo.TotalLength,
 		Compact:    1,
 		Event:      "started",
-		NumWant:    50, // Request around 50 peers
+		NumWant:    50,
 	}
 
-	// Collect all potential HTTP/HTTPS announce URLs
 	var httpAnnounceURLs []string
 	if metaInfo.Announce != "" && (strings.HasPrefix(metaInfo.Announce, "http://") || strings.HasPrefix(metaInfo.Announce, "https://")) {
 		httpAnnounceURLs = append(httpAnnounceURLs, metaInfo.Announce)
@@ -112,7 +117,6 @@ func main() {
 	for _, tier := range metaInfo.AnnounceList {
 		for _, trackerURL := range tier {
 			if strings.HasPrefix(trackerURL, "http://") || strings.HasPrefix(trackerURL, "https://") {
-				// Avoid duplicates if Announce is also in AnnounceList
 				isDuplicate := false
 				for _, existingURL := range httpAnnounceURLs {
 					if existingURL == trackerURL {
@@ -139,28 +143,21 @@ func main() {
 
 	for _, announceURL := range httpAnnounceURLs {
 		log.Printf("Announcing to: %s\n", announceURL)
-		currentResponse, err := tracker.Announce(announceURL, trackerReq)
-		if err != nil {
-			log.Printf("Warning: Failed to announce to %s: %v\n", announceURL, err)
-			lastAnnounceErr = err // Save the last error
-			continue              // Try the next tracker
-		}
-		
-		// If tracker returns a failure reason, it's still a "successful" HTTP communication
-		// but a logical failure from the tracker's perspective.
-		if currentResponse.FailureReason != "" {
-			log.Printf("Tracker at %s returned failure: %s\n", announceURL, currentResponse.FailureReason)
-            lastAnnounceErr = fmt.Errorf("tracker failure at %s: %s", announceURL, currentResponse.FailureReason)
-			// We might still want to try other trackers if one explicitly fails.
-            // For now, let's treat this as a reason to try the next one.
-            // If all trackers return failure reasons, we'll report the last one.
-            trackerResponse = nil // Ensure we don't use a failed response
+		currentResponse, errAnnounce := tracker.Announce(announceURL, trackerReq)
+		if errAnnounce != nil {
+			log.Printf("Warning: Failed to announce to %s: %v\n", announceURL, errAnnounce)
+			lastAnnounceErr = errAnnounce
 			continue
 		}
-		
+		if currentResponse.FailureReason != "" {
+			log.Printf("Tracker at %s returned failure: %s\n", announceURL, currentResponse.FailureReason)
+			lastAnnounceErr = fmt.Errorf("tracker failure at %s: %s", announceURL, currentResponse.FailureReason)
+			trackerResponse = nil
+			continue
+		}
 		trackerResponse = currentResponse
 		successfulAnnounceURL = announceURL
-		break // Successfully announced (or got a non-HTTP error response like 'failure reason')
+		break
 	}
 
 	if trackerResponse == nil {
@@ -168,12 +165,10 @@ func main() {
 	}
 	log.Printf("Successfully received response from: %s\n", successfulAnnounceURL)
 
-
-	// Print tracker response
+	// Print Tracker Response
 	fmt.Println("-----------------------------------------------------")
 	fmt.Println("Tracker Response:")
 	fmt.Println("-----------------------------------------------------")
-	// FailureReason should have been handled above, but double check
 	if trackerResponse.FailureReason != "" {
 		fmt.Printf("Tracker Failure: %s\n", trackerResponse.FailureReason)
 		return
@@ -197,49 +192,35 @@ func main() {
 		maxPeersToShow = len(trackerResponse.Peers)
 	}
 	for i := 0; i < maxPeersToShow; i++ {
-		peer := trackerResponse.Peers[i]
-		fmt.Printf("  - Peer %d: IP: %s, Port: %d\n", i+1, peer.IP.String(), peer.Port)
+		peerInfo := trackerResponse.Peers[i]
+		fmt.Printf("  - Peer %d: IP: %s, Port: %d\n", i+1, peerInfo.IP.String(), peerInfo.Port)
 	}
 	if len(trackerResponse.Peers) > maxPeersToShow {
 		fmt.Printf("  ... and %d more peers.\n", len(trackerResponse.Peers)-maxPeersToShow)
 	}
 	fmt.Println("-----------------------------------------------------")
 
-	// ==============================================================
-	// KORAK 3: POVEZIVANJE SA PEEROM I HANDSHAKE
-	// ==============================================================
+	// Peer Communication
 	if trackerResponse == nil || len(trackerResponse.Peers) == 0 {
-		log.Println("No peers received from tracker, or tracker announce failed. Exiting.")
+		log.Println("No peers received from tracker. Exiting.")
 		return
 	}
 
-	// Pokušajmo da se povežemo sa prvim peerom sa liste
-	// TODO: Implementirati logiku za pokušavanje više peerova ako prvi ne uspe,
-	//       i za upravljanje sa više konekcija istovremeno.
-	firstPeerInfo := trackerResponse.Peers[0] 
-
-	log.Printf("Attempting to connect and handshake with peer: %s:%d\n", 
+	firstPeerInfo := trackerResponse.Peers[0]
+	log.Printf("Attempting to connect and handshake with peer: %s:%d\n",
 		firstPeerInfo.IP.String(), firstPeerInfo.Port)
 
-	// peerID je naš PeerID koji smo ranije generisali
-	// metaInfo.InfoHash je InfoHash torrenta
-	peerClient, err := peer.NewClient(firstPeerInfo, metaInfo.InfoHash, peerID)
+	peerClient, err := peer.NewClient(firstPeerInfo, metaInfo.InfoHash, peerID, numPiecesInTorrent)
 	if err != nil {
 		log.Printf("Failed to connect or handshake with peer %s:%d: %v\n",
 			firstPeerInfo.IP.String(), firstPeerInfo.Port, err)
-		// Ovde bismo mogli da probamo sledećeg peera, ali za sada izlazimo.
 		return
 	}
-	defer peerClient.Close() // Osiguraj da se konekcija zatvori kada main() završi
+	defer peerClient.Close()
 
 	log.Printf("Successfully connected and handshaked with peer! Remote Peer ID: %x\n", peerClient.RemoteID)
 	fmt.Println("-----------------------------------------------------")
 
-
-	log.Printf("Successfully connected and handshaked with peer! Remote Peer ID: %x\n", peerClient.RemoteID)
-	fmt.Println("-----------------------------------------------------")
-
-	// Pošalji Interested poruku
 	log.Println("Sending Interested message to peer...")
 	err = peerClient.SendInterested()
 	if err != nil {
@@ -247,36 +228,160 @@ func main() {
 	}
 	log.Println("Interested message sent.")
 
-	// Pokušaj da pročitaš prvu poruku od peera
-	// Ovo bi trebalo da bude u petlji u pravoj aplikaciji
-	log.Println("Waiting for message from peer...")
-	msg, err := peerClient.ReadMessage()
-	if err != nil {
-		log.Fatalf("Error reading message from peer: %v\n", err)
-	}
+	log.Println("Entering message loop with peer...")
 
-	if msg == nil { // Keep-alive
-		log.Println("Received keep-alive from peer.")
-	} else {
-		log.Printf("Received message from peer: ID: %s, Payload Length: %d\n", msg.ID, len(msg.Payload))
-		// TODO: Handle different message types (Bitfield, Choke, Unchoke, Have, etc.)
+	ourBitfield := peer.NewBitfield(numPiecesInTorrent) // Our record of what we have
+	// TODO: Later, load this from a saved state if resuming.
+
+	// Map to track pieces requested from this peer to avoid duplicate requests in this simple loop
+	// Key: pieceIndex, Value: true if block 0 of this piece has been requested
+	// This is a very basic mechanism for now.
+	requestedPiecesFromThisPeer := make(map[uint32]bool)
+
+	var canRequestPieces bool // True if peer has unchoked us
+
+	for i := 0; i < 30; i++ { // Increased loop count to catch more messages, adjust as needed
+		log.Printf("--- Waiting for message %d from peer ---", i+1)
+		msg, err := peerClient.ReadMessage()
+		if err != nil {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				log.Println("Timeout reading message from peer.")
+				break
+			}
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+				log.Println("Peer closed the connection.")
+				break
+			}
+			log.Printf("Error reading message from peer: %v. Exiting message loop.", err)
+			break
+		}
+
+		if msg == nil { // Keep-alive
+			log.Println("Received keep-alive from peer.")
+			continue
+		}
+
+		payloadPreviewLen := min(16, len(msg.Payload))
+		log.Printf("Received message from peer: ID: %s, Payload Length: %d, Payload (hex preview): %x\n",
+			msg.ID, len(msg.Payload), msg.Payload[:payloadPreviewLen])
+
 		switch msg.ID {
 		case peer.MsgBitfield:
-			// payload := msg.Payload // Ovo je bitfield
-			log.Printf("Received Bitfield message with %d bytes.", len(msg.Payload))
-			// TODO: Parse bitfield
+			if peerClient.PeerBitfield != nil {
+				expectedBitfieldLen := (peerClient.NumPiecesInTorrent + 7) / 8
+				if len(msg.Payload) == expectedBitfieldLen {
+					copy(peerClient.PeerBitfield, msg.Payload) // Copy payload to our client's view of peer's bitfield
+					log.Printf("Stored Bitfield from peer. Peer has piece 0: %t", peerClient.PeerBitfield.HasPiece(0))
+				} else {
+					log.Printf("Warning: Received Bitfield has incorrect length. Got %d, expected %d for %d pieces. Ignoring. Payload: %x",
+						len(msg.Payload), expectedBitfieldLen, peerClient.NumPiecesInTorrent, msg.Payload)
+				}
+			} else {
+				log.Println("Warning: Received Bitfield, but peerClient.PeerBitfield was nil (should have been initialized in NewClient).")
+			}
 		case peer.MsgChoke:
 			log.Println("Peer choked us.")
-			// TODO: Update peer state
+			canRequestPieces = false
 		case peer.MsgUnchoke:
 			log.Println("Peer unchoked us! We can now request pieces.")
-			// TODO: Update peer state, start requesting pieces
-		// ... drugi case-ovi ...
+			canRequestPieces = true
+		case peer.MsgHave:
+			var havePayload peer.MsgHavePayload
+			if err := havePayload.Parse(msg.Payload); err == nil {
+				log.Printf("Received Have message for piece index: %d", havePayload.PieceIndex)
+				if peerClient.PeerBitfield != nil {
+					if int(havePayload.PieceIndex) < peerClient.NumPiecesInTorrent { // Bounds check
+						peerClient.PeerBitfield.SetPiece(havePayload.PieceIndex)
+						log.Printf("Updated peer bitfield for piece %d. Peer now has piece 0: %t",
+							havePayload.PieceIndex, peerClient.PeerBitfield.HasPiece(0))
+					} else {
+						log.Printf("Warning: Received Have for out-of-bounds piece index %d (total pieces %d)",
+							havePayload.PieceIndex, peerClient.NumPiecesInTorrent)
+					}
+				} else {
+					log.Println("Warning: Received Have message, but peer bitfield is not yet initialized.")
+				}
+			} else {
+				log.Printf("Error parsing Have message payload: %v", err)
+			}
+		case peer.MsgPiece:
+			var piecePayload peer.MsgPiecePayload
+			if err := piecePayload.Parse(msg.Payload); err == nil {
+				log.Printf(">>> RECEIVED PIECE! Index: %d, Begin: %d, Block Length: %d",
+					piecePayload.Index, piecePayload.Begin, len(piecePayload.Block))
+				// TODO: Store this block
+				// TODO: Mark this block as received in our download state
+				// TODO: If piece is complete, verify hash
+				// TODO: If piece is verified, update ourBitfield.SetPiece(piecePayload.Index)
+				// TODO: Request next block or piece
+				
+				// For now, to stop requesting this piece from this peer again in this simple loop:
+				requestedPiecesFromThisPeer[piecePayload.Index] = true 
+			} else {
+				log.Printf("Error parsing Piece message payload: %v", err)
+			}
 		default:
 			log.Printf("Received unhandled message ID: %s\n", msg.ID)
 		}
-	}
+
+		// Logic for sending a Request message
+		if canRequestPieces && peerClient.PeerBitfield != nil {
+			// Find first piece that peer has, we don't have, and we haven't requested yet from this peer
+			for pieceIdx := 0; pieceIdx < peerClient.NumPiecesInTorrent; pieceIdx++ {
+				currentPieceIndex := uint32(pieceIdx)
+
+				if !ourBitfield.HasPiece(currentPieceIndex) &&
+					peerClient.PeerBitfield.HasPiece(currentPieceIndex) &&
+					!requestedPiecesFromThisPeer[currentPieceIndex] {
+
+					log.Printf("Found piece to request: Index %d (Peer has: Yes, We have: No, Not yet requested from this peer: Yes)", currentPieceIndex)
+
+					blockOffset := uint32(0)    // For simplicity, always request the first block of a piece for now
+					blockLength := uint32(16384) // Default 16KB block
+
+					// Determine actual length of the piece we are requesting
+					var actualPieceLength int64
+					if int(currentPieceIndex) == numPiecesInTorrent-1 { // Is it the last piece?
+						actualPieceLength = metaInfo.TotalLength - (int64(numPiecesInTorrent-1) * metaInfo.Info.PieceLength)
+						if actualPieceLength <= 0 && metaInfo.TotalLength > 0 { // Should not happen with correct numPieces calc
+							actualPieceLength = metaInfo.Info.PieceLength // Fallback, though indicates issue
+						}
+					} else {
+						actualPieceLength = metaInfo.Info.PieceLength
+					}
+                    // Ensure actualPieceLength is not negative in edge cases of very small torrents
+                    if actualPieceLength < 0 { actualPieceLength = 0 }
+
+
+					// Adjust blockLength if it's larger than the piece itself or remaining part
+					if int64(blockOffset)+int64(blockLength) > actualPieceLength {
+						if actualPieceLength > int64(blockOffset) {
+							blockLength = uint32(actualPieceLength - int64(blockOffset))
+						} else {
+							blockLength = 0 // Offset is at or beyond the end of this piece
+						}
+					}
+					
+					if blockLength > 0 {
+						log.Printf("CONDITION MET: Sending Request for piece %d, offset %d, length %d (actual piece len for this piece: %d)",
+							currentPieceIndex, blockOffset, blockLength, actualPieceLength)
+						reqErr := peerClient.SendRequest(currentPieceIndex, blockOffset, blockLength)
+						if reqErr != nil {
+							log.Printf("Failed to send Request message for piece %d: %v", currentPieceIndex, reqErr)
+						} else {
+							log.Printf("Request message sent for piece %d.", currentPieceIndex)
+							requestedPiecesFromThisPeer[currentPieceIndex] = true // Mark as requested from this peer
+						}
+					} else {
+						log.Printf("Calculated blockLength for piece %d is 0 or less, not sending Request.", currentPieceIndex)
+						requestedPiecesFromThisPeer[currentPieceIndex] = true // Mark as "handled" to avoid re-evaluating
+					}
+					break // Send only one request per message loop iteration for now
+				}
+			}
+		}
+	} // End of message reading loop
 
 	fmt.Println("-----------------------------------------------------")
-	log.Println("Initial peer communication attempt finished. Further P2P communication not yet implemented.")
+	log.Println("Finished attempting to read messages. Further P2P communication to be implemented.")
 }

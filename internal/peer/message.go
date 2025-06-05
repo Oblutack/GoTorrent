@@ -155,3 +155,39 @@ func (p *MsgPiecePayload) Serialize() []byte {
 
 // TODO: Add structures and Parse/Serialize methods for MsgBitfield, MsgCancel if needed.
 // MsgChoke, MsgUnchoke, MsgInterested, MsgNotInterested have no payload.
+
+type Bitfield []byte
+
+// HasPiece checks if the bitfield indicates possession of a piece at a given index.
+func (bf Bitfield) HasPiece(index uint32) bool {
+	byteIndex := index / 8
+	offset := index % 8
+	if byteIndex >= uint32(len(bf)) {
+		return false // Index out of bounds
+	}
+	return (bf[byteIndex]>>(7-offset))&1 != 0
+}
+
+// SetPiece marks a piece as possessed in the bitfield.
+// Note: This modifies the bitfield in place.
+// The bitfield should be pre-allocated to the correct size.
+func (bf Bitfield) SetPiece(index uint32) {
+	byteIndex := index / 8
+	offset := index % 8
+	if byteIndex >= uint32(len(bf)) {
+		// This should not happen if bitfield is correctly sized.
+		// Can't set piece if index is out of bounds.
+		return
+	}
+	bf[byteIndex] |= (1 << (7 - offset))
+}
+
+// NewBitfield creates a new bitfield of the correct size for a given number of pieces.
+// Initially, all pieces are marked as not possessed.
+func NewBitfield(numPieces int) Bitfield {
+    if numPieces <= 0 {
+        return nil
+    }
+	numBytes := (numPieces + 7) / 8 // Ceiling division
+	return make(Bitfield, numBytes)
+}

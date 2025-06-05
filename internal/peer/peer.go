@@ -101,7 +101,9 @@ type Client struct {
 	Peer     tracker.PeerInfo // From tracker package (IP, Port of the remote peer)
 	RemoteID [20]byte         // PeerID of the remote peer (once handshake is done)
 	InfoHash [20]byte         // Infohash of the torrent we are interested in
-	OurID    [20]byte         // Our PeerID
+	OurID    [20]byte		  // Our PeerID
+	PeerBitfield Bitfield
+	NumPiecesInTorrent int          
 
 	// State related to the peer
 	// ChokedByUs      bool // Are we choking this peer? Default true
@@ -118,7 +120,7 @@ type Client struct {
 // Let's assume we have `import "github.com/Oblutack/GoTorrent/internal/tracker"`
 
 // NewClient attempts to connect to a peer and perform a handshake.
-func NewClient(peerInfo tracker.PeerInfo, infoHash, ourID [20]byte) (*Client, error) {
+func NewClient(peerInfo tracker.PeerInfo, infoHash, ourID [20]byte, numPiecesInTorrent int) (*Client, error) {
 	address := fmt.Sprintf("%s:%d", peerInfo.IP.String(), peerInfo.Port)
 	log.Printf("peer: attempting to connect to %s", address)
 
@@ -165,6 +167,8 @@ func NewClient(peerInfo tracker.PeerInfo, infoHash, ourID [20]byte) (*Client, er
 		RemoteID: peerHandshake.PeerID,
 		InfoHash: infoHash,
 		OurID:    ourID,
+		NumPiecesInTorrent: numPiecesInTorrent,
+		PeerBitfield:       NewBitfield(numPiecesInTorrent), 
 		// Initialize other state fields later
 	}
 
