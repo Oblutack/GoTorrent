@@ -236,6 +236,47 @@ func main() {
 	fmt.Println("-----------------------------------------------------")
 
 
-	// TODO: Sledeći korak - razmena poruka sa peerom (Bitfield, Interested, Unchoke, Request, Piece...)
-	log.Println("Peer connection established. Further P2P communication not yet implemented.")
+	log.Printf("Successfully connected and handshaked with peer! Remote Peer ID: %x\n", peerClient.RemoteID)
+	fmt.Println("-----------------------------------------------------")
+
+	// Pošalji Interested poruku
+	log.Println("Sending Interested message to peer...")
+	err = peerClient.SendInterested()
+	if err != nil {
+		log.Fatalf("Failed to send Interested message: %v\n", err)
+	}
+	log.Println("Interested message sent.")
+
+	// Pokušaj da pročitaš prvu poruku od peera
+	// Ovo bi trebalo da bude u petlji u pravoj aplikaciji
+	log.Println("Waiting for message from peer...")
+	msg, err := peerClient.ReadMessage()
+	if err != nil {
+		log.Fatalf("Error reading message from peer: %v\n", err)
+	}
+
+	if msg == nil { // Keep-alive
+		log.Println("Received keep-alive from peer.")
+	} else {
+		log.Printf("Received message from peer: ID: %s, Payload Length: %d\n", msg.ID, len(msg.Payload))
+		// TODO: Handle different message types (Bitfield, Choke, Unchoke, Have, etc.)
+		switch msg.ID {
+		case peer.MsgBitfield:
+			// payload := msg.Payload // Ovo je bitfield
+			log.Printf("Received Bitfield message with %d bytes.", len(msg.Payload))
+			// TODO: Parse bitfield
+		case peer.MsgChoke:
+			log.Println("Peer choked us.")
+			// TODO: Update peer state
+		case peer.MsgUnchoke:
+			log.Println("Peer unchoked us! We can now request pieces.")
+			// TODO: Update peer state, start requesting pieces
+		// ... drugi case-ovi ...
+		default:
+			log.Printf("Received unhandled message ID: %s\n", msg.ID)
+		}
+	}
+
+	fmt.Println("-----------------------------------------------------")
+	log.Println("Initial peer communication attempt finished. Further P2P communication not yet implemented.")
 }

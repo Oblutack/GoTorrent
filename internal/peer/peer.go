@@ -3,6 +3,7 @@ package peer
 
 import (
 	"bytes" // For comparing byte slices
+	"encoding/binary"
 	"fmt"
 	"io"
 	"log" // For InfoHash size
@@ -177,4 +178,81 @@ func (c *Client) Close() error {
 		return c.Conn.Close()
 	}
 	return nil
+}
+
+func (c *Client) ReadMessage() (*Message, error) {
+	// Set a deadline for reading the length prefix.
+	// Important to avoid blocking indefinitely if peer sends nothing.
+	c.Conn.SetReadDeadline(time.Now().Add(readTimeout + 30*time.Second)) // Longer timeout for general reads
+                                                                        // Can be adjusted or made dynamic
+    defer c.Conn.SetReadDeadline(time.Time{}) // Clear deadline
+
+
+	lengthPrefix := make([]byte, 4)
+	_, err := io.ReadFull(c.Conn, lengthPrefix)
+	if err != nil {
+		return nil, fmt.Errorf("peer: failed to read message length prefix: %w", err)
+	}
+
+	length := binary.BigEndian.Uint32(lengthPrefix)
+
+	if length == 0 {
+		// Keep-alive message
+		log.Printf("peer %s: received keep-alive", c.Conn.RemoteAddr())
+		return nil, nil // Represent keep-alive as nil Message, nil error
+	}
+
+	if length > 1024*1024*2 { // Sanity check for message length (e.g., 2MB max)
+		return nil, fmt.Errorf("peer: message length %d too large", length)
+	}
+
+	// Read message ID + payload
+	messageBytes := make([]byte, length)
+	_, err = io.ReadFull(c.Conn, messageBytes)
+	if err != nil {
+		return nil, fmt.Errorf("peer: failed to read message body (length %d): %w", length, err)
+	}
+
+	msg := &Message{
+		ID:      MessageID(messageBytes[0]),
+		Payload: messageBytes[1:],
+	}
+	// log.Printf("peer %s: received message ID %s, len %d", c.Conn.RemoteAddr(), msg.ID, len(msg.Payload))
+	return msg, nil
+}
+
+// SendMessage serializes and sends a message to the peer.
+// For messages without payload (Choke, Unchoke, Interested, NotInterested), payload can be nil.
+func (c *Client) SendMessage(id MessageID, payload []byte) error {
+	msg := &Message{ID: id, Payload: payload}
+	// log.Printf("peer %s: sending message ID %s, len %d", c.Conn.RemoteAddr(), id, len(payload))
+	_, err := c.Conn.Write(msg.Serialize())
+	if err != nil {
+		return fmt.Errorf("peer: failed to send message ID %s: %w", id, err)
+	}
+	return nil
+}
+
+// SendInterested sends an Interested message to the peer.
+func (c *Client) SendInterested() error {
+	// c.InterestedByUs = true // Update our state
+	return c.SendMessage(MsgInterested, nil)
+}
+
+// SendNotInterested sends a NotInterested message to the peer.
+func (c *Client) SendNotInterested() error {
+    // c.InterestedByUs = false
+	return c.SendMessage(MsgNotInterested, nil)
+}
+
+// SendHave sends a Have message to the peer.
+func (c *Client) SendHave(pieceIndex uint32) error {
+	payload := MsgHavePayload{PieceIndex: pieceIndex}
+	return c.SendMessage(MsgHave, payload.Serialize())
+}
+
+// SendRequest sends a Request message to the peer.
+func (c *Client) SendRequest(index, begin, length uint32) error {
+	payload := MsgRequestPayload{Index: index, Begin: begin, Length: length}
+	return c.SendMessage(MsgRequest, payload.Serialize())
 }
