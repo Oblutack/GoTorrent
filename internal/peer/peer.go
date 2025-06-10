@@ -8,6 +8,7 @@ import (
 	"io"
 	"log" // For InfoHash size
 	"net"
+	"strconv"
 	"time"
 
 	"github.com/Oblutack/GoTorrent/internal/tracker"
@@ -121,7 +122,7 @@ type Client struct {
 
 // NewClient attempts to connect to a peer and perform a handshake.
 func NewClient(peerInfo tracker.PeerInfo, infoHash, ourID [20]byte, numPiecesInTorrent int) (*Client, error) {
-	address := fmt.Sprintf("%s:%d", peerInfo.IP.String(), peerInfo.Port)
+	address := net.JoinHostPort(peerInfo.IP.String(), strconv.Itoa(int(peerInfo.Port)))
 	log.Printf("peer: attempting to connect to %s", address)
 
 	conn, err := net.DialTimeout("tcp", address, handshakeTimeout)
