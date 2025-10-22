@@ -265,6 +265,7 @@ func (c *Client) SendMessage(id MessageID, payload []byte) error {
 func (c *Client) SendInterested() error    { return c.SendMessage(MsgInterested, nil) }
 func (c *Client) SendNotInterested() error { return c.SendMessage(MsgNotInterested, nil) }
 func (c *Client) SendHave(pieceIndex uint32) error {
+	log.Printf("Sending HAVE for piece %d to %s", pieceIndex, c.Conn.RemoteAddr())
 	payload := MsgHavePayload{PieceIndex: pieceIndex}
 	return c.SendMessage(MsgHave, payload.Serialize())
 }
