@@ -10,6 +10,7 @@ import (
 
 var ErrMalformedData = errors.New("gobencode: malformed data")
 
+
 func Decode(r io.Reader) (interface{}, error) {
 	br, ok := r.(*bufio.Reader)
 	if !ok {

@@ -23,6 +23,7 @@ import (
 
 const defaultBlockLength uint32 = 16384
 const maxPeers = 50
+const blockRequestTimeout = 30 * time.Second
 
 type PieceWork struct {
 	Index          uint32
@@ -185,6 +186,9 @@ func (s *TorrentSession) connectToPeer(peerInfo tracker.PeerInfo) {
 }
 
 func (s *TorrentSession) downloadLoop() error {
+	ticker := time.NewTicker(5 * time.Second) // Ticker for periodic tasks
+	defer ticker.Stop()
+
 	for s.TrackerRequest.Left > 0 {
 		select {
 		case pieceWork := <-s.PieceWorkQueue:
@@ -197,11 +201,11 @@ func (s *TorrentSession) downloadLoop() error {
 			s.mu.Lock()
 			pw, ok := s.ActivePieces[resultBlock.Index]
 			if ok {
-
+				// Find block and update state
 				for i := range pw.Blocks {
 					block := &pw.Blocks[i]
-					if block.Offset == resultBlock.Begin && block.State == 1 {
-						block.State = 2
+					if block.Offset == resultBlock.Begin && block.State == 1 { // State 1 = Requested
+						block.State = 2 // Received
 						copy(pw.Buffer[resultBlock.Begin:], resultBlock.Block)
 						pw.ReceivedBlocks++
 						log.Printf("Stored block for piece %d. Progress: %d/%d blocks.", pw.Index, pw.ReceivedBlocks, pw.TotalBlocks)
@@ -210,20 +214,19 @@ func (s *TorrentSession) downloadLoop() error {
 				}
 
 				if pw.ReceivedBlocks == pw.TotalBlocks {
-
 					expectedHash := s.MetaInfo.PieceHashes[pw.Index]
 					actualHash := sha1.Sum(pw.Buffer)
 					if bytes.Equal(actualHash[:], expectedHash[:]) {
 						log.Printf("========== Piece %d HASH VERIFIED! ==========\n", pw.Index)
 						if err := s.writePieceToDisk(pw.Index, pw.Buffer); err != nil {
 							log.Printf("CRITICAL: Failed to write piece %d: %v", pw.Index, err)
-							s.PieceWorkQueue <- pw
+							s.PieceWorkQueue <- pw // Put work back
 						} else {
 							s.OurBitfield.SetPiece(pw.Index)
 							s.TrackerRequest.Downloaded += pw.Length
 							s.TrackerRequest.Left -= pw.Length
 							log.Printf("Updated downloaded/left: %d/%d", s.TrackerRequest.Downloaded, s.TrackerRequest.Left)
-
+							// TODO: Send HAVE to all connected peers
 						}
 					} else {
 						log.Printf("!!!!!!!! Piece %d HASH MISMATCH! Re-queueing. !!!!!!!!\n", pw.Index)
@@ -233,24 +236,38 @@ func (s *TorrentSession) downloadLoop() error {
 						pw.ReceivedBlocks = 0
 						s.PieceWorkQueue <- pw
 					}
-					delete(s.ActivePieces, pw.Index)
+					delete(s.ActivePieces, pw.Index) // Remove from active work
 				}
 			} else {
 				log.Printf("Received a block for non-active piece index %d. Discarding.", resultBlock.Index)
 			}
 			s.mu.Unlock()
 
-		case <-time.After(5 * time.Second):
+		case <-ticker.C:
 			s.mu.Lock()
+
+			// Check for timed out block requests
+			for _, pw := range s.ActivePieces {
+				for i := range pw.Blocks {
+					block := &pw.Blocks[i]
+					if block.State == 1 && time.Since(block.RequestedAt) > blockRequestTimeout {
+						log.Printf("TIMEOUT for block offset %d of piece %d. Re-queueing.", block.Offset, pw.Index)
+						block.State = 0 // Reset state to 'Needed'
+					}
+				}
+			}
+
+			// Assign new work to available peers
 			for _, pw := range s.ActivePieces {
 				for _, peerClient := range s.ConnectedPeers {
 					if !peerClient.Choked && peerClient.Bitfield.HasPiece(pw.Index) {
-
+						// This peer is a candidate. Find a block to request.
 						for i := range pw.Blocks {
 							block := &pw.Blocks[i]
-							if block.State == 0 {
+							if block.State == 0 { // Needed
+								// Check if peer's work queue has space
 								if len(peerClient.WorkQueue) < cap(peerClient.WorkQueue) {
-									block.State = 1
+									block.State = 1 // Requested
 									block.RequestedAt = time.Now()
 									log.Printf("Assigning block offset %d of piece %d to peer %s", block.Offset, pw.Index, peerClient.Conn.RemoteAddr())
 									peerClient.WorkQueue <- &peer.BlockRequest{Index: pw.Index, Begin: block.Offset, Length: block.Length}
