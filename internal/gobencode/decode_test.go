@@ -1,23 +1,21 @@
-package gobencode // Must be the same package name for testing unexported functions if needed,
-// or gobencode_test if testing only exported functions (Decode).
-// Let's use 'package gobencode' for now as our parse* functions are not exported.
+package gobencode
 
 import (
 	"errors"
 	"io"
-	"reflect" // For DeepEqual
+	"reflect"
 	"strings"
 	"testing"
 )
 
 func TestDecode(t *testing.T) {
 	testCases := []struct {
-		name    string      // Name of the test case
-		input   string      // Bencoded input string
-		want    interface{} // Expected Go value
-		wantErr error       // Expected error (nil if no error)
+		name    string
+		input   string
+		want    interface{}
+		wantErr error
 	}{
-		// --- Integer Test Cases ---
+
 		{
 			name:  "integer zero",
 			input: "i0e",
@@ -36,7 +34,7 @@ func TestDecode(t *testing.T) {
 		{
 			name:    "invalid integer - empty",
 			input:   "ie",
-			wantErr: ErrMalformedData, // Or a more specific error if you wrap it
+			wantErr: ErrMalformedData,
 		},
 		{
 			name:    "invalid integer - leading zero positive",
@@ -51,21 +49,19 @@ func TestDecode(t *testing.T) {
 		{
 			name:    "invalid integer - missing e",
 			input:   "i42",
-			wantErr: ErrMalformedData, // Will likely be an EOF error wrapped by ErrMalformedData
+			wantErr: ErrMalformedData,
 		},
 		{
 			name:    "invalid integer - non-digit",
 			input:   "i42xe",
 			wantErr: ErrMalformedData,
 		},
-        {
-            name:    "invalid integer - just hyphen",
-            input:   "i-e",
-            wantErr: ErrMalformedData,
-        },
+		{
+			name:    "invalid integer - just hyphen",
+			input:   "i-e",
+			wantErr: ErrMalformedData,
+		},
 
-
-		// --- String Test Cases ---
 		{
 			name:  "empty string",
 			input: "0:",
@@ -83,8 +79,8 @@ func TestDecode(t *testing.T) {
 		},
 		{
 			name:    "string length too short",
-			input:   "10:spam", // claims 10 bytes, provides 4
-			wantErr: ErrMalformedData, // Will be EOF wrapped
+			input:   "10:spam",
+			wantErr: ErrMalformedData,
 		},
 		{
 			name:    "string length not a number",
@@ -96,9 +92,7 @@ func TestDecode(t *testing.T) {
 			input:   "04:spam",
 			wantErr: ErrMalformedData,
 		},
-		// TODO: Add more test cases for strings
 
-		// --- List Test Cases ---
 		{
 			name:  "empty list",
 			input: "le",
@@ -111,23 +105,20 @@ func TestDecode(t *testing.T) {
 		},
 		{
 			name:  "list of mixed types",
-			input: "li42e4:spame", // [42, "spam"]
+			input: "li42e4:spame",
 			want:  []interface{}{int64(42), "spam"},
 		},
 		{
 			name:  "nested list",
-			input: "lli1ei2ee4:spame", // [[1, 2], "spam"]
+			input: "lli1ei2ee4:spame",
 			want:  []interface{}{[]interface{}{int64(1), int64(2)}, "spam"},
 		},
 		{
 			name:    "list missing e",
 			input:   "li1e",
-			wantErr: ErrMalformedData, // EOF wrapped
+			wantErr: ErrMalformedData,
 		},
-		// TODO: Add more test cases for lists
 
-
-		// --- Dictionary Test Cases ---
 		{
 			name:  "empty dictionary",
 			input: "de",
@@ -149,8 +140,8 @@ func TestDecode(t *testing.T) {
 			want:  map[string]interface{}{"list": []interface{}{int64(1), int64(2)}},
 		},
 		{
-			name: "nested dictionary",
-			input: "d5:outerd3:key5:valueee", // {"outer": {"key": "value"}}
+			name:  "nested dictionary",
+			input: "d5:outerd3:key5:valueee",
 			want: map[string]interface{}{
 				"outer": map[string]interface{}{"key": "value"},
 			},
@@ -158,7 +149,7 @@ func TestDecode(t *testing.T) {
 		{
 			name:    "dictionary missing value",
 			input:   "d3:keye",
-			wantErr: ErrMalformedData, // EOF or other error wrapped
+			wantErr: ErrMalformedData,
 		},
 		{
 			name:    "dictionary key not a string",
@@ -167,63 +158,51 @@ func TestDecode(t *testing.T) {
 		},
 		{
 			name:    "dictionary keys not sorted",
-			input:   "d1:B1:b1:A1:ae", // B comes after A
+			input:   "d1:B1:b1:A1:ae",
 			wantErr: ErrMalformedData,
 		},
-        {
-            name: "dictionary with multiple keys sorted",
-            input: "d1:A1:a1:B1:be",
-            want: map[string]interface{}{"A": "a", "B": "b"},
-        },
-		// TODO: Add more test cases for dictionaries
+		{
+			name:  "dictionary with multiple keys sorted",
+			input: "d1:A1:a1:B1:be",
+			want:  map[string]interface{}{"A": "a", "B": "b"},
+		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			r := strings.NewReader(tc.input)
-			got, err := Decode(r) // Call our main Decode function
+			got, err := Decode(r)
 
-			// Check error
 			if tc.wantErr != nil {
 				if err == nil {
 					t.Errorf("Decode() error = nil, wantErr %v", tc.wantErr)
 					return
 				}
-				// We might want to check if the error *is* or *wraps* tc.wantErr
-				// For simplicity now, we'll just check if an error was expected and one occurred.
-				// A more robust check: if !errors.Is(err, tc.wantErr) { ... }
-                // Or check the error message string if specific.
-                // For now, let's assume any error is fine if one was expected, or check if it IS ErrMalformedData
+
 				if !errors.Is(err, tc.wantErr) && tc.wantErr == ErrMalformedData {
-					// If we expect ErrMalformedData, let's be a bit more specific
-					// This helps catch cases where we get an unexpected I/O error instead of a parsing error
+
 					t.Errorf("Decode() error = %v, wantErr to be or wrap %v", err, tc.wantErr)
 				}
-                // If tc.wantErr is not ErrMalformedData, it might be a generic io.EOF for example.
-                // For now, just checking if err != nil is enough if tc.wantErr is not nil.
+
 			} else if err != nil {
 				t.Errorf("Decode() unexpected error = %v", err)
 				return
 			}
 
-			// Check value if no error was expected
 			if tc.wantErr == nil && !reflect.DeepEqual(got, tc.want) {
 				t.Errorf("Decode() got = %v (%T), want %v (%T)", got, got, tc.want, tc.want)
 			}
 
-            // Check if all input was consumed for successful decodes
-            // If there's leftover data, it might indicate a parsing bug.
-            if err == nil {
-                var remainingByte [1]byte
-                n, readErr := r.Read(remainingByte[:])
-                if n > 0 {
-                    t.Errorf("Decode() left unconsumed data: '%c'", remainingByte[0])
-                } else if readErr != io.EOF && readErr != nil {
-                    // This case is less likely if Decode itself didn't error,
-                    // but good to be aware of.
-                    t.Errorf("Decode() error reading for leftover data: %v", readErr)
-                }
-            }
+			if err == nil {
+				var remainingByte [1]byte
+				n, readErr := r.Read(remainingByte[:])
+				if n > 0 {
+					t.Errorf("Decode() left unconsumed data: '%c'", remainingByte[0])
+				} else if readErr != io.EOF && readErr != nil {
+
+					t.Errorf("Decode() error reading for leftover data: %v", readErr)
+				}
+			}
 		})
 	}
 }
