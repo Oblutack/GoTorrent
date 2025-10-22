@@ -1,58 +1,58 @@
 package tracker
 
 import (
-	"crypto/rand" // For generating random part of PeerID
+	"crypto/rand" 
 	"errors"
 	"fmt"
-	"io/ioutil" // For http.Response.Body reading (older, consider io.ReadAll)
-	"net"       // For net.IP
+	"io/ioutil" 
+	"net"       
 	"net/http"
 	"net/url"
 	"strconv"
 	"time"
 
-	"github.com/Oblutack/GoTorrent/internal/gobencode" // Naš bencode paket
-	// "github.com/Oblutack/GoTorrent/internal/metainfo" // Ako treba da pristupimo MetaInfo direktno
+	"github.com/Oblutack/GoTorrent/internal/gobencode" 
+	
 )
 
-// TrackerRequest holds the parameters to be sent to the tracker.
+
 type TrackerRequest struct {
-	InfoHash   [20]byte // The info_hash of the torrent
-	PeerID     [20]byte // Our 20-byte peer ID
-	Port       uint16   // The port we are listening on for peer connections
-	Uploaded   int64    // Total bytes uploaded so far
-	Downloaded int64    // Total bytes downloaded so far
-	Left       int64    // Bytes remaining to download
-	Compact    int      // 1 for compact peer list, 0 otherwise (usually 1)
-	NoPeerID   int      // 1 if tracker should not send peer_ids in peer list
-	Event      string   // "started", "completed", "stopped", or empty
-	NumWant    int      // Optional: Number of peers we want (usually around 50)
-	Key        string   // Optional: An additional identification that is not shared with any other peers
-	TrackerID  string   // Optional: If a previous announce contained a tracker id, it should be set here
+	InfoHash   [20]byte 
+	PeerID     [20]byte 
+	Port       uint16   
+	Uploaded   int64    
+	Downloaded int64    
+	Left       int64    
+	Compact    int      
+	NoPeerID   int      
+	Event      string   
+	NumWant    int      
+	Key        string   
+	TrackerID  string   
 }
 
-// PeerInfo represents a single peer from the tracker's response.
+
 type PeerInfo struct {
 	IP   net.IP
 	Port uint16
-	// PeerID [20]byte // Optional, not always present, especially in compact mode
+	
 }
 
-// TrackerResponse holds the data parsed from a tracker's bencoded response.
+
 type TrackerResponse struct {
-	FailureReason  string     `bencode:"failure reason"`  // If present, the request failed
-	WarningMessage string     `bencode:"warning message"` // Optional
-	Interval       int        `bencode:"interval"`        // seconds client should wait before next regular re-announce
-	MinInterval    int        `bencode:"min interval"`    // Optional: minimum announce interval
-	TrackerID      string     `bencode:"tracker id"`      // Optional
-	Complete       int        `bencode:"complete"`        // Number of seeders
-	Incomplete     int        `bencode:"incomplete"`      // Number of leechers
-	Peers          []PeerInfo // Parsed list of peers
-	// RawPeers can be string (compact format) or []interface{} (list of dicts)
-	// We will parse this into Peers.
+	FailureReason  string     `bencode:"failure reason"`  
+	WarningMessage string     `bencode:"warning message"` 
+	Interval       int        `bencode:"interval"`        
+	MinInterval    int        `bencode:"min interval"`    
+	TrackerID      string     `bencode:"tracker id"`      
+	Complete       int        `bencode:"complete"`        
+	Incomplete     int        `bencode:"incomplete"`      
+	Peers          []PeerInfo 
+	
+	
 }
 
-// BuildURL constructs the tracker announce URL with all necessary query parameters.
+
 func (tr *TrackerRequest) BuildURL(announceURL string) (string, error) {
 	base, err := url.Parse(announceURL)
 	if err != nil {
@@ -60,7 +60,7 @@ func (tr *TrackerRequest) BuildURL(announceURL string) (string, error) {
 	}
 
 	params := url.Values{}
-	params.Add("info_hash", string(tr.InfoHash[:])) // Must be URL-encoded correctly by .Encode()
+	params.Add("info_hash", string(tr.InfoHash[:])) 
 	params.Add("peer_id", string(tr.PeerID[:]))
 	params.Add("port", strconv.Itoa(int(tr.Port)))
 	params.Add("uploaded", strconv.FormatInt(tr.Uploaded, 10))
@@ -74,7 +74,7 @@ func (tr *TrackerRequest) BuildURL(announceURL string) (string, error) {
 	if tr.Event != "" {
 		params.Add("event", tr.Event)
 	}
-	if tr.NumWant > 0 { // Only add if NumWant is specified and positive
+	if tr.NumWant > 0 { 
 		params.Add("numwant", strconv.Itoa(tr.NumWant))
 	}
 	if tr.Key != "" {
@@ -84,39 +84,39 @@ func (tr *TrackerRequest) BuildURL(announceURL string) (string, error) {
 		params.Add("trackerid", tr.TrackerID)
 	}
 
-	base.RawQuery = params.Encode() // This handles URL encoding of parameters
+	base.RawQuery = params.Encode() 
 	return base.String(), nil
 }
 
-// GeneratePeerID creates a 20-byte peer ID for our client.
-// Example format: -GT0001-<12 random alphanumeric chars>
+
+
 func GeneratePeerID() ([20]byte, error) {
 	var id [20]byte
-	// Client identifier and version
-	copy(id[:], "-GT0001-") // 8 bytes
-	// Generate 12 random bytes for the rest
+	
+	copy(id[:], "-GT0001-") 
+	
 	_, err := rand.Read(id[8:])
 	if err != nil {
 		return id, fmt.Errorf("failed to generate random peer id suffix: %w", err)
 	}
-	// Ensure random part is somewhat printable/URL-safe if desired,
-	// though raw random bytes are fine for the protocol.
-	// For simplicity, raw random bytes are okay.
+	
+	
+	
 	return id, nil
 }
 
 
-// Announce sends an announce request to the tracker and parses the response.
+
 func Announce(announceURL string, req TrackerRequest) (*TrackerResponse, error) {
 	url, err := req.BuildURL(announceURL)
 	if err != nil {
 		return nil, fmt.Errorf("tracker: failed to build announce URL: %w", err)
 	}
 
-	// Make the HTTP GET request
-	// TODO: Consider custom client with timeout
+	
+	
 	httpClient := http.Client{
-		Timeout: 45 * time.Second, // Example timeout
+		Timeout: 45 * time.Second, 
 	}
 	resp, err := httpClient.Get(url)
 	if err != nil {
@@ -129,7 +129,7 @@ func Announce(announceURL string, req TrackerRequest) (*TrackerResponse, error) 
 		return nil, fmt.Errorf("tracker: request failed with status %d: %s", resp.StatusCode, string(bodyBytes))
 	}
 
-	// Decode the bencoded response
+	
 	decodedResponse, err := gobencode.Decode(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("tracker: failed to decode tracker response: %w", err)
@@ -140,22 +140,22 @@ func Announce(announceURL string, req TrackerRequest) (*TrackerResponse, error) 
 		return nil, errors.New("tracker: tracker response is not a dictionary")
 	}
 
-	// Parse the map into TrackerResponse struct
+	
 	trackerResp := &TrackerResponse{}
 	if failure, ok := responseMap["failure reason"].(string); ok {
 		trackerResp.FailureReason = failure
-		return trackerResp, fmt.Errorf("tracker error: %s", failure) // Return immediately on failure
+		return trackerResp, fmt.Errorf("tracker error: %s", failure) 
 	}
 	if warning, ok := responseMap["warning message"].(string); ok {
 		trackerResp.WarningMessage = warning
-		// Log warning: fmt.Println("Tracker warning:", warning)
+		
 	}
 	if interval, ok := responseMap["interval"].(int64); ok {
 		trackerResp.Interval = int(interval)
 	} else {
-		// Interval is usually required
-		// return nil, errors.New("tracker: 'interval' missing or not an integer in response")
-        // Let's be a bit lenient, some trackers might omit if there's an error elsewhere
+		
+		
+        
 	}
 	if minInterval, ok := responseMap["min interval"].(int64); ok {
 		trackerResp.MinInterval = int(minInterval)
@@ -170,11 +170,11 @@ func Announce(announceURL string, req TrackerRequest) (*TrackerResponse, error) 
 		trackerResp.Incomplete = int(incomplete)
 	}
 
-	// Parse peers
+	
 	if peersData, ok := responseMap["peers"]; ok {
 		if peersStr, okStr := peersData.(string); okStr {
-			// Compact format (byte string)
-			// Each peer is 6 bytes: 4 bytes IP, 2 bytes Port (big-endian)
+			
+			
 			if len(peersStr)%6 != 0 {
 				return nil, errors.New("tracker: compact peers string length is not a multiple of 6")
 			}
@@ -188,7 +188,7 @@ func Announce(announceURL string, req TrackerRequest) (*TrackerResponse, error) 
 				trackerResp.Peers[i].Port = (uint16(portBytes[0]) << 8) | uint16(portBytes[1])
 			}
 		} else if peersList, okList := peersData.([]interface{}); okList {
-			// Non-compact format (list of dictionaries)
+			
 			trackerResp.Peers = make([]PeerInfo, 0, len(peersList))
 			for _, peerEntry := range peersList {
 				if peerMap, okMap := peerEntry.(map[string]interface{}); okMap {
@@ -199,9 +199,9 @@ func Announce(announceURL string, req TrackerRequest) (*TrackerResponse, error) 
 					if portInt, portOk := peerMap["port"].(int64); portOk {
 						pi.Port = uint16(portInt)
 					}
-					// if peerIDStr, idOk := peerMap["peer id"].(string); idOk {
-					// 	copy(pi.PeerID[:], []byte(peerIDStr))
-					// }
+					
+					
+					
 					if pi.IP != nil && pi.Port > 0 {
 						trackerResp.Peers = append(trackerResp.Peers, pi)
 					}

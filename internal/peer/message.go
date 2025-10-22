@@ -3,13 +3,10 @@ package peer
 import (
 	"encoding/binary"
 	"fmt"
-	//"io"
 )
 
-// MessageID identifies the type of a peer message.
 type MessageID uint8
 
-// Constants for message IDs
 const (
 	MsgChoke         MessageID = 0
 	MsgUnchoke       MessageID = 1
@@ -20,24 +17,20 @@ const (
 	MsgRequest       MessageID = 6
 	MsgPiece         MessageID = 7
 	MsgCancel        MessageID = 8
-	MsgPort          MessageID = 9 // For DHT, not strictly needed for basic client
+	MsgPort          MessageID = 9
 )
 
-// Message represents a message exchanged between peers after the handshake.
-// Format: <length_prefix (4 bytes)><message_id (1 byte)><payload (variable length)>
 type Message struct {
 	ID      MessageID
 	Payload []byte
 }
 
-// Serialize converts a Message struct into a byte slice for sending.
-// It prepends the length prefix.
 func (m *Message) Serialize() []byte {
 	if m == nil {
-		// Keep-alive message (length prefix of 0)
-		return make([]byte, 4) // Just 4 zero bytes
+
+		return make([]byte, 4)
 	}
-	length := uint32(1 + len(m.Payload)) // 1 byte for ID + payload length
+	length := uint32(1 + len(m.Payload))
 	buf := make([]byte, 4+length)
 	binary.BigEndian.PutUint32(buf[0:4], length)
 	buf[4] = byte(m.ID)
@@ -45,7 +38,6 @@ func (m *Message) Serialize() []byte {
 	return buf
 }
 
-// String returns a human-readable representation of the message ID.
 func (id MessageID) String() string {
 	switch id {
 	case MsgChoke:
@@ -73,14 +65,10 @@ func (id MessageID) String() string {
 	}
 }
 
-// --- Specific Message Payload Structures (examples) ---
-
-// MsgHavePayload represents the payload for a Have message.
 type MsgHavePayload struct {
 	PieceIndex uint32
 }
 
-// Parse parses the payload into a MsgHavePayload struct.
 func (p *MsgHavePayload) Parse(payload []byte) error {
 	if len(payload) != 4 {
 		return fmt.Errorf("have payload must be 4 bytes, got %d", len(payload))
@@ -89,24 +77,20 @@ func (p *MsgHavePayload) Parse(payload []byte) error {
 	return nil
 }
 
-// Serialize converts MsgHavePayload to its byte representation.
 func (p *MsgHavePayload) Serialize() []byte {
 	buf := make([]byte, 4)
 	binary.BigEndian.PutUint32(buf, p.PieceIndex)
 	return buf
 }
 
-
-// MsgRequestPayload represents the payload for a Request message.
 type MsgRequestPayload struct {
-	Index  uint32 // piece index
-	Begin  uint32 // byte offset within the piece
-	Length uint32 // length of the requested block (typically 16KB)
+	Index  uint32
+	Begin  uint32
+	Length uint32
 }
 
-// Parse parses the payload into a MsgRequestPayload struct.
 func (p *MsgRequestPayload) Parse(payload []byte) error {
-	if len(payload) != 12 { // 3 * 4 bytes
+	if len(payload) != 12 {
 		return fmt.Errorf("request payload must be 12 bytes, got %d", len(payload))
 	}
 	p.Index = binary.BigEndian.Uint32(payload[0:4])
@@ -115,7 +99,6 @@ func (p *MsgRequestPayload) Parse(payload []byte) error {
 	return nil
 }
 
-// Serialize converts MsgRequestPayload to its byte representation.
 func (p *MsgRequestPayload) Serialize() []byte {
 	buf := make([]byte, 12)
 	binary.BigEndian.PutUint32(buf[0:4], p.Index)
@@ -124,18 +107,14 @@ func (p *MsgRequestPayload) Serialize() []byte {
 	return buf
 }
 
-
-// MsgPiecePayload represents the payload for a Piece message.
 type MsgPiecePayload struct {
-	Index uint32 // piece index
-	Begin uint32 // byte offset within the piece
-	Block []byte // actual block data
+	Index uint32
+	Begin uint32
+	Block []byte
 }
 
-// Parse parses the payload into a MsgPiecePayload struct.
-// Note: The block data is a reference to the original payload slice.
 func (p *MsgPiecePayload) Parse(payload []byte) error {
-	if len(payload) < 8 { // 4 bytes for Index + 4 bytes for Begin
+	if len(payload) < 8 {
 		return fmt.Errorf("piece payload must be at least 8 bytes, got %d", len(payload))
 	}
 	p.Index = binary.BigEndian.Uint32(payload[0:4])
@@ -144,7 +123,6 @@ func (p *MsgPiecePayload) Parse(payload []byte) error {
 	return nil
 }
 
-// Serialize converts MsgPiecePayload to its byte representation.
 func (p *MsgPiecePayload) Serialize() []byte {
 	buf := make([]byte, 8+len(p.Block))
 	binary.BigEndian.PutUint32(buf[0:4], p.Index)
@@ -153,41 +131,31 @@ func (p *MsgPiecePayload) Serialize() []byte {
 	return buf
 }
 
-// TODO: Add structures and Parse/Serialize methods for MsgBitfield, MsgCancel if needed.
-// MsgChoke, MsgUnchoke, MsgInterested, MsgNotInterested have no payload.
-
 type Bitfield []byte
 
-// HasPiece checks if the bitfield indicates possession of a piece at a given index.
 func (bf Bitfield) HasPiece(index uint32) bool {
 	byteIndex := index / 8
 	offset := index % 8
 	if byteIndex >= uint32(len(bf)) {
-		return false // Index out of bounds
+		return false
 	}
 	return (bf[byteIndex]>>(7-offset))&1 != 0
 }
 
-// SetPiece marks a piece as possessed in the bitfield.
-// Note: This modifies the bitfield in place.
-// The bitfield should be pre-allocated to the correct size.
 func (bf Bitfield) SetPiece(index uint32) {
 	byteIndex := index / 8
 	offset := index % 8
 	if byteIndex >= uint32(len(bf)) {
-		// This should not happen if bitfield is correctly sized.
-		// Can't set piece if index is out of bounds.
+
 		return
 	}
 	bf[byteIndex] |= (1 << (7 - offset))
 }
 
-// NewBitfield creates a new bitfield of the correct size for a given number of pieces.
-// Initially, all pieces are marked as not possessed.
 func NewBitfield(numPieces int) Bitfield {
-    if numPieces <= 0 {
-        return nil
-    }
-	numBytes := (numPieces + 7) / 8 // Ceiling division
+	if numPieces <= 0 {
+		return nil
+	}
+	numBytes := (numPieces + 7) / 8
 	return make(Bitfield, numBytes)
 }
