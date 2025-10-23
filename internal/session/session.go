@@ -6,12 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"github.com/Oblutack/GoTorrent/internal/logger"
 	"net"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/Oblutack/GoTorrent/internal/logger"
 
 	"github.com/Oblutack/GoTorrent/internal/metainfo"
 	"github.com/Oblutack/GoTorrent/internal/peer"
@@ -59,11 +60,13 @@ type TorrentSession struct {
 	mu           sync.Mutex
 	ActivePieces map[uint32]*PieceWork
 
-	muDownloaded      sync.Mutex 
-	bytesDownloaded   int64      
-	lastSampledTime   time.Time
-	lastSampledBytes  int64
-	currentSpeedBps   float64 
+	muDownloaded     sync.Mutex
+	bytesDownloaded  int64
+	lastSampledTime  time.Time
+	lastSampledBytes int64
+	currentSpeedBps  float64
+
+	trackerInterval int
 }
 
 type pieceRarity struct {
@@ -103,7 +106,7 @@ func New(metaInfo *metainfo.MetaInfo, listenPort uint16, downloadDir string) (*T
 		numPiecesInTorrent: numPieces,
 		PieceWorkQueue:     make(chan *PieceWork, numPieces),
 		Results:            make(chan *peer.PieceBlock, 100),
-		lastSampledTime: time.Now(),
+		lastSampledTime:    time.Now(),
 	}
 	return s, nil
 }
@@ -124,26 +127,40 @@ func (s *TorrentSession) Run() error {
 
 	logger.Logf("-----------------------------------------------------\n")
 	logger.Logf("Tracker Response:\n")
-	logger.Logf("  Interval: %d seconds", trackerResponse.Interval)
-	logger.Logf("  Seeders: %d, Leechers: %d", trackerResponse.Complete, trackerResponse.Incomplete)
-	logger.Logf("  Received %d peers.", len(trackerResponse.Peers))
+	logger.Logf("  Interval: %d seconds\n", trackerResponse.Interval)
+	logger.Logf("  Seeders: %d, Leechers: %d\n", trackerResponse.Complete, trackerResponse.Incomplete)
+	logger.Logf("  Received %d peers.\n", len(trackerResponse.Peers))
 	logger.Logf("-----------------------------------------------------\n")
 
 	for _, peerInfo := range trackerResponse.Peers {
-		if len(s.ConnectedPeers) >= maxPeers {
+		s.mu.Lock()
+		numConnected := len(s.ConnectedPeers)
+		s.mu.Unlock()
+		if numConnected >= maxPeers {
 			break
 		}
 		go s.connectToPeer(peerInfo)
 	}
 
 	go s.displayLoop()
-	
-	return s.downloadLoop()
+	go s.trackerLoop() 
+
+	err = s.downloadLoop()
+	if err != nil {
+		logger.Error.Printf("Download loop failed: %v\n", err)
+		return err
+	}
+
+
+	time.Sleep(2 * time.Second)
+	fmt.Println() 
+	logger.Logf("GoTorrent finished download.\n")
+	return nil
 }
 
 func (s *TorrentSession) displayLoop() {
-	fmt.Print("\033[?25l")
-	defer fmt.Print("\033[?25h")
+	fmt.Print("\033[?25l")       
+	defer fmt.Print("\033[?25h") 
 
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
@@ -154,20 +171,22 @@ func (s *TorrentSession) displayLoop() {
 			s.muDownloaded.Lock()
 			now := time.Now()
 			elapsed := now.Sub(s.lastSampledTime).Seconds()
-			if elapsed > 0.5 { 
+			if elapsed > 0.5 {
 				bytesSinceLastSample := s.bytesDownloaded - s.lastSampledBytes
 				s.currentSpeedBps = float64(bytesSinceLastSample) / elapsed
 				s.lastSampledTime = now
 				s.lastSampledBytes = s.bytesDownloaded
 			}
-			downloaded := s.TrackerRequest.Downloaded 
+			currentDownloadedBytes := s.bytesDownloaded
 			speed := s.currentSpeedBps
 			s.muDownloaded.Unlock()
+
+			verifiedDownloadedBytes := s.TrackerRequest.Downloaded
 
 			totalSize := s.MetaInfo.TotalLength
 			percent := 0.0
 			if totalSize > 0 {
-				percent = (float64(downloaded) / float64(totalSize)) * 100
+				percent = (float64(verifiedDownloadedBytes) / float64(totalSize)) * 100
 			}
 
 			s.mu.Lock()
@@ -180,24 +199,79 @@ func (s *TorrentSession) displayLoop() {
 			} else if speed > 1024 {
 				speedStr = fmt.Sprintf("%.2f KB/s", speed/1024)
 			}
-			
-			// Formatiraj veličine
-			downloadedMB := float64(downloaded) / (1024 * 1024)
+
+			displayDownloadedMB := float64(currentDownloadedBytes) / (1024 * 1024)
 			totalSizeMB := float64(totalSize) / (1024 * 1024)
-			
 
 			fmt.Printf("\rProgress: %.2f%% | Downloaded: %.2f/%.2f MB | Speed: %s | Peers: %d \033[K",
 				percent,
-				downloadedMB,
+				displayDownloadedMB,
 				totalSizeMB,
 				speedStr,
 				numPeers)
 
-			if totalSize > 0 && downloaded >= totalSize {
-				fmt.Println() 
-				logger.Logf("Display loop finished: Download complete.\n")
-				return 
+			if totalSize > 0 && verifiedDownloadedBytes >= totalSize {
+				fmt.Println()
+				logger.Logf("Display loop finished: Download complete.")
+				return
 			}
+		}
+	}
+}
+
+func (s *TorrentSession) trackerLoop() {
+	s.mu.Lock()
+	initialInterval := s.trackerInterval
+	if initialInterval == 0 {
+		initialInterval = 1800 
+	}
+	s.mu.Unlock()
+
+	logger.Logf("Tracker loop started. Announce interval: %d seconds.\n", initialInterval)
+	ticker := time.NewTicker(time.Duration(initialInterval) * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			s.mu.Lock()
+			left := s.TrackerRequest.Left
+			s.mu.Unlock()
+
+			if left == 0 {
+				logger.Logf("Download complete. Stopping tracker loop.\n")
+				return
+			}
+
+			s.TrackerRequest.Event = ""
+
+			logger.Logf("Re-announcing to tracker...\n")
+			trackerResponse, err := s.announceToTrackers()
+			if err != nil {
+				logger.Warning.Printf("Failed to re-announce to tracker: %v\n", err)
+				continue
+			}
+
+			s.mu.Lock()
+			newInterval := s.trackerInterval
+			s.mu.Unlock()
+
+			if newInterval > 0 {
+				logger.Logf("Tracker returned new interval: %d seconds.\n", newInterval)
+				ticker.Reset(time.Duration(newInterval) * time.Second)
+			}
+
+			s.mu.Lock()
+			for _, peerInfo := range trackerResponse.Peers {
+				if len(s.ConnectedPeers) >= maxPeers {
+					break
+				}
+				// TODO: Check if already connected to this peer before launching goroutine
+				go s.connectToPeer(peerInfo)
+			}
+			s.mu.Unlock()
+
+			// TODO: Add a quit channel for graceful shutdown
 		}
 	}
 }
@@ -358,7 +432,7 @@ func (s *TorrentSession) downloadLoop() error {
 			s.bytesDownloaded += int64(len(resultBlock.Block))
 			s.muDownloaded.Unlock()
 			// --- KRAJ IZMENE ---
-			
+
 			s.mu.Lock()
 			pw, ok := s.ActivePieces[resultBlock.Index]
 			if ok {
@@ -386,7 +460,9 @@ func (s *TorrentSession) downloadLoop() error {
 						logger.Logf("========== Piece %d HASH VERIFIED! ==========\n", pw.Index)
 						if err := s.writePieceToDisk(pw.Index, pw.Buffer); err != nil {
 							logger.Logf("CRITICAL: Failed to write piece %d: %v. Re-queueing.", pw.Index, err)
-							for i := range pw.Blocks { pw.Blocks[i].State = 0 }
+							for i := range pw.Blocks {
+								pw.Blocks[i].State = 0
+							}
 							pw.ReceivedBlocks = 0
 							s.PieceWorkQueue <- pw
 						} else {
@@ -404,7 +480,9 @@ func (s *TorrentSession) downloadLoop() error {
 						}
 					} else {
 						logger.Logf("!!!!!!!! Piece %d HASH MISMATCH! Re-queueing. !!!!!!!!\n", pw.Index)
-						for i := range pw.Blocks { pw.Blocks[i].State = 0 }
+						for i := range pw.Blocks {
+							pw.Blocks[i].State = 0
+						}
 						pw.ReceivedBlocks = 0
 						s.PieceWorkQueue <- pw
 					}
@@ -428,7 +506,9 @@ func (s *TorrentSession) downloadLoop() error {
 			}
 			rarityMap := make(map[uint32]int)
 			for index := range s.ActivePieces {
-				if s.OurBitfield.HasPiece(index) { continue }
+				if s.OurBitfield.HasPiece(index) {
+					continue
+				}
 				count := 0
 				for _, peerClient := range s.ConnectedPeers {
 					if peerClient.Bitfield.HasPiece(index) {
@@ -446,7 +526,9 @@ func (s *TorrentSession) downloadLoop() error {
 			})
 			for _, piece := range raritySlice {
 				pw, ok := s.ActivePieces[piece.Index]
-				if !ok { continue }
+				if !ok {
+					continue
+				}
 				for _, peerClient := range s.ConnectedPeers {
 					if !peerClient.Choked && peerClient.Bitfield.HasPiece(pw.Index) {
 						for i := range pw.Blocks {
@@ -523,7 +605,7 @@ func (s *TorrentSession) preallocateFiles() error {
 }
 
 func (s *TorrentSession) announceToTrackers() (*tracker.TrackerResponse, error) {
-	logger.Logf("Attempting to announce to tracker(s)...\n")
+	logger.Logf("Attempting to announce to tracker(s)...")
 
 	var httpAnnounceURLs []string
 	if s.MetaInfo.Announce != "" && (strings.HasPrefix(s.MetaInfo.Announce, "http://") || strings.HasPrefix(s.MetaInfo.Announce, "https://")) {
@@ -568,6 +650,12 @@ func (s *TorrentSession) announceToTrackers() (*tracker.TrackerResponse, error) 
 		}
 		logger.Logf("Successfully received response from: %s\n", announceURL)
 		trackerResponse = currentResponse
+
+		// Sačuvaj interval za kasniju upotrebu u trackerLoop
+		s.mu.Lock()
+		s.trackerInterval = trackerResponse.Interval
+		s.mu.Unlock()
+
 		break
 	}
 	if trackerResponse == nil {
