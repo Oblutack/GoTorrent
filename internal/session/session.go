@@ -166,9 +166,82 @@ func (s *TorrentSession) populateWorkQueue() {
 	}
 }
 
+func (s *TorrentSession) readBlockFromDisk(index, begin, length uint32) ([]byte, error) {
+	pieceOffsetInTorrent := int64(index) * s.MetaInfo.Info.PieceLength
+
+	blockOffsetInTorrent := pieceOffsetInTorrent + int64(begin)
+
+	buffer := make([]byte, length)
+	bytesRead := 0
+
+	if len(s.MetaInfo.Info.Files) > 0 {
+		currentOffset := int64(0)
+		for _, fileInfo := range s.MetaInfo.Info.Files {
+			fileStart := currentOffset
+			fileEnd := currentOffset + fileInfo.Length
+
+			if blockOffsetInTorrent >= fileStart && blockOffsetInTorrent < fileEnd {
+				torrentBaseDir := filepath.Join(s.DownloadDir, s.MetaInfo.Info.Name)
+				pathParts := append([]string{torrentBaseDir}, fileInfo.Path...)
+				fullFilePath := filepath.Join(pathParts...)
+
+				file, err := os.Open(fullFilePath)
+				if err != nil {
+					return nil, err
+				}
+
+				offsetInFile := blockOffsetInTorrent - fileStart
+				_, err = file.Seek(offsetInFile, io.SeekStart)
+				if err != nil {
+					file.Close()
+					return nil, err
+				}
+
+				n, err := io.ReadFull(file, buffer[bytesRead:])
+				bytesRead += n
+				file.Close()
+
+				if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+					return nil, err
+				}
+				if uint32(bytesRead) == length {
+					break
+				}
+				blockOffsetInTorrent += int64(n)
+			}
+			currentOffset += fileInfo.Length
+		}
+
+	} else {
+		fullFilePath := filepath.Join(s.DownloadDir, s.MetaInfo.Info.Name)
+		file, err := os.Open(fullFilePath)
+		if err != nil {
+			return nil, err
+		}
+
+		_, err = file.Seek(blockOffsetInTorrent, io.SeekStart)
+		if err != nil {
+			file.Close()
+			return nil, err
+		}
+
+		_, err = io.ReadFull(file, buffer)
+		file.Close()
+		if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+			return nil, err
+		}
+	}
+
+	if uint32(len(buffer)) != length {
+
+	}
+
+	return buffer, nil
+}
+
 func (s *TorrentSession) connectToPeer(peerInfo tracker.PeerInfo) {
 	log.Printf("Attempting to connect and handshake with peer: %s\n", net.JoinHostPort(peerInfo.IP.String(), strconv.Itoa(int(peerInfo.Port))))
-	client, err := peer.NewClient(peerInfo, s.MetaInfo.InfoHash, s.OurPeerID, s.numPiecesInTorrent)
+	client, err := peer.NewClient(peerInfo, s.MetaInfo.InfoHash, s.OurPeerID, s.numPiecesInTorrent, s.OurBitfield, s.readBlockFromDisk)
 	if err != nil {
 		log.Printf("Warning: Failed to connect or handshake with peer %s: %v\n", peerInfo.IP.String(), err)
 		return
@@ -192,7 +265,7 @@ func (s *TorrentSession) connectToPeer(peerInfo tracker.PeerInfo) {
 }
 
 func (s *TorrentSession) downloadLoop() error {
-	ticker := time.NewTicker(5 * time.Second) // Ticker for periodic tasks
+	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
 	for s.TrackerRequest.Left > 0 {
@@ -207,12 +280,11 @@ func (s *TorrentSession) downloadLoop() error {
 			s.mu.Lock()
 			pw, ok := s.ActivePieces[resultBlock.Index]
 			if ok {
-				// Find block and update its state
 				blockFound := false
 				for i := range pw.Blocks {
 					block := &pw.Blocks[i]
-					if block.Offset == resultBlock.Begin && block.State == 1 { // State 1 = Requested
-						block.State = 2 // Received
+					if block.Offset == resultBlock.Begin && block.State == 1 {
+						block.State = 2
 						copy(pw.Buffer[resultBlock.Begin:], resultBlock.Block)
 						pw.ReceivedBlocks++
 						log.Printf("Stored block for piece %d. Progress: %d/%d blocks.", pw.Index, pw.ReceivedBlocks, pw.TotalBlocks)
@@ -226,7 +298,6 @@ func (s *TorrentSession) downloadLoop() error {
 				}
 
 				if pw.TotalBlocks > 0 && pw.ReceivedBlocks == pw.TotalBlocks {
-					// Verify Hash
 					expectedHash := s.MetaInfo.PieceHashes[pw.Index]
 					actualHash := sha1.Sum(pw.Buffer)
 					if bytes.Equal(actualHash[:], expectedHash[:]) {
@@ -237,13 +308,13 @@ func (s *TorrentSession) downloadLoop() error {
 								pw.Blocks[i].State = 0
 							}
 							pw.ReceivedBlocks = 0
-							s.PieceWorkQueue <- pw // Put work back
+							s.PieceWorkQueue <- pw
 						} else {
 							s.OurBitfield.SetPiece(pw.Index)
 							s.TrackerRequest.Downloaded += pw.Length
 							s.TrackerRequest.Left -= pw.Length
 							log.Printf("Updated downloaded/left: %d/%d", s.TrackerRequest.Downloaded, s.TrackerRequest.Left)
-							// Send HAVE to all connected peers
+
 							log.Printf("Sending HAVE message for piece %d to all connected peers.", pw.Index)
 							for _, peerClient := range s.ConnectedPeers {
 								if err := peerClient.SendHave(pw.Index); err != nil {
@@ -260,7 +331,8 @@ func (s *TorrentSession) downloadLoop() error {
 						pw.ReceivedBlocks = 0
 						s.PieceWorkQueue <- pw
 					}
-					delete(s.ActivePieces, pw.Index) // Remove from active work
+					delete(s.ActivePieces, pw.Index)
+
 				}
 			} else {
 				log.Printf("Received a block for a non-active piece index %d. Discarding.", resultBlock.Index)
@@ -270,25 +342,21 @@ func (s *TorrentSession) downloadLoop() error {
 		case <-ticker.C:
 			s.mu.Lock()
 
-			// Check for timed out block requests
 			for _, pw := range s.ActivePieces {
 				for i := range pw.Blocks {
 					block := &pw.Blocks[i]
 					if block.State == 1 && time.Since(block.RequestedAt) > blockRequestTimeout {
 						log.Printf("TIMEOUT for block offset %d of piece %d. Re-queueing.", block.Offset, pw.Index)
-						block.State = 0 // Reset state to 'Needed'
+						block.State = 0
 					}
 				}
 			}
 
-			// --- RAREST FIRST PIECE PICKING AND WORK ASSIGNMENT ---
-
-			// 1. Calculate rarity for each active piece
 			rarityMap := make(map[uint32]int)
 			for index := range s.ActivePieces {
 				if s.OurBitfield.HasPiece(index) {
 					continue
-				} // Should not happen if logic is correct
+				}
 				count := 0
 				for _, peerClient := range s.ConnectedPeers {
 					if peerClient.Bitfield.HasPiece(index) {
@@ -298,39 +366,32 @@ func (s *TorrentSession) downloadLoop() error {
 				rarityMap[index] = count
 			}
 
-			// 2. Create a slice for sorting
 			raritySlice := make([]pieceRarity, 0, len(rarityMap))
 			for index, count := range rarityMap {
 				raritySlice = append(raritySlice, pieceRarity{Index: index, Rarity: count})
 			}
 
-			// 3. Sort pieces from rarest to most common
 			sort.Slice(raritySlice, func(i, j int) bool {
 				return raritySlice[i].Rarity < raritySlice[j].Rarity
 			})
 
-			// 4. Try to assign work, starting with the rarest pieces
 			for _, piece := range raritySlice {
 				pw, ok := s.ActivePieces[piece.Index]
 				if !ok {
 					continue
-				} // Piece might have been completed and removed
+				}
 
-				// Find a peer that has this piece and is available for work
 				for _, peerClient := range s.ConnectedPeers {
 					if !peerClient.Choked && peerClient.Bitfield.HasPiece(pw.Index) {
-						// This peer is a candidate. Find needed blocks to request.
 						for i := range pw.Blocks {
 							block := &pw.Blocks[i]
-							if block.State == 0 { // State is 'Needed'
-								// Check if peer's work queue has space (pipeline capacity)
+							if block.State == 0 {
 								if len(peerClient.WorkQueue) < cap(peerClient.WorkQueue) {
-									block.State = 1 // Mark as 'Requested'
+									block.State = 1
 									block.RequestedAt = time.Now()
 									log.Printf("RAREST-FIRST: Assigning (rarity %d) block %d of piece %d to peer %s",
 										piece.Rarity, block.Offset, pw.Index, peerClient.Conn.RemoteAddr())
 
-									// Send work to peer's queue
 									peerClient.WorkQueue <- &peer.BlockRequest{Index: pw.Index, Begin: block.Offset, Length: block.Length}
 								}
 							}

@@ -20,6 +20,7 @@ const (
 	readTimeout       = 5 * time.Second
 )
 
+// Handshake represents the initial handshake message.
 type Handshake struct {
 	Pstrlen  byte
 	Pstr     [19]byte
@@ -90,6 +91,7 @@ type PieceBlock struct {
 	Block []byte
 }
 
+// Client represents a connection to a single BitTorrent peer.
 type Client struct {
 	Conn               net.Conn
 	InfoHash           [20]byte
@@ -97,13 +99,17 @@ type Client struct {
 	RemoteID           [20]byte
 	Choked             bool
 	Bitfield           Bitfield
-	NumPiecesInTorrent int
+	numPiecesInTorrent int
+	WorkQueue          chan *BlockRequest
+	Results            chan *PieceBlock
 
-	WorkQueue chan *BlockRequest
-	Results   chan *PieceBlock
+	// Dependencies injected from the session for seeding
+	ourBitfield       Bitfield
+	readBlockFromDisk func(index, begin, length uint32) ([]byte, error)
 }
 
-func NewClient(peerInfo tracker.PeerInfo, infoHash, ourID [20]byte, numPiecesInTorrent int) (*Client, error) {
+// NewClient attempts to connect to a peer and perform a handshake.
+func NewClient(peerInfo tracker.PeerInfo, infoHash, ourID [20]byte, numPiecesInTorrent int, ourBitfield Bitfield, readBlockFunc func(index, begin, length uint32) ([]byte, error)) (*Client, error) {
 	address := net.JoinHostPort(peerInfo.IP.String(), strconv.Itoa(int(peerInfo.Port)))
 	log.Printf("peer: attempting to connect to %s", address)
 	conn, err := net.DialTimeout("tcp", address, handshakeTimeout)
@@ -138,12 +144,15 @@ func NewClient(peerInfo tracker.PeerInfo, infoHash, ourID [20]byte, numPiecesInT
 		RemoteID:           peerHandshake.PeerID,
 		Choked:             true,
 		Bitfield:           NewBitfield(numPiecesInTorrent),
-		NumPiecesInTorrent: numPiecesInTorrent,
+		numPiecesInTorrent: numPiecesInTorrent,
 		WorkQueue:          make(chan *BlockRequest, 5),
 		Results:            make(chan *PieceBlock),
+		ourBitfield:        ourBitfield,
+		readBlockFromDisk:  readBlockFunc,
 	}, nil
 }
 
+// Run is the main loop for a peer connection.
 func (c *Client) Run() {
 	defer c.Conn.Close()
 	defer close(c.Results)
@@ -156,14 +165,13 @@ func (c *Client) Run() {
 	}
 
 	for {
-
 		msg, err := c.ReadMessage()
 		if err != nil {
 			log.Printf("Error reading message from peer %s, closing connection: %v", c.Conn.RemoteAddr(), err)
 			return
 		}
 		if msg == nil {
-			continue
+			continue // Keep-alive
 		}
 
 		switch msg.ID {
@@ -176,7 +184,7 @@ func (c *Client) Run() {
 		case MsgHave:
 			var havePayload MsgHavePayload
 			if err := havePayload.Parse(msg.Payload); err == nil {
-				if int(havePayload.PieceIndex) < c.NumPiecesInTorrent {
+				if int(havePayload.PieceIndex) < c.numPiecesInTorrent {
 					c.Bitfield.SetPiece(havePayload.PieceIndex)
 				}
 			}
@@ -187,36 +195,61 @@ func (c *Client) Run() {
 		case MsgPiece:
 			var piecePayload MsgPiecePayload
 			if err := piecePayload.Parse(msg.Payload); err == nil {
-
 				c.Results <- &PieceBlock{
 					Index: piecePayload.Index,
 					Begin: piecePayload.Begin,
 					Block: piecePayload.Block,
 				}
 			}
-		}
+		case MsgRequest:
+			var reqPayload MsgRequestPayload
+			if err := reqPayload.Parse(msg.Payload); err == nil {
+				log.Printf("Peer %s requested piece %d, offset %d, length %d",
+					c.Conn.RemoteAddr(), reqPayload.Index, reqPayload.Begin, reqPayload.Length)
+
+				if c.ourBitfield.HasPiece(reqPayload.Index) {
+					blockData, err := c.readBlockFromDisk(reqPayload.Index, reqPayload.Begin, reqPayload.Length)
+					if err != nil {
+						log.Printf("Error reading block from disk for peer request: %v", err)
+					} else {
+						err := c.SendPiece(reqPayload.Index, reqPayload.Begin, blockData)
+						if err != nil {
+							log.Printf("Error sending Piece message to peer %s: %v", c.Conn.RemoteAddr(), err)
+						} else {
+							log.Printf("Sent piece %d, block offset %d to peer %s",
+								reqPayload.Index, reqPayload.Begin, c.Conn.RemoteAddr())
+							// TODO: Update Uploaded stats
+						}
+					}
+				} else {
+					log.Printf("Peer %s requested piece %d which we don't have.", c.Conn.RemoteAddr(), reqPayload.Index)
+				}
+			} else {
+				log.Printf("Error parsing Request message from peer %s: %v", c.Conn.RemoteAddr(), err)
+			}
+		} // End switch
 
 		if !c.Choked {
-
 			select {
 			case work := <-c.WorkQueue:
 				if c.Bitfield.HasPiece(work.Index) {
 					err := c.SendRequest(work.Index, work.Begin, work.Length)
 					if err != nil {
 						log.Printf("Peer %s: failed to send request: %v", c.Conn.RemoteAddr(), err)
-
+						// TODO: Put work back in the main session's queue.
 					}
 				} else {
 					log.Printf("Peer %s: was assigned work for piece %d it doesn't have.", c.Conn.RemoteAddr(), work.Index)
-
+					// TODO: Put work back in the main session's queue.
 				}
 			default:
-
+				// No work in queue, do nothing.
 			}
 		}
 	}
 }
 
+// Close closes the connection to the peer.
 func (c *Client) Close() error {
 	if c.Conn != nil {
 		return c.Conn.Close()
@@ -224,8 +257,8 @@ func (c *Client) Close() error {
 	return nil
 }
 
+// ReadMessage reads and parses a single message from the peer.
 func (c *Client) ReadMessage() (*Message, error) {
-
 	c.Conn.SetReadDeadline(time.Now().Add(3 * time.Minute))
 	defer c.Conn.SetReadDeadline(time.Time{})
 
@@ -234,12 +267,11 @@ func (c *Client) ReadMessage() (*Message, error) {
 	if err != nil {
 		return nil, err
 	}
-
 	length := binary.BigEndian.Uint32(lengthPrefix)
 	if length == 0 {
-		return nil, nil
+		return nil, nil // Keep-alive
 	}
-	if length > 1024*1024*2 {
+	if length > 1024*1024*2 { // 2MB sanity check
 		return nil, fmt.Errorf("message length %d too large", length)
 	}
 	messageBytes := make([]byte, length)
@@ -253,6 +285,7 @@ func (c *Client) ReadMessage() (*Message, error) {
 	}, nil
 }
 
+// SendMessage serializes and sends a message to the peer.
 func (c *Client) SendMessage(id MessageID, payload []byte) error {
 	msg := &Message{ID: id, Payload: payload}
 	_, err := c.Conn.Write(msg.Serialize())
@@ -262,6 +295,7 @@ func (c *Client) SendMessage(id MessageID, payload []byte) error {
 	return nil
 }
 
+// Helper methods for sending specific messages
 func (c *Client) SendInterested() error    { return c.SendMessage(MsgInterested, nil) }
 func (c *Client) SendNotInterested() error { return c.SendMessage(MsgNotInterested, nil) }
 func (c *Client) SendHave(pieceIndex uint32) error {
@@ -272,4 +306,8 @@ func (c *Client) SendHave(pieceIndex uint32) error {
 func (c *Client) SendRequest(index, begin, length uint32) error {
 	payload := MsgRequestPayload{Index: index, Begin: begin, Length: length}
 	return c.SendMessage(MsgRequest, payload.Serialize())
+}
+func (c *Client) SendPiece(index, begin uint32, block []byte) error {
+	payload := MsgPiecePayload{Index: index, Begin: begin, Block: block}
+	return c.SendMessage(MsgPiece, payload.Serialize())
 }
