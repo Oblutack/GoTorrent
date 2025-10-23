@@ -18,8 +18,11 @@ import (
 	"github.com/Oblutack/GoTorrent/internal/peer"
 	"github.com/Oblutack/GoTorrent/internal/tracker"
 
+	"encoding/hex"
+
 	"sort"
 	"sync"
+
 	"time"
 )
 
@@ -74,6 +77,61 @@ type pieceRarity struct {
 	Rarity int
 }
 
+func (s *TorrentSession) stateFilePath() string {
+	infoHashHex := hex.EncodeToString(s.MetaInfo.InfoHash[:])
+	return filepath.Join(s.DownloadDir, fmt.Sprintf(".%s.state", infoHashHex))
+}
+
+// saveState čuva OurBitfield na disk
+func (s *TorrentSession) saveState() error {
+	logger.Logf("Saving download state to %s\n", s.stateFilePath())
+	return os.WriteFile(s.stateFilePath(), s.OurBitfield, 0644)
+}
+
+// loadState učitava OurBitfield sa diska
+func (s *TorrentSession) loadState() error {
+	filePath := s.stateFilePath()
+	if _, err := os.Stat(filePath); os.IsNotExist(err) {
+		logger.Logf("No previous state file found. Starting from scratch.")
+		return nil // Nije greška ako fajl ne postoji
+	}
+
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return fmt.Errorf("could not read state file: %w", err)
+	}
+
+	if len(data) != len(s.OurBitfield) {
+		return fmt.Errorf("state file has incorrect size. Expected %d, got %d. Starting fresh.",
+			len(s.OurBitfield), len(data))
+	}
+
+	copy(s.OurBitfield, data)
+	logger.Logf("Successfully loaded download state from %s\n", filePath)
+
+	// Ažuriraj Downloaded/Left na osnovu učitanog stanja
+	// Ovo je pojednostavljeno, pretpostavlja da su svi delovi iste dužine osim poslednjeg
+	var downloadedBytes int64
+	for i := 0; i < s.numPiecesInTorrent; i++ {
+		if s.OurBitfield.HasPiece(uint32(i)) {
+			var pieceLength int64
+			if i == s.numPiecesInTorrent-1 {
+				pieceLength = s.MetaInfo.TotalLength - (int64(s.numPiecesInTorrent-1) * s.MetaInfo.Info.PieceLength)
+			} else {
+				pieceLength = s.MetaInfo.Info.PieceLength
+			}
+			downloadedBytes += pieceLength
+		}
+	}
+	s.TrackerRequest.Downloaded = downloadedBytes
+	s.bytesDownloaded = downloadedBytes // Ažuriraj i statistiku za brzinu
+	s.lastSampledBytes = downloadedBytes
+	s.TrackerRequest.Left = s.MetaInfo.TotalLength - downloadedBytes
+	logger.Logf("Resuming download. Downloaded: %d, Left: %d\n", s.TrackerRequest.Downloaded, s.TrackerRequest.Left)
+
+	return nil
+}
+
 func New(metaInfo *metainfo.MetaInfo, listenPort uint16, downloadDir string) (*TorrentSession, error) {
 	peerID, err := tracker.GeneratePeerID()
 	if err != nil {
@@ -108,6 +166,13 @@ func New(metaInfo *metainfo.MetaInfo, listenPort uint16, downloadDir string) (*T
 		Results:            make(chan *peer.PieceBlock, 100),
 		lastSampledTime:    time.Now(),
 	}
+
+	if err := s.loadState(); err != nil {
+		logger.Logf("Warning: could not load previous state: %v. Continuing with a fresh download.", err)
+		// Resetuj OurBitfield za svaki slučaj ako je loadState delimično uspeo pre greške
+		s.OurBitfield = peer.NewBitfield(len(metaInfo.PieceHashes))
+	}
+
 	return s, nil
 }
 
@@ -125,13 +190,14 @@ func (s *TorrentSession) Run() error {
 		return fmt.Errorf("session setup failed during tracker announce: %w", err)
 	}
 
-	logger.Logf("-----------------------------------------------------\n")
-	logger.Logf("Tracker Response:\n")
-	logger.Logf("  Interval: %d seconds\n", trackerResponse.Interval)
-	logger.Logf("  Seeders: %d, Leechers: %d\n", trackerResponse.Complete, trackerResponse.Incomplete)
-	logger.Logf("  Received %d peers.\n", len(trackerResponse.Peers))
-	logger.Logf("-----------------------------------------------------\n")
+	// ... (ispis tracker response) ...
 
+	if len(trackerResponse.Peers) == 0 {
+		logger.Logf("No peers received from tracker. Nothing to do.\n")
+		return nil
+	}
+
+	// Connect to peers concurrently
 	for _, peerInfo := range trackerResponse.Peers {
 		s.mu.Lock()
 		numConnected := len(s.ConnectedPeers)
@@ -142,46 +208,72 @@ func (s *TorrentSession) Run() error {
 		go s.connectToPeer(peerInfo)
 	}
 
-	go s.displayLoop()
-	go s.trackerLoop() 
+	// --- POČETAK VAŽNE IZMENE ---
+	// Sačekajmo kratko da se uspostave neke početne konekcije
+	// pre nego što počnemo sa glavnom petljom.
+	logger.Logf("Waiting for initial peer connections to establish...")
+	time.Sleep(5 * time.Second) // Sačekaj 5 sekundi
 
-	err = s.downloadLoop()
-	if err != nil {
-		logger.Error.Printf("Download loop failed: %v\n", err)
-		return err
+	s.mu.Lock()
+	numInitialPeers := len(s.ConnectedPeers)
+	s.mu.Unlock()
+
+	if numInitialPeers == 0 {
+		logger.Logf("Failed to establish any initial peer connections. Exiting.")
+		return errors.New("could not connect to any peers")
 	}
+	logger.Logf("Established connections with %d peers. Starting download.\n", numInitialPeers)
+	// --- KRAJ VAŽNE IZMENE ---
 
+	go s.displayLoop()
+	go s.trackerLoop()
 
-	time.Sleep(2 * time.Second)
-	fmt.Println() 
-	logger.Logf("GoTorrent finished download.\n")
-	return nil
+	return s.downloadLoop()
 }
 
 func (s *TorrentSession) displayLoop() {
-	fmt.Print("\033[?25l")       
-	defer fmt.Print("\033[?25h") 
+	// Hide cursor during display
+	fmt.Print("\033[?25l")
+	// Ensure cursor is shown again on exit
+	defer fmt.Print("\033[?25h")
 
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
+	// Local variables for speed calculation
+	var lastBytes int64 = 0
+	var lastTime time.Time = time.Now()
+
+	// Pre-load initial downloaded bytes if resuming
+	s.muDownloaded.Lock()
+	lastBytes = s.bytesDownloaded
+	s.muDownloaded.Unlock()
+
 	for {
 		select {
 		case <-ticker.C:
+			// Get current total downloaded bytes
 			s.muDownloaded.Lock()
-			now := time.Now()
-			elapsed := now.Sub(s.lastSampledTime).Seconds()
-			if elapsed > 0.5 {
-				bytesSinceLastSample := s.bytesDownloaded - s.lastSampledBytes
-				s.currentSpeedBps = float64(bytesSinceLastSample) / elapsed
-				s.lastSampledTime = now
-				s.lastSampledBytes = s.bytesDownloaded
-			}
-			currentDownloadedBytes := s.bytesDownloaded
-			speed := s.currentSpeedBps
+			currentBytes := s.bytesDownloaded
 			s.muDownloaded.Unlock()
 
+			// Calculate speed
+			now := time.Now()
+			elapsed := now.Sub(lastTime).Seconds()
+			var speed float64 = 0
+			if elapsed > 0.1 { // Avoid division by zero and noisy values
+				speed = float64(currentBytes-lastBytes) / elapsed
+			}
+
+			// Update for the next iteration
+			lastTime = now
+			lastBytes = currentBytes
+
+			// Get other stats (verified downloaded bytes, peer count)
+			s.mu.Lock()
 			verifiedDownloadedBytes := s.TrackerRequest.Downloaded
+			numPeers := len(s.ConnectedPeers)
+			s.mu.Unlock()
 
 			totalSize := s.MetaInfo.TotalLength
 			percent := 0.0
@@ -189,10 +281,7 @@ func (s *TorrentSession) displayLoop() {
 				percent = (float64(verifiedDownloadedBytes) / float64(totalSize)) * 100
 			}
 
-			s.mu.Lock()
-			numPeers := len(s.ConnectedPeers)
-			s.mu.Unlock()
-
+			// Format speed for display
 			speedStr := fmt.Sprintf("%.2f B/s", speed)
 			if speed > 1024*1024 {
 				speedStr = fmt.Sprintf("%.2f MB/s", speed/(1024*1024))
@@ -200,19 +289,23 @@ func (s *TorrentSession) displayLoop() {
 				speedStr = fmt.Sprintf("%.2f KB/s", speed/1024)
 			}
 
-			displayDownloadedMB := float64(currentDownloadedBytes) / (1024 * 1024)
+			// Use verified bytes for Downloaded MB to be consistent with percentage
+			downloadedMB := float64(verifiedDownloadedBytes) / (1024 * 1024)
 			totalSizeMB := float64(totalSize) / (1024 * 1024)
 
+			// Print the status line
+			// \r returns cursor to start, \033[K clears the rest of the line
 			fmt.Printf("\rProgress: %.2f%% | Downloaded: %.2f/%.2f MB | Speed: %s | Peers: %d \033[K",
 				percent,
-				displayDownloadedMB,
+				downloadedMB,
 				totalSizeMB,
 				speedStr,
 				numPeers)
 
+			// Exit condition for the display loop
 			if totalSize > 0 && verifiedDownloadedBytes >= totalSize {
-				fmt.Println()
-				logger.Logf("Display loop finished: Download complete.")
+				fmt.Println() // Move to a new line after 100%
+				logger.Logf("Display loop finished: Download complete.\n")
 				return
 			}
 		}
@@ -223,7 +316,7 @@ func (s *TorrentSession) trackerLoop() {
 	s.mu.Lock()
 	initialInterval := s.trackerInterval
 	if initialInterval == 0 {
-		initialInterval = 1800 
+		initialInterval = 1800
 	}
 	s.mu.Unlock()
 
@@ -390,48 +483,124 @@ func (s *TorrentSession) readBlockFromDisk(index, begin, length uint32) ([]byte,
 
 func (s *TorrentSession) connectToPeer(peerInfo tracker.PeerInfo) {
 	logger.Logf("Attempting to connect and handshake with peer: %s\n", net.JoinHostPort(peerInfo.IP.String(), strconv.Itoa(int(peerInfo.Port))))
+
+	// Pass our bitfield and the disk reading method to the new peer client
 	client, err := peer.NewClient(peerInfo, s.MetaInfo.InfoHash, s.OurPeerID, s.numPiecesInTorrent, s.OurBitfield, s.readBlockFromDisk)
 	if err != nil {
-		logger.Logf("Warning: Failed to connect or handshake with peer %s: %v\n", peerInfo.IP.String(), err)
+		logger.Warning.Printf("Failed to connect or handshake with peer %s: %v\n", peerInfo.IP.String(), err)
 		return
 	}
 
+	// Add the new client to our map of connected peers (thread-safe)
 	s.mu.Lock()
 	s.ConnectedPeers[client.RemoteID] = client
 	s.mu.Unlock()
 
+	// Start the main communication loop for this peer in its own goroutine
 	go client.Run()
 
+	// This loop forwards downloaded blocks from the peer's Results channel
+	// to the session's main Results channel.
 	for pieceBlock := range client.Results {
 		s.Results <- pieceBlock
 	}
 
-	logger.Logf("Peer %s disconnected.", client.Conn.RemoteAddr())
+	// This part is reached when the client.Results channel is closed (i.e., when client.Run() exits).
+	logger.Logf("Peer %s disconnected.\n", client.Conn.RemoteAddr())
 
+	// Remove the peer from our map (thread-safe)
 	s.mu.Lock()
 	delete(s.ConnectedPeers, client.RemoteID)
 	s.mu.Unlock()
 }
 
 func (s *TorrentSession) downloadLoop() error {
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
+	// Ticker for periodic tasks like checking for timeouts.
+	timeoutTicker := time.NewTicker(10 * time.Second)
+	defer timeoutTicker.Stop()
 
 	for s.TrackerRequest.Left > 0 {
+
+		// --- Aggressive Work Assignment (New Strategy) ---
+		// This logic runs in every iteration, ensuring any free pipeline
+		// slot is filled as quickly as possible by distributing blocks
+		// across all available peers.
+		s.mu.Lock()
+
+		// 1. Calculate rarity of all active, needed pieces
+		rarityMap := make(map[uint32]int)
+		for index := range s.ActivePieces {
+			if s.OurBitfield.HasPiece(index) {
+				continue
+			}
+			count := 0
+			for _, peerClient := range s.ConnectedPeers {
+				if peerClient.Bitfield.HasPiece(index) {
+					count++
+				}
+			}
+			rarityMap[index] = count
+		}
+		// 2. Create and sort slice from rarest to most common
+		raritySlice := make([]pieceRarity, 0, len(rarityMap))
+		for index, count := range rarityMap {
+			raritySlice = append(raritySlice, pieceRarity{Index: index, Rarity: count})
+		}
+		sort.Slice(raritySlice, func(i, j int) bool {
+			return raritySlice[i].Rarity < raritySlice[j].Rarity
+		})
+
+		// 3. Distribute blocks from the rarest pieces across all available peers
+		for _, piece := range raritySlice {
+			pw, ok := s.ActivePieces[piece.Index]
+			if !ok {
+				continue
+			} // Piece might have been completed
+
+			// Iterate through the blocks of this piece
+			for i := range pw.Blocks {
+				block := &pw.Blocks[i]
+
+				if block.State != 0 { // State 0 = Needed
+					continue // This block is already requested or received
+				}
+
+				// Find the first available peer that has this piece and assign this ONE block
+				for _, peerClient := range s.ConnectedPeers {
+					if !peerClient.Choked && peerClient.Bitfield.HasPiece(pw.Index) {
+						if len(peerClient.WorkQueue) < cap(peerClient.WorkQueue) {
+							// This peer is a good candidate! Assign the job.
+							block.State = 1 // Mark as 'Requested'
+							block.RequestedAt = time.Now()
+							logger.Logf("Assigning (rarity %d) block %d of piece %d to peer %s\n",
+								piece.Rarity, block.Offset, pw.Index, peerClient.Conn.RemoteAddr())
+
+							peerClient.WorkQueue <- &peer.BlockRequest{Index: pw.Index, Begin: block.Offset, Length: block.Length}
+
+							// After assigning one block, break from the peer loop and move to the next block
+							goto nextBlockInPiece
+						}
+					}
+				} // End of peer loop for this block
+			nextBlockInPiece:
+			} // End of block loop for this piece
+		} // End of piece loop
+		s.mu.Unlock()
+
+		// Now, wait for events on the channels. If no events, loop will spin,
+		// but work assignment logic above will not assign more work than pipelines can handle.
+		// A small timeout here prevents 100% CPU usage if there are no events at all.
 		select {
 		case pieceWork := <-s.PieceWorkQueue:
 			s.mu.Lock()
 			s.ActivePieces[pieceWork.Index] = pieceWork
 			s.mu.Unlock()
-			logger.Logf("Piece %d moved to active work.", pieceWork.Index)
+			logger.Logf("Piece %d moved to active work.\n", pieceWork.Index)
 
 		case resultBlock := <-s.Results:
-			// --- POČETAK IZMENE ---
-			// Ažuriraj bajtove odmah po prijemu bloka za računanje brzine u realnom vremenu
 			s.muDownloaded.Lock()
 			s.bytesDownloaded += int64(len(resultBlock.Block))
 			s.muDownloaded.Unlock()
-			// --- KRAJ IZMENE ---
 
 			s.mu.Lock()
 			pw, ok := s.ActivePieces[resultBlock.Index]
@@ -443,23 +612,21 @@ func (s *TorrentSession) downloadLoop() error {
 						block.State = 2
 						copy(pw.Buffer[resultBlock.Begin:], resultBlock.Block)
 						pw.ReceivedBlocks++
-						logger.Logf("Stored block for piece %d. Progress: %d/%d blocks.", pw.Index, pw.ReceivedBlocks, pw.TotalBlocks)
 						blockFound = true
+						logger.Logf("Stored block for piece %d. Progress: %d/%d blocks.\n", pw.Index, pw.ReceivedBlocks, pw.TotalBlocks)
 						break
 					}
 				}
 				if !blockFound {
-					logger.Logf("Warning: Received a block that was not in 'Requested' state (or wrong offset). Piece %d, offset %d. Discarding.",
-						resultBlock.Index, resultBlock.Begin)
+					logger.Warning.Printf("Received unsolicited/late block for piece %d, offset %d. Discarding.\n", resultBlock.Index, resultBlock.Begin)
 				}
-
 				if pw.TotalBlocks > 0 && pw.ReceivedBlocks == pw.TotalBlocks {
 					expectedHash := s.MetaInfo.PieceHashes[pw.Index]
 					actualHash := sha1.Sum(pw.Buffer)
 					if bytes.Equal(actualHash[:], expectedHash[:]) {
 						logger.Logf("========== Piece %d HASH VERIFIED! ==========\n", pw.Index)
 						if err := s.writePieceToDisk(pw.Index, pw.Buffer); err != nil {
-							logger.Logf("CRITICAL: Failed to write piece %d: %v. Re-queueing.", pw.Index, err)
+							logger.Error.Printf("CRITICAL: Failed to write piece %d: %v. Re-queueing.\n", pw.Index, err)
 							for i := range pw.Blocks {
 								pw.Blocks[i].State = 0
 							}
@@ -469,17 +636,16 @@ func (s *TorrentSession) downloadLoop() error {
 							s.OurBitfield.SetPiece(pw.Index)
 							s.TrackerRequest.Downloaded += pw.Length
 							s.TrackerRequest.Left -= pw.Length
-							logger.Logf("Updated downloaded/left: %d/%d", s.TrackerRequest.Downloaded, s.TrackerRequest.Left)
-							logger.Logf("Sending HAVE message for piece %d to all connected peers.", pw.Index)
+							logger.Logf("Updated downloaded/left: %d/%d\n", s.TrackerRequest.Downloaded, s.TrackerRequest.Left)
+							logger.Logf("Sending HAVE message for piece %d to all peers.\n", pw.Index)
 							for _, peerClient := range s.ConnectedPeers {
 								if err := peerClient.SendHave(pw.Index); err != nil {
-									logger.Logf("Warning: Failed to send HAVE for piece %d to peer %s: %v",
-										pw.Index, peerClient.Conn.RemoteAddr(), err)
+									logger.Warning.Printf("Failed to send HAVE: %v\n", err)
 								}
 							}
 						}
 					} else {
-						logger.Logf("!!!!!!!! Piece %d HASH MISMATCH! Re-queueing. !!!!!!!!\n", pw.Index)
+						logger.Warning.Printf("!!!!!!!! Piece %d HASH MISMATCH! Re-queueing. !!!!!!!!\n", pw.Index)
 						for i := range pw.Blocks {
 							pw.Blocks[i].State = 0
 						}
@@ -489,68 +655,31 @@ func (s *TorrentSession) downloadLoop() error {
 					delete(s.ActivePieces, pw.Index)
 				}
 			} else {
-				logger.Logf("Received a block for a non-active piece index %d. Discarding.", resultBlock.Index)
+				logger.Logf("Received block for non-active piece %d.\n", resultBlock.Index)
 			}
 			s.mu.Unlock()
 
-		case <-ticker.C:
+		case <-timeoutTicker.C:
+			// Handle timed out block requests
 			s.mu.Lock()
 			for _, pw := range s.ActivePieces {
 				for i := range pw.Blocks {
 					block := &pw.Blocks[i]
 					if block.State == 1 && time.Since(block.RequestedAt) > blockRequestTimeout {
-						logger.Logf("TIMEOUT for block offset %d of piece %d. Re-queueing.", block.Offset, pw.Index)
-						block.State = 0
-					}
-				}
-			}
-			rarityMap := make(map[uint32]int)
-			for index := range s.ActivePieces {
-				if s.OurBitfield.HasPiece(index) {
-					continue
-				}
-				count := 0
-				for _, peerClient := range s.ConnectedPeers {
-					if peerClient.Bitfield.HasPiece(index) {
-						count++
-					}
-				}
-				rarityMap[index] = count
-			}
-			raritySlice := make([]pieceRarity, 0, len(rarityMap))
-			for index, count := range rarityMap {
-				raritySlice = append(raritySlice, pieceRarity{Index: index, Rarity: count})
-			}
-			sort.Slice(raritySlice, func(i, j int) bool {
-				return raritySlice[i].Rarity < raritySlice[j].Rarity
-			})
-			for _, piece := range raritySlice {
-				pw, ok := s.ActivePieces[piece.Index]
-				if !ok {
-					continue
-				}
-				for _, peerClient := range s.ConnectedPeers {
-					if !peerClient.Choked && peerClient.Bitfield.HasPiece(pw.Index) {
-						for i := range pw.Blocks {
-							block := &pw.Blocks[i]
-							if block.State == 0 {
-								if len(peerClient.WorkQueue) < cap(peerClient.WorkQueue) {
-									block.State = 1
-									block.RequestedAt = time.Now()
-									logger.Logf("RAREST-FIRST: Assigning (rarity %d) block %d of piece %d to peer %s",
-										piece.Rarity, block.Offset, pw.Index, peerClient.Conn.RemoteAddr())
-									peerClient.WorkQueue <- &peer.BlockRequest{Index: pw.Index, Begin: block.Offset, Length: block.Length}
-								}
-							}
-						}
+						logger.Warning.Printf("TIMEOUT for block offset %d of piece %d. Re-queueing.\n", block.Offset, pw.Index)
+						block.State = 0 // Reset state to 'Needed'
 					}
 				}
 			}
 			s.mu.Unlock()
+
+		case <-time.After(50 * time.Millisecond):
+			// If no events are happening, pause briefly to prevent busy-looping at 100% CPU.
+			// This gives goroutines for peers more time to read from the network.
 		}
 	}
 
-	logger.Logf("Download complete!\n")
+	logger.Logf("\nDownload complete!\n")
 	return nil
 }
 
