@@ -6,21 +6,20 @@ import (
 )
 
 var (
-	Info *log.Logger
+	Info    *log.Logger
 	Warning *log.Logger
-	Error *log.Logger
+	Error   *log.Logger
 
 	verbose bool
 )
 
-
 func Init(isVerbose bool) {
 	verbose = isVerbose
-	
-	infoHandle := ioutil.Discard 
-	warnHandle := ioutil.Discard 
+
+	infoHandle := ioutil.Discard
+	warnHandle := ioutil.Discard
 	if verbose {
-		infoHandle = log.Writer() 
+		infoHandle = log.Writer()
 		warnHandle = log.Writer()
 	}
 
