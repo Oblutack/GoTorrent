@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"github.com/Oblutack/GoTorrent/internal/logger"
 	"net"
 	"os"
 	"path/filepath"
@@ -58,6 +58,12 @@ type TorrentSession struct {
 
 	mu           sync.Mutex
 	ActivePieces map[uint32]*PieceWork
+
+	muDownloaded      sync.Mutex 
+	bytesDownloaded   int64      
+	lastSampledTime   time.Time
+	lastSampledBytes  int64
+	currentSpeedBps   float64 
 }
 
 type pieceRarity struct {
@@ -70,13 +76,19 @@ func New(metaInfo *metainfo.MetaInfo, listenPort uint16, downloadDir string) (*T
 	if err != nil {
 		return nil, err
 	}
-	log.Printf("Generated Peer ID (first 8 chars): %s (hex: %x)\n", string(peerID[:8]), peerID)
+	logger.Logf("Generated Peer ID (first 8 chars): %s (hex: %x)\n", string(peerID[:8]), peerID)
 
 	numPieces := len(metaInfo.PieceHashes)
 	trackerReq := tracker.TrackerRequest{
-		InfoHash: metaInfo.InfoHash, PeerID: peerID, Port: listenPort,
-		Uploaded: 0, Downloaded: 0, Left: metaInfo.TotalLength,
-		Compact: 1, Event: "started", NumWant: 50,
+		InfoHash:   metaInfo.InfoHash,
+		PeerID:     peerID,
+		Port:       listenPort,
+		Uploaded:   0,
+		Downloaded: 0,
+		Left:       metaInfo.TotalLength,
+		Compact:    1,
+		Event:      "started",
+		NumWant:    50,
 	}
 
 	s := &TorrentSession{
@@ -91,12 +103,13 @@ func New(metaInfo *metainfo.MetaInfo, listenPort uint16, downloadDir string) (*T
 		numPiecesInTorrent: numPieces,
 		PieceWorkQueue:     make(chan *PieceWork, numPieces),
 		Results:            make(chan *peer.PieceBlock, 100),
+		lastSampledTime: time.Now(),
 	}
 	return s, nil
 }
 
 func (s *TorrentSession) Run() error {
-	log.Println("Starting torrent session...")
+	logger.Logf("Starting torrent session...\n")
 
 	if err := s.preallocateFiles(); err != nil {
 		return fmt.Errorf("session setup failed during file pre-allocation: %w", err)
@@ -109,22 +122,84 @@ func (s *TorrentSession) Run() error {
 		return fmt.Errorf("session setup failed during tracker announce: %w", err)
 	}
 
-	log.Println("-----------------------------------------------------")
-	log.Println("Tracker Response:")
-	log.Printf("  Interval: %d seconds", trackerResponse.Interval)
-	log.Printf("  Seeders: %d, Leechers: %d", trackerResponse.Complete, trackerResponse.Incomplete)
-	log.Printf("  Received %d peers.", len(trackerResponse.Peers))
-	log.Println("-----------------------------------------------------")
+	logger.Logf("-----------------------------------------------------\n")
+	logger.Logf("Tracker Response:\n")
+	logger.Logf("  Interval: %d seconds", trackerResponse.Interval)
+	logger.Logf("  Seeders: %d, Leechers: %d", trackerResponse.Complete, trackerResponse.Incomplete)
+	logger.Logf("  Received %d peers.", len(trackerResponse.Peers))
+	logger.Logf("-----------------------------------------------------\n")
 
 	for _, peerInfo := range trackerResponse.Peers {
 		if len(s.ConnectedPeers) >= maxPeers {
 			break
 		}
-
 		go s.connectToPeer(peerInfo)
 	}
 
+	go s.displayLoop()
+	
 	return s.downloadLoop()
+}
+
+func (s *TorrentSession) displayLoop() {
+	fmt.Print("\033[?25l")
+	defer fmt.Print("\033[?25h")
+
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			s.muDownloaded.Lock()
+			now := time.Now()
+			elapsed := now.Sub(s.lastSampledTime).Seconds()
+			if elapsed > 0.5 { 
+				bytesSinceLastSample := s.bytesDownloaded - s.lastSampledBytes
+				s.currentSpeedBps = float64(bytesSinceLastSample) / elapsed
+				s.lastSampledTime = now
+				s.lastSampledBytes = s.bytesDownloaded
+			}
+			downloaded := s.TrackerRequest.Downloaded 
+			speed := s.currentSpeedBps
+			s.muDownloaded.Unlock()
+
+			totalSize := s.MetaInfo.TotalLength
+			percent := 0.0
+			if totalSize > 0 {
+				percent = (float64(downloaded) / float64(totalSize)) * 100
+			}
+
+			s.mu.Lock()
+			numPeers := len(s.ConnectedPeers)
+			s.mu.Unlock()
+
+			speedStr := fmt.Sprintf("%.2f B/s", speed)
+			if speed > 1024*1024 {
+				speedStr = fmt.Sprintf("%.2f MB/s", speed/(1024*1024))
+			} else if speed > 1024 {
+				speedStr = fmt.Sprintf("%.2f KB/s", speed/1024)
+			}
+			
+			// Formatiraj veličine
+			downloadedMB := float64(downloaded) / (1024 * 1024)
+			totalSizeMB := float64(totalSize) / (1024 * 1024)
+			
+
+			fmt.Printf("\rProgress: %.2f%% | Downloaded: %.2f/%.2f MB | Speed: %s | Peers: %d \033[K",
+				percent,
+				downloadedMB,
+				totalSizeMB,
+				speedStr,
+				numPeers)
+
+			if totalSize > 0 && downloaded >= totalSize {
+				fmt.Println() 
+				logger.Logf("Display loop finished: Download complete.\n")
+				return 
+			}
+		}
+	}
 }
 
 func (s *TorrentSession) populateWorkQueue() {
@@ -240,10 +315,10 @@ func (s *TorrentSession) readBlockFromDisk(index, begin, length uint32) ([]byte,
 }
 
 func (s *TorrentSession) connectToPeer(peerInfo tracker.PeerInfo) {
-	log.Printf("Attempting to connect and handshake with peer: %s\n", net.JoinHostPort(peerInfo.IP.String(), strconv.Itoa(int(peerInfo.Port))))
+	logger.Logf("Attempting to connect and handshake with peer: %s\n", net.JoinHostPort(peerInfo.IP.String(), strconv.Itoa(int(peerInfo.Port))))
 	client, err := peer.NewClient(peerInfo, s.MetaInfo.InfoHash, s.OurPeerID, s.numPiecesInTorrent, s.OurBitfield, s.readBlockFromDisk)
 	if err != nil {
-		log.Printf("Warning: Failed to connect or handshake with peer %s: %v\n", peerInfo.IP.String(), err)
+		logger.Logf("Warning: Failed to connect or handshake with peer %s: %v\n", peerInfo.IP.String(), err)
 		return
 	}
 
@@ -257,7 +332,7 @@ func (s *TorrentSession) connectToPeer(peerInfo tracker.PeerInfo) {
 		s.Results <- pieceBlock
 	}
 
-	log.Printf("Peer %s disconnected.", client.Conn.RemoteAddr())
+	logger.Logf("Peer %s disconnected.", client.Conn.RemoteAddr())
 
 	s.mu.Lock()
 	delete(s.ConnectedPeers, client.RemoteID)
@@ -274,9 +349,16 @@ func (s *TorrentSession) downloadLoop() error {
 			s.mu.Lock()
 			s.ActivePieces[pieceWork.Index] = pieceWork
 			s.mu.Unlock()
-			log.Printf("Piece %d moved to active work.", pieceWork.Index)
+			logger.Logf("Piece %d moved to active work.", pieceWork.Index)
 
 		case resultBlock := <-s.Results:
+			// --- POČETAK IZMENE ---
+			// Ažuriraj bajtove odmah po prijemu bloka za računanje brzine u realnom vremenu
+			s.muDownloaded.Lock()
+			s.bytesDownloaded += int64(len(resultBlock.Block))
+			s.muDownloaded.Unlock()
+			// --- KRAJ IZMENE ---
+			
 			s.mu.Lock()
 			pw, ok := s.ActivePieces[resultBlock.Index]
 			if ok {
@@ -287,13 +369,13 @@ func (s *TorrentSession) downloadLoop() error {
 						block.State = 2
 						copy(pw.Buffer[resultBlock.Begin:], resultBlock.Block)
 						pw.ReceivedBlocks++
-						log.Printf("Stored block for piece %d. Progress: %d/%d blocks.", pw.Index, pw.ReceivedBlocks, pw.TotalBlocks)
+						logger.Logf("Stored block for piece %d. Progress: %d/%d blocks.", pw.Index, pw.ReceivedBlocks, pw.TotalBlocks)
 						blockFound = true
 						break
 					}
 				}
 				if !blockFound {
-					log.Printf("Warning: Received a block that was not in 'Requested' state (or wrong offset). Piece %d, offset %d. Discarding.",
+					logger.Logf("Warning: Received a block that was not in 'Requested' state (or wrong offset). Piece %d, offset %d. Discarding.",
 						resultBlock.Index, resultBlock.Begin)
 				}
 
@@ -301,62 +383,52 @@ func (s *TorrentSession) downloadLoop() error {
 					expectedHash := s.MetaInfo.PieceHashes[pw.Index]
 					actualHash := sha1.Sum(pw.Buffer)
 					if bytes.Equal(actualHash[:], expectedHash[:]) {
-						log.Printf("========== Piece %d HASH VERIFIED! ==========\n", pw.Index)
+						logger.Logf("========== Piece %d HASH VERIFIED! ==========\n", pw.Index)
 						if err := s.writePieceToDisk(pw.Index, pw.Buffer); err != nil {
-							log.Printf("CRITICAL: Failed to write piece %d: %v. Re-queueing.", pw.Index, err)
-							for i := range pw.Blocks {
-								pw.Blocks[i].State = 0
-							}
+							logger.Logf("CRITICAL: Failed to write piece %d: %v. Re-queueing.", pw.Index, err)
+							for i := range pw.Blocks { pw.Blocks[i].State = 0 }
 							pw.ReceivedBlocks = 0
 							s.PieceWorkQueue <- pw
 						} else {
 							s.OurBitfield.SetPiece(pw.Index)
 							s.TrackerRequest.Downloaded += pw.Length
 							s.TrackerRequest.Left -= pw.Length
-							log.Printf("Updated downloaded/left: %d/%d", s.TrackerRequest.Downloaded, s.TrackerRequest.Left)
-
-							log.Printf("Sending HAVE message for piece %d to all connected peers.", pw.Index)
+							logger.Logf("Updated downloaded/left: %d/%d", s.TrackerRequest.Downloaded, s.TrackerRequest.Left)
+							logger.Logf("Sending HAVE message for piece %d to all connected peers.", pw.Index)
 							for _, peerClient := range s.ConnectedPeers {
 								if err := peerClient.SendHave(pw.Index); err != nil {
-									log.Printf("Warning: Failed to send HAVE for piece %d to peer %s: %v",
+									logger.Logf("Warning: Failed to send HAVE for piece %d to peer %s: %v",
 										pw.Index, peerClient.Conn.RemoteAddr(), err)
 								}
 							}
 						}
 					} else {
-						log.Printf("!!!!!!!! Piece %d HASH MISMATCH! Re-queueing. !!!!!!!!\n", pw.Index)
-						for i := range pw.Blocks {
-							pw.Blocks[i].State = 0
-						}
+						logger.Logf("!!!!!!!! Piece %d HASH MISMATCH! Re-queueing. !!!!!!!!\n", pw.Index)
+						for i := range pw.Blocks { pw.Blocks[i].State = 0 }
 						pw.ReceivedBlocks = 0
 						s.PieceWorkQueue <- pw
 					}
 					delete(s.ActivePieces, pw.Index)
-
 				}
 			} else {
-				log.Printf("Received a block for a non-active piece index %d. Discarding.", resultBlock.Index)
+				logger.Logf("Received a block for a non-active piece index %d. Discarding.", resultBlock.Index)
 			}
 			s.mu.Unlock()
 
 		case <-ticker.C:
 			s.mu.Lock()
-
 			for _, pw := range s.ActivePieces {
 				for i := range pw.Blocks {
 					block := &pw.Blocks[i]
 					if block.State == 1 && time.Since(block.RequestedAt) > blockRequestTimeout {
-						log.Printf("TIMEOUT for block offset %d of piece %d. Re-queueing.", block.Offset, pw.Index)
+						logger.Logf("TIMEOUT for block offset %d of piece %d. Re-queueing.", block.Offset, pw.Index)
 						block.State = 0
 					}
 				}
 			}
-
 			rarityMap := make(map[uint32]int)
 			for index := range s.ActivePieces {
-				if s.OurBitfield.HasPiece(index) {
-					continue
-				}
+				if s.OurBitfield.HasPiece(index) { continue }
 				count := 0
 				for _, peerClient := range s.ConnectedPeers {
 					if peerClient.Bitfield.HasPiece(index) {
@@ -365,22 +437,16 @@ func (s *TorrentSession) downloadLoop() error {
 				}
 				rarityMap[index] = count
 			}
-
 			raritySlice := make([]pieceRarity, 0, len(rarityMap))
 			for index, count := range rarityMap {
 				raritySlice = append(raritySlice, pieceRarity{Index: index, Rarity: count})
 			}
-
 			sort.Slice(raritySlice, func(i, j int) bool {
 				return raritySlice[i].Rarity < raritySlice[j].Rarity
 			})
-
 			for _, piece := range raritySlice {
 				pw, ok := s.ActivePieces[piece.Index]
-				if !ok {
-					continue
-				}
-
+				if !ok { continue }
 				for _, peerClient := range s.ConnectedPeers {
 					if !peerClient.Choked && peerClient.Bitfield.HasPiece(pw.Index) {
 						for i := range pw.Blocks {
@@ -389,9 +455,8 @@ func (s *TorrentSession) downloadLoop() error {
 								if len(peerClient.WorkQueue) < cap(peerClient.WorkQueue) {
 									block.State = 1
 									block.RequestedAt = time.Now()
-									log.Printf("RAREST-FIRST: Assigning (rarity %d) block %d of piece %d to peer %s",
+									logger.Logf("RAREST-FIRST: Assigning (rarity %d) block %d of piece %d to peer %s",
 										piece.Rarity, block.Offset, pw.Index, peerClient.Conn.RemoteAddr())
-
 									peerClient.WorkQueue <- &peer.BlockRequest{Index: pw.Index, Begin: block.Offset, Length: block.Length}
 								}
 							}
@@ -403,19 +468,19 @@ func (s *TorrentSession) downloadLoop() error {
 		}
 	}
 
-	log.Println("Download complete!")
+	logger.Logf("Download complete!\n")
 	return nil
 }
 
 func (s *TorrentSession) preallocateFiles() error {
-	log.Printf("Preparing download directory: %s\n", s.DownloadDir)
+	logger.Logf("Preparing download directory: %s\n", s.DownloadDir)
 	if err := os.MkdirAll(s.DownloadDir, 0755); err != nil {
 		return fmt.Errorf("failed to create download directory %s: %w", s.DownloadDir, err)
 	}
 
 	if len(s.MetaInfo.Info.Files) > 0 {
 		torrentBaseDir := filepath.Join(s.DownloadDir, s.MetaInfo.Info.Name)
-		log.Printf("Multi-file torrent. Base directory: %s\n", torrentBaseDir)
+		logger.Logf("Multi-file torrent. Base directory: %s\n", torrentBaseDir)
 		if err := os.MkdirAll(torrentBaseDir, 0755); err != nil {
 			return fmt.Errorf("failed to create base torrent directory %s: %w", torrentBaseDir, err)
 		}
@@ -425,7 +490,7 @@ func (s *TorrentSession) preallocateFiles() error {
 			if err := os.MkdirAll(filepath.Dir(fullFilePath), 0755); err != nil {
 				return fmt.Errorf("failed to create subdirectory for %s: %w", fullFilePath, err)
 			}
-			log.Printf("Pre-allocating file: %s (size: %d bytes)\n", fullFilePath, fileInfo.Length)
+			logger.Logf("Pre-allocating file: %s (size: %d bytes)\n", fullFilePath, fileInfo.Length)
 			file, err := os.OpenFile(fullFilePath, os.O_CREATE|os.O_RDWR, 0644)
 			if err != nil {
 				return fmt.Errorf("failed to create/open file %s: %w", fullFilePath, err)
@@ -440,7 +505,7 @@ func (s *TorrentSession) preallocateFiles() error {
 		}
 	} else {
 		fullFilePath := filepath.Join(s.DownloadDir, s.MetaInfo.Info.Name)
-		log.Printf("Single-file torrent. File: %s (size: %d bytes)\n", fullFilePath, s.MetaInfo.Info.Length)
+		logger.Logf("Single-file torrent. File: %s (size: %d bytes)\n", fullFilePath, s.MetaInfo.Info.Length)
 		file, err := os.OpenFile(fullFilePath, os.O_CREATE|os.O_RDWR, 0644)
 		if err != nil {
 			return fmt.Errorf("failed to create/open file %s: %w", fullFilePath, err)
@@ -453,12 +518,12 @@ func (s *TorrentSession) preallocateFiles() error {
 			return fmt.Errorf("failed to close file %s: %w", fullFilePath, err)
 		}
 	}
-	log.Println("File pre-allocation complete.")
+	logger.Logf("File pre-allocation complete.\n")
 	return nil
 }
 
 func (s *TorrentSession) announceToTrackers() (*tracker.TrackerResponse, error) {
-	log.Println("Attempting to announce to tracker(s)...")
+	logger.Logf("Attempting to announce to tracker(s)...\n")
 
 	var httpAnnounceURLs []string
 	if s.MetaInfo.Announce != "" && (strings.HasPrefix(s.MetaInfo.Announce, "http://") || strings.HasPrefix(s.MetaInfo.Announce, "https://")) {
@@ -478,7 +543,7 @@ func (s *TorrentSession) announceToTrackers() (*tracker.TrackerResponse, error) 
 					httpAnnounceURLs = append(httpAnnounceURLs, trackerURL)
 				}
 			} else {
-				log.Printf("Skipping non-HTTP(S) tracker: %s\n", trackerURL)
+				logger.Logf("Skipping non-HTTP(S) tracker: %s\n", trackerURL)
 			}
 		}
 	}
@@ -489,19 +554,19 @@ func (s *TorrentSession) announceToTrackers() (*tracker.TrackerResponse, error) 
 	var trackerResponse *tracker.TrackerResponse
 	var lastAnnounceErr error
 	for _, announceURL := range httpAnnounceURLs {
-		log.Printf("Announcing to: %s\n", announceURL)
+		logger.Logf("Announcing to: %s\n", announceURL)
 		currentResponse, err := tracker.Announce(announceURL, s.TrackerRequest)
 		if err != nil {
-			log.Printf("Warning: Failed to announce to %s: %v\n", announceURL, err)
+			logger.Logf("Warning: Failed to announce to %s: %v\n", announceURL, err)
 			lastAnnounceErr = err
 			continue
 		}
 		if currentResponse.FailureReason != "" {
-			log.Printf("Tracker at %s returned failure: %s\n", announceURL, currentResponse.FailureReason)
+			logger.Logf("Tracker at %s returned failure: %s\n", announceURL, currentResponse.FailureReason)
 			lastAnnounceErr = fmt.Errorf("tracker failure at %s: %s", announceURL, currentResponse.FailureReason)
 			continue
 		}
-		log.Printf("Successfully received response from: %s\n", announceURL)
+		logger.Logf("Successfully received response from: %s\n", announceURL)
 		trackerResponse = currentResponse
 		break
 	}
@@ -512,7 +577,7 @@ func (s *TorrentSession) announceToTrackers() (*tracker.TrackerResponse, error) 
 }
 
 func (s *TorrentSession) writePieceToDisk(pieceIndex uint32, pieceBuffer []byte) error {
-	log.Printf("Attempting to write piece %d to disk...\n", pieceIndex)
+	logger.Logf("Attempting to write piece %d to disk...\n", pieceIndex)
 	pieceOffsetInTorrent := int64(pieceIndex) * s.MetaInfo.Info.PieceLength
 	bytesToWrite := pieceBuffer
 
@@ -552,7 +617,7 @@ func (s *TorrentSession) writePieceToDisk(pieceIndex uint32, pieceBuffer []byte)
 				return fmt.Errorf("writing to file %s: %w", fullFilePath, err)
 			}
 
-			log.Printf("Wrote %d bytes of piece %d to %s\n", n, pieceIndex, fullFilePath)
+			logger.Logf("Wrote %d bytes of piece %d to %s\n", n, pieceIndex, fullFilePath)
 			bytesToWrite = bytesToWrite[n:]
 			pieceOffsetInTorrent = 0
 		}
@@ -574,7 +639,7 @@ func (s *TorrentSession) writePieceToDisk(pieceIndex uint32, pieceBuffer []byte)
 		if err != nil {
 			return fmt.Errorf("writing to file %s: %w", fullFilePath, err)
 		}
-		log.Printf("Wrote %d bytes of piece %d to %s\n", n, pieceIndex, fullFilePath)
+		logger.Logf("Wrote %d bytes of piece %d to %s\n", n, pieceIndex, fullFilePath)
 	}
 	return nil
 }
