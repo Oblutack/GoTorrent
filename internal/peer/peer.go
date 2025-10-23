@@ -18,6 +18,8 @@ const (
 	protocolStringLen = byte(len(ProtocolString))
 	handshakeTimeout  = 10 * time.Second
 	readTimeout       = 5 * time.Second
+
+	PipelineSize = 50
 )
 
 // Handshake represents the initial handshake message.
@@ -145,7 +147,7 @@ func NewClient(peerInfo tracker.PeerInfo, infoHash, ourID [20]byte, numPiecesInT
 		Choked:             true,
 		Bitfield:           NewBitfield(numPiecesInTorrent),
 		numPiecesInTorrent: numPiecesInTorrent,
-		WorkQueue:          make(chan *BlockRequest, 5),
+		WorkQueue:          make(chan *BlockRequest, PipelineSize),
 		Results:            make(chan *PieceBlock),
 		ourBitfield:        ourBitfield,
 		readBlockFromDisk:  readBlockFunc,
