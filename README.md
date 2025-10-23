@@ -12,7 +12,8 @@
     <a href="https://github.com/Oblutack/GoTorrent/actions/workflows/go.yml">
         <img src="https://github.com/Oblutack/GoTorrent/actions/workflows/go.yml/badge.svg" alt="Build Status">
     </a>
-    
+    <a href="https://goreportcard.com/report/github.com/Oblutack/GoTorrent">
+        <img src="https://goreportcard.com/badge/github.com/Oblutack/GoTorrent" alt="Go Report Card">
     </a>
     <a href="https://github.com/Oblutack/GoTorrent/blob/main/LICENSE">
         <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT">
