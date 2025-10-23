@@ -1,8 +1,25 @@
----
-
 # GoTorrent
-
----
+    
+<p align="center">
+  <!-- Ažurirani link do tvog logo.png fajla u assets folderu -->
+  <img src="https://raw.githubusercontent.com/Oblutack/GoTorrent/main/assets/logo.png" alt="GoTorrent Logo" width="300"/>
+</p>
+<p align="center">
+  <em>An educational, command-line BitTorrent client written from scratch in Go.</em>
+</p>
+<p align="center">
+    <!-- Linkovi za bedževe su već bili ispravni, samo potvrđujemo -->
+    <a href="https://github.com/Oblutack/GoTorrent/actions/workflows/go.yml">
+        <img src="https://github.com/Oblutack/GoTorrent/actions/workflows/go.yml/badge.svg" alt="Build Status">
+    </a>
+    <a href="https://goreportcard.com/report/github.com/Oblutack/GoTorrent">
+        <img src="https://goreportcard.com/badge/github.com/Oblutack/GoTorrent" alt="Go Report Card">
+    </a>
+    <a href="https://github.com/Oblutack/GoTorrent/blob/main/LICENSE">
+        <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT">
+    </a>
+    <img src="https://img.shields.io/badge/Go-1.20%2B-blue.svg" alt="Go Version">
+</p>
 
 ## About The Project
 
@@ -130,7 +147,7 @@ gottrent/
 -   [x] Clean CLI Display with Progress & Speed
 -   [x] Basic Seeding Logic
 -   [x] Download Resumption
--   [ ] **Seeding:** Advanced Choking/Unchoking Algorithm (e.g., Tit-for-Tat)
+-   [x] **Seeding:** Advanced Choking/Unchoking Algorithm (e.g., Tit-for-Tat)
 -   [ ] **UI:** Graphical User Interface using **Fyne**
 -   [ ] **Advanced Features:**
     -   [ ] UDP Tracker Support (BEP-0015)
