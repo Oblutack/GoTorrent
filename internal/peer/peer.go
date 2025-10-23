@@ -5,11 +5,11 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
-	"github.com/Oblutack/GoTorrent/internal/logger"
 	"net"
 	"strconv"
 	"time"
 
+	"github.com/Oblutack/GoTorrent/internal/logger"
 	"github.com/Oblutack/GoTorrent/internal/tracker"
 )
 
@@ -18,8 +18,7 @@ const (
 	protocolStringLen = byte(len(ProtocolString))
 	handshakeTimeout  = 10 * time.Second
 	readTimeout       = 5 * time.Second
-
-	PipelineSize = 50
+	PipelineSize      = 50
 )
 
 // Handshake represents the initial handshake message.
@@ -99,11 +98,19 @@ type Client struct {
 	InfoHash           [20]byte
 	OurID              [20]byte
 	RemoteID           [20]byte
-	Choked             bool
 	Bitfield           Bitfield
 	numPiecesInTorrent int
-	WorkQueue          chan *BlockRequest
-	Results            chan *PieceBlock
+
+	// Our state in relation to the peer
+	AmChoking    bool // True if we are choking the peer
+	AmInterested bool // True if we are interested in the peer
+
+	// Peer's state in relation to us
+	PeerChoking    bool // True if the peer is choking us
+	PeerInterested bool // True if the peer is interested in us
+
+	WorkQueue chan *BlockRequest
+	Results   chan *PieceBlock
 
 	// Dependencies injected from the session for seeding
 	ourBitfield       Bitfield
@@ -113,7 +120,7 @@ type Client struct {
 // NewClient attempts to connect to a peer and perform a handshake.
 func NewClient(peerInfo tracker.PeerInfo, infoHash, ourID [20]byte, numPiecesInTorrent int, ourBitfield Bitfield, readBlockFunc func(index, begin, length uint32) ([]byte, error)) (*Client, error) {
 	address := net.JoinHostPort(peerInfo.IP.String(), strconv.Itoa(int(peerInfo.Port)))
-	logger.Logf("peer: attempting to connect to %s", address)
+	logger.Logf("peer: attempting to connect to %s\n", address)
 	conn, err := net.DialTimeout("tcp", address, handshakeTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("peer: failed to dial %s: %w", address, err)
@@ -137,16 +144,19 @@ func NewClient(peerInfo tracker.PeerInfo, infoHash, ourID [20]byte, numPiecesInT
 		return nil, fmt.Errorf("peer: handshake InfoHash mismatch with %s. Got %x, expected %x",
 			address, peerHandshake.InfoHash, infoHash)
 	}
-	logger.Logf("peer: handshake successful with %s (PeerID: %x)", address, peerHandshake.PeerID)
+	logger.Logf("peer: handshake successful with %s (PeerID: %x)\n", address, peerHandshake.PeerID)
 
 	return &Client{
 		Conn:               conn,
 		InfoHash:           infoHash,
 		OurID:              ourID,
 		RemoteID:           peerHandshake.PeerID,
-		Choked:             true,
 		Bitfield:           NewBitfield(numPiecesInTorrent),
 		numPiecesInTorrent: numPiecesInTorrent,
+		AmChoking:          true,  // We start by choking the peer
+		AmInterested:       false, // We are not interested yet
+		PeerChoking:        true,  // Assume peer is choking us initially
+		PeerInterested:     false, // Assume peer is not interested initially
 		WorkQueue:          make(chan *BlockRequest, PipelineSize),
 		Results:            make(chan *PieceBlock),
 		ourBitfield:        ourBitfield,
@@ -159,17 +169,17 @@ func (c *Client) Run() {
 	defer c.Conn.Close()
 	defer close(c.Results)
 
-	logger.Logf("Starting communication loop for peer %s", c.Conn.RemoteAddr())
+	logger.Logf("Starting communication loop for peer %s\n", c.Conn.RemoteAddr())
 
 	if err := c.SendInterested(); err != nil {
-		logger.Logf("Error sending Interested to %s: %v", c.Conn.RemoteAddr(), err)
+		logger.Logf("Error sending Interested to %s: %v\n", c.Conn.RemoteAddr(), err)
 		return
 	}
 
 	for {
 		msg, err := c.ReadMessage()
 		if err != nil {
-			logger.Logf("Error reading message from peer %s, closing connection: %v", c.Conn.RemoteAddr(), err)
+			logger.Warning.Printf("Error reading message from peer %s, closing connection: %v\n", c.Conn.RemoteAddr(), err)
 			return
 		}
 		if msg == nil {
@@ -178,11 +188,25 @@ func (c *Client) Run() {
 
 		switch msg.ID {
 		case MsgChoke:
-			c.Choked = true
-			logger.Logf("Peer %s choked us.", c.Conn.RemoteAddr())
+			c.PeerChoking = true
+			logger.Logf("Peer %s choked us.\n", c.Conn.RemoteAddr())
 		case MsgUnchoke:
-			c.Choked = false
-			logger.Logf("Peer %s unchoked us.", c.Conn.RemoteAddr())
+			c.PeerChoking = false
+			logger.Logf("Peer %s unchoked us.\n", c.Conn.RemoteAddr())
+		case MsgInterested:
+			c.PeerInterested = true
+			logger.Logf("Peer %s is now interested in us.\n", c.Conn.RemoteAddr())
+			// Simple strategy: if they are interested, unchoke them.
+			// A real client would have a more complex choking algorithm.
+			if err := c.SendUnchoke(); err != nil {
+				logger.Warning.Printf("Failed to send Unchoke to %s: %v\n", c.Conn.RemoteAddr(), err)
+			} else {
+				c.AmChoking = false
+				logger.Logf("Sent Unchoke to interested peer %s.\n", c.Conn.RemoteAddr())
+			}
+		case MsgNotInterested:
+			c.PeerInterested = false
+			logger.Logf("Peer %s is no longer interested in us.\n", c.Conn.RemoteAddr())
 		case MsgHave:
 			var havePayload MsgHavePayload
 			if err := havePayload.Parse(msg.Payload); err == nil {
@@ -206,42 +230,45 @@ func (c *Client) Run() {
 		case MsgRequest:
 			var reqPayload MsgRequestPayload
 			if err := reqPayload.Parse(msg.Payload); err == nil {
-				logger.Logf("Peer %s requested piece %d, offset %d, length %d",
+				logger.Logf("Peer %s requested piece %d, offset %d, length %d\n",
 					c.Conn.RemoteAddr(), reqPayload.Index, reqPayload.Begin, reqPayload.Length)
 
-				if c.ourBitfield.HasPiece(reqPayload.Index) {
+				// Respond to request if we have the piece and we are not choking them
+				if c.ourBitfield.HasPiece(reqPayload.Index) && !c.AmChoking {
 					blockData, err := c.readBlockFromDisk(reqPayload.Index, reqPayload.Begin, reqPayload.Length)
 					if err != nil {
-						logger.Logf("Error reading block from disk for peer request: %v", err)
+						logger.Error.Printf("Error reading block from disk for peer request: %v\n", err)
 					} else {
 						err := c.SendPiece(reqPayload.Index, reqPayload.Begin, blockData)
 						if err != nil {
-							logger.Logf("Error sending Piece message to peer %s: %v", c.Conn.RemoteAddr(), err)
+							logger.Warning.Printf("Error sending Piece message to peer %s: %v\n", c.Conn.RemoteAddr(), err)
 						} else {
-							logger.Logf("Sent piece %d, block offset %d to peer %s",
+							logger.Logf("Sent piece %d, block offset %d to peer %s\n",
 								reqPayload.Index, reqPayload.Begin, c.Conn.RemoteAddr())
-							// TODO: Update Uploaded stats
+							// TODO: Update Uploaded stats for session
 						}
 					}
 				} else {
-					logger.Logf("Peer %s requested piece %d which we don't have.", c.Conn.RemoteAddr(), reqPayload.Index)
+					logger.Logf("Ignoring request from peer %s for piece %d (we don't have it or we are choking them).\n",
+						c.Conn.RemoteAddr(), reqPayload.Index)
 				}
 			} else {
-				logger.Logf("Error parsing Request message from peer %s: %v", c.Conn.RemoteAddr(), err)
+				logger.Warning.Printf("Error parsing Request message from peer %s: %v\n", c.Conn.RemoteAddr(), err)
 			}
 		} // End switch
 
-		if !c.Choked {
+		// Logic to send block requests from our work queue
+		if !c.PeerChoking { // Check if the PEER is not choking US
 			select {
 			case work := <-c.WorkQueue:
 				if c.Bitfield.HasPiece(work.Index) {
 					err := c.SendRequest(work.Index, work.Begin, work.Length)
 					if err != nil {
-						logger.Logf("Peer %s: failed to send request: %v", c.Conn.RemoteAddr(), err)
+						logger.Warning.Printf("Peer %s: failed to send request: %v\n", c.Conn.RemoteAddr(), err)
 						// TODO: Put work back in the main session's queue.
 					}
 				} else {
-					logger.Logf("Peer %s: was assigned work for piece %d it doesn't have.", c.Conn.RemoteAddr(), work.Index)
+					logger.Logf("Peer %s: was assigned work for piece %d it doesn't have.\n", c.Conn.RemoteAddr(), work.Index)
 					// TODO: Put work back in the main session's queue.
 				}
 			default:
@@ -269,18 +296,21 @@ func (c *Client) ReadMessage() (*Message, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	length := binary.BigEndian.Uint32(lengthPrefix)
 	if length == 0 {
-		return nil, nil // Keep-alive
+		return nil, nil
 	}
-	if length > 1024*1024*2 { // 2MB sanity check
+	if length > 1024*1024*2 {
 		return nil, fmt.Errorf("message length %d too large", length)
 	}
+
 	messageBytes := make([]byte, length)
 	_, err = io.ReadFull(c.Conn, messageBytes)
 	if err != nil {
 		return nil, err
 	}
+
 	return &Message{
 		ID:      MessageID(messageBytes[0]),
 		Payload: messageBytes[1:],
@@ -298,10 +328,16 @@ func (c *Client) SendMessage(id MessageID, payload []byte) error {
 }
 
 // Helper methods for sending specific messages
-func (c *Client) SendInterested() error    { return c.SendMessage(MsgInterested, nil) }
-func (c *Client) SendNotInterested() error { return c.SendMessage(MsgNotInterested, nil) }
+func (c *Client) SendInterested() error {
+	c.AmInterested = true
+	return c.SendMessage(MsgInterested, nil)
+}
+func (c *Client) SendNotInterested() error {
+	c.AmInterested = false
+	return c.SendMessage(MsgNotInterested, nil)
+}
 func (c *Client) SendHave(pieceIndex uint32) error {
-	logger.Logf("Sending HAVE for piece %d to %s", pieceIndex, c.Conn.RemoteAddr())
+	logger.Logf("Sending HAVE for piece %d to %s\n", pieceIndex, c.Conn.RemoteAddr())
 	payload := MsgHavePayload{PieceIndex: pieceIndex}
 	return c.SendMessage(MsgHave, payload.Serialize())
 }
@@ -312,4 +348,12 @@ func (c *Client) SendRequest(index, begin, length uint32) error {
 func (c *Client) SendPiece(index, begin uint32, block []byte) error {
 	payload := MsgPiecePayload{Index: index, Begin: begin, Block: block}
 	return c.SendMessage(MsgPiece, payload.Serialize())
+}
+func (c *Client) SendChoke() error {
+	c.AmChoking = true
+	return c.SendMessage(MsgChoke, nil)
+}
+func (c *Client) SendUnchoke() error {
+	c.AmChoking = false
+	return c.SendMessage(MsgUnchoke, nil)
 }

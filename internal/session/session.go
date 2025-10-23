@@ -227,6 +227,7 @@ func (s *TorrentSession) Run() error {
 
 	go s.displayLoop()
 	go s.trackerLoop()
+	go s.chokingLoop()
 
 	return s.downloadLoop()
 }
@@ -567,7 +568,7 @@ func (s *TorrentSession) downloadLoop() error {
 
 				// Find the first available peer that has this piece and assign this ONE block
 				for _, peerClient := range s.ConnectedPeers {
-					if !peerClient.Choked && peerClient.Bitfield.HasPiece(pw.Index) {
+					if !peerClient.PeerChoking && peerClient.Bitfield.HasPiece(pw.Index) {
 						if len(peerClient.WorkQueue) < cap(peerClient.WorkQueue) {
 							// This peer is a good candidate! Assign the job.
 							block.State = 1 // Mark as 'Requested'
@@ -859,4 +860,62 @@ func (s *TorrentSession) writePieceToDisk(pieceIndex uint32, pieceBuffer []byte)
 		logger.Logf("Wrote %d bytes of piece %d to %s\n", n, pieceIndex, fullFilePath)
 	}
 	return nil
+}
+
+func (s *TorrentSession) chokingLoop() {
+	const unchokeSlots = 4 // Koliko peerova unchoke-ujemo istovremeno
+
+	// Ticker koji se aktivira svakih 10 sekundi za ponovnu procenu
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			s.mu.Lock()
+
+			// Napravi listu zainteresovanih peerova
+			interestedPeers := make([]*peer.Client, 0)
+			for _, peerClient := range s.ConnectedPeers {
+				if peerClient.PeerInterested {
+					interestedPeers = append(interestedPeers, peerClient)
+				}
+			}
+
+			// TODO: Implementirati sortiranje po brzini uploada za pravi Tit-for-Tat.
+			// Za sada, samo uzimamo prvih N.
+
+			unchokedCount := 0
+			// Prođi kroz sve konektovane peerove i odluči koga choke/unchoke
+			for _, peerClient := range s.ConnectedPeers {
+				// Da li je ovaj peer u listi onih koje treba da unchoke-ujemo?
+				shouldUnchoke := false
+				if peerClient.PeerInterested && unchokedCount < unchokeSlots {
+					shouldUnchoke = true
+					unchokedCount++
+				}
+
+				if shouldUnchoke && peerClient.AmChoking {
+					// Bili smo ga choke-ovali, a sada treba da ga unchoke-ujemo
+					peerClient.AmChoking = false
+					if err := peerClient.SendUnchoke(); err != nil {
+						logger.Logf("Failed to send Unchoke to %s: %v", peerClient.Conn.RemoteAddr(), err)
+					} else {
+						logger.Logf("Optimistically unchoking peer %s", peerClient.Conn.RemoteAddr())
+					}
+				} else if !shouldUnchoke && !peerClient.AmChoking {
+					// Nije u listi za unchoke, a trenutno je unchoked. Choke-uj ga.
+					peerClient.AmChoking = true
+					if err := peerClient.SendChoke(); err != nil {
+						logger.Logf("Failed to send Choke to %s: %v", peerClient.Conn.RemoteAddr(), err)
+					} else {
+						logger.Logf("Choking peer %s (no longer in top uploaders)", peerClient.Conn.RemoteAddr())
+					}
+				}
+			}
+			s.mu.Unlock()
+
+			// TODO: Quit channel
+		}
+	}
 }
