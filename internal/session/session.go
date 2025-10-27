@@ -6,10 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"os"
 	"path/filepath"
-	"strconv"
+
 	"strings"
 
 	"github.com/Oblutack/GoTorrent/internal/logger"
@@ -23,6 +22,10 @@ import (
 	"sort"
 	"sync"
 
+	"net"
+	"os/signal"
+	"strconv"
+	"syscall"
 	"time"
 )
 
@@ -183,53 +186,87 @@ func (s *TorrentSession) Run() error {
 		return fmt.Errorf("session setup failed during file pre-allocation: %w", err)
 	}
 
-	s.populateWorkQueue()
+	// Učitaj prethodno stanje i proveri da li treba uopšte preuzimati
+	if err := s.loadState(); err != nil {
+		logger.Warning.Printf("Could not load previous state: %v. Continuing fresh.\n", err)
+		s.OurBitfield = peer.NewBitfield(s.numPiecesInTorrent)
+	}
+
+	// Ako ne moramo ništa da preuzmemo, odmah idemo u seeding mod.
+	if s.TrackerRequest.Left == 0 {
+		logger.Logf("All pieces already present. Starting in seeding mode.\n")
+	} else {
+		// Ako imamo šta da preuzmemo, popuni red za posao
+		s.populateWorkQueue()
+	}
 
 	trackerResponse, err := s.announceToTrackers()
 	if err != nil {
-		return fmt.Errorf("session setup failed during tracker announce: %w", err)
-	}
-
-	// ... (ispis tracker response) ...
-
-	if len(trackerResponse.Peers) == 0 {
-		logger.Logf("No peers received from tracker. Nothing to do.\n")
-		return nil
-	}
-
-	// Connect to peers concurrently
-	for _, peerInfo := range trackerResponse.Peers {
-		s.mu.Lock()
-		numConnected := len(s.ConnectedPeers)
-		s.mu.Unlock()
-		if numConnected >= maxPeers {
-			break
+		// Čak i ako tracker ne uspe, možda možemo da seedujemo ako imamo ceo fajl
+		if s.TrackerRequest.Left > 0 {
+			return fmt.Errorf("session setup failed during tracker announce: %w", err)
 		}
-		go s.connectToPeer(peerInfo)
+		logger.Warning.Printf("Could not announce to tracker, but will proceed in seeding mode: %v\n", err)
 	}
 
-	// --- POČETAK VAŽNE IZMENE ---
-	// Sačekajmo kratko da se uspostave neke početne konekcije
-	// pre nego što počnemo sa glavnom petljom.
-	logger.Logf("Waiting for initial peer connections to establish...")
-	time.Sleep(5 * time.Second) // Sačekaj 5 sekundi
+	if trackerResponse != nil {
+		logger.Logf("-----------------------------------------------------\n")
+		logger.Logf("Tracker Response:\n")
+		logger.Logf("  Interval: %d seconds\n", trackerResponse.Interval)
+		logger.Logf("  Seeders: %d, Leechers: %d\n", trackerResponse.Complete, trackerResponse.Incomplete)
+		logger.Logf("  Received %d peers.\n", len(trackerResponse.Peers))
+		logger.Logf("-----------------------------------------------------\n")
 
-	s.mu.Lock()
-	numInitialPeers := len(s.ConnectedPeers)
-	s.mu.Unlock()
-
-	if numInitialPeers == 0 {
-		logger.Logf("Failed to establish any initial peer connections. Exiting.")
-		return errors.New("could not connect to any peers")
+		// Pokreni gorutine za povezivanje samo ako smo dobili peerove
+		if len(trackerResponse.Peers) > 0 {
+			for _, peerInfo := range trackerResponse.Peers {
+				go s.connectToPeer(peerInfo)
+			}
+		}
 	}
-	logger.Logf("Established connections with %d peers. Starting download.\n", numInitialPeers)
-	// --- KRAJ VAŽNE IZMENE ---
 
+	// Graceful shutdown setup
+	interruptChan := make(chan os.Signal, 1)
+	signal.Notify(interruptChan, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-interruptChan
+		logger.Logf("\nShutdown signal received. Saving state and stopping...\n")
+
+		if err := s.saveState(); err != nil {
+			logger.Error.Printf("Error saving state on exit: %v\n", err)
+		}
+
+		s.TrackerRequest.Event = "stopped"
+		_, err := s.announceToTrackers()
+		if err != nil {
+			logger.Warning.Printf("Failed to send 'stopped' event to tracker: %v\n", err)
+		}
+		os.Exit(0)
+	}()
+
+	// Pokreni pozadinske gorutine
 	go s.displayLoop()
 	go s.trackerLoop()
 	go s.chokingLoop()
 
-	return s.downloadLoop()
+	// Pokreni glavnu download petlju samo ako ima šta da se preuzme
+	if s.TrackerRequest.Left > 0 {
+		err = s.downloadLoop()
+		if err != nil {
+			logger.Error.Printf("Download loop finished with error: %v\n", err)
+		}
+		logger.Logf("\nDownload complete.\n")
+		// Nakon završetka preuzimanja, obavesti tracker
+		s.TrackerRequest.Event = "completed"
+		go s.announceToTrackers()
+		s.TrackerRequest.Event = ""
+	}
+
+	// Bilo da smo završili preuzimanje ili smo počeli kao seeder, ulazimo u seeding petlju
+	logger.Logf("Entering seeding mode. Press Ctrl-C to exit.\n")
+
+	// Blokiraj zauvek dok Ctrl+C ne prekine program
+	select {}
 }
 
 func (s *TorrentSession) displayLoop() {
@@ -333,8 +370,9 @@ func (s *TorrentSession) trackerLoop() {
 			s.mu.Unlock()
 
 			if left == 0 {
-				logger.Logf("Download complete. Stopping tracker loop.\n")
-				return
+				// Ako smo u seeding modu, periodično obaveštavaj trackera, ali ne moramo prestajati.
+				// Opciono, ovde se može zaustaviti ticker ako ne želimo da re-announce-ujemo dok seedujemo.
+				// Za sada, neka nastavi.
 			}
 
 			s.TrackerRequest.Event = ""
@@ -360,12 +398,10 @@ func (s *TorrentSession) trackerLoop() {
 				if len(s.ConnectedPeers) >= maxPeers {
 					break
 				}
-				// TODO: Check if already connected to this peer before launching goroutine
+				// Poziv sa samo jednim argumentom
 				go s.connectToPeer(peerInfo)
 			}
 			s.mu.Unlock()
-
-			// TODO: Add a quit channel for graceful shutdown
 		}
 	}
 }
@@ -485,112 +521,35 @@ func (s *TorrentSession) readBlockFromDisk(index, begin, length uint32) ([]byte,
 func (s *TorrentSession) connectToPeer(peerInfo tracker.PeerInfo) {
 	logger.Logf("Attempting to connect and handshake with peer: %s\n", net.JoinHostPort(peerInfo.IP.String(), strconv.Itoa(int(peerInfo.Port))))
 
-	// Pass our bitfield and the disk reading method to the new peer client
 	client, err := peer.NewClient(peerInfo, s.MetaInfo.InfoHash, s.OurPeerID, s.numPiecesInTorrent, s.OurBitfield, s.readBlockFromDisk)
 	if err != nil {
 		logger.Warning.Printf("Failed to connect or handshake with peer %s: %v\n", peerInfo.IP.String(), err)
 		return
 	}
 
-	// Add the new client to our map of connected peers (thread-safe)
 	s.mu.Lock()
 	s.ConnectedPeers[client.RemoteID] = client
 	s.mu.Unlock()
 
-	// Start the main communication loop for this peer in its own goroutine
 	go client.Run()
 
-	// This loop forwards downloaded blocks from the peer's Results channel
-	// to the session's main Results channel.
 	for pieceBlock := range client.Results {
 		s.Results <- pieceBlock
 	}
 
-	// This part is reached when the client.Results channel is closed (i.e., when client.Run() exits).
 	logger.Logf("Peer %s disconnected.\n", client.Conn.RemoteAddr())
 
-	// Remove the peer from our map (thread-safe)
 	s.mu.Lock()
 	delete(s.ConnectedPeers, client.RemoteID)
 	s.mu.Unlock()
 }
 
 func (s *TorrentSession) downloadLoop() error {
-	// Ticker for periodic tasks like checking for timeouts.
-	timeoutTicker := time.NewTicker(10 * time.Second)
-	defer timeoutTicker.Stop()
+	// Ticker for periodic tasks like checking for timeouts and assigning work.
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
 
 	for s.TrackerRequest.Left > 0 {
-
-		// --- Aggressive Work Assignment (New Strategy) ---
-		// This logic runs in every iteration, ensuring any free pipeline
-		// slot is filled as quickly as possible by distributing blocks
-		// across all available peers.
-		s.mu.Lock()
-
-		// 1. Calculate rarity of all active, needed pieces
-		rarityMap := make(map[uint32]int)
-		for index := range s.ActivePieces {
-			if s.OurBitfield.HasPiece(index) {
-				continue
-			}
-			count := 0
-			for _, peerClient := range s.ConnectedPeers {
-				if peerClient.Bitfield.HasPiece(index) {
-					count++
-				}
-			}
-			rarityMap[index] = count
-		}
-		// 2. Create and sort slice from rarest to most common
-		raritySlice := make([]pieceRarity, 0, len(rarityMap))
-		for index, count := range rarityMap {
-			raritySlice = append(raritySlice, pieceRarity{Index: index, Rarity: count})
-		}
-		sort.Slice(raritySlice, func(i, j int) bool {
-			return raritySlice[i].Rarity < raritySlice[j].Rarity
-		})
-
-		// 3. Distribute blocks from the rarest pieces across all available peers
-		for _, piece := range raritySlice {
-			pw, ok := s.ActivePieces[piece.Index]
-			if !ok {
-				continue
-			} // Piece might have been completed
-
-			// Iterate through the blocks of this piece
-			for i := range pw.Blocks {
-				block := &pw.Blocks[i]
-
-				if block.State != 0 { // State 0 = Needed
-					continue // This block is already requested or received
-				}
-
-				// Find the first available peer that has this piece and assign this ONE block
-				for _, peerClient := range s.ConnectedPeers {
-					if !peerClient.PeerChoking && peerClient.Bitfield.HasPiece(pw.Index) {
-						if len(peerClient.WorkQueue) < cap(peerClient.WorkQueue) {
-							// This peer is a good candidate! Assign the job.
-							block.State = 1 // Mark as 'Requested'
-							block.RequestedAt = time.Now()
-							logger.Logf("Assigning (rarity %d) block %d of piece %d to peer %s\n",
-								piece.Rarity, block.Offset, pw.Index, peerClient.Conn.RemoteAddr())
-
-							peerClient.WorkQueue <- &peer.BlockRequest{Index: pw.Index, Begin: block.Offset, Length: block.Length}
-
-							// After assigning one block, break from the peer loop and move to the next block
-							goto nextBlockInPiece
-						}
-					}
-				} // End of peer loop for this block
-			nextBlockInPiece:
-			} // End of block loop for this piece
-		} // End of piece loop
-		s.mu.Unlock()
-
-		// Now, wait for events on the channels. If no events, loop will spin,
-		// but work assignment logic above will not assign more work than pipelines can handle.
-		// A small timeout here prevents 100% CPU usage if there are no events at all.
 		select {
 		case pieceWork := <-s.PieceWorkQueue:
 			s.mu.Lock()
@@ -660,9 +619,11 @@ func (s *TorrentSession) downloadLoop() error {
 			}
 			s.mu.Unlock()
 
-		case <-timeoutTicker.C:
-			// Handle timed out block requests
+		case <-ticker.C:
+			// This case runs periodically.
 			s.mu.Lock()
+
+			// 1. Check for timed out block requests
 			for _, pw := range s.ActivePieces {
 				for i := range pw.Blocks {
 					block := &pw.Blocks[i]
@@ -672,11 +633,58 @@ func (s *TorrentSession) downloadLoop() error {
 					}
 				}
 			}
-			s.mu.Unlock()
 
-		case <-time.After(50 * time.Millisecond):
-			// If no events are happening, pause briefly to prevent busy-looping at 100% CPU.
-			// This gives goroutines for peers more time to read from the network.
+			// 2. Rarest First and Work Assignment
+			rarityMap := make(map[uint32]int)
+			for index := range s.ActivePieces {
+				if s.OurBitfield.HasPiece(index) {
+					continue
+				}
+				count := 0
+				for _, peerClient := range s.ConnectedPeers {
+					if peerClient.Bitfield.HasPiece(index) {
+						count++
+					}
+				}
+				rarityMap[index] = count
+			}
+			raritySlice := make([]pieceRarity, 0, len(rarityMap))
+			for index, count := range rarityMap {
+				raritySlice = append(raritySlice, pieceRarity{Index: index, Rarity: count})
+			}
+			sort.Slice(raritySlice, func(i, j int) bool { return raritySlice[i].Rarity < raritySlice[j].Rarity })
+
+			// 3. Distribute blocks from the rarest pieces across all available peers
+			for _, piece := range raritySlice {
+				pw, ok := s.ActivePieces[piece.Index]
+				if !ok {
+					continue
+				}
+
+				for i := range pw.Blocks {
+					block := &pw.Blocks[i]
+					if block.State != 0 {
+						continue
+					}
+
+					for _, peerClient := range s.ConnectedPeers {
+						if !peerClient.PeerChoking && peerClient.Bitfield.HasPiece(pw.Index) {
+							if len(peerClient.WorkQueue) < cap(peerClient.WorkQueue) {
+								block.State = 1
+								block.RequestedAt = time.Now()
+								logger.Logf("Assigning (rarity %d) block %d of piece %d to peer %s\n",
+									piece.Rarity, block.Offset, pw.Index, peerClient.Conn.RemoteAddr())
+
+								peerClient.WorkQueue <- &peer.BlockRequest{Index: pw.Index, Begin: block.Offset, Length: block.Length}
+
+								goto nextBlockInPiece
+							}
+						}
+					}
+				nextBlockInPiece:
+				}
+			}
+			s.mu.Unlock()
 		}
 	}
 

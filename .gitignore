@@ -24,4 +24,9 @@ go.work.sum
 # env file
 .env
 
+# State and downloaded files
+*.state
 test_folder/
+test_folder
+ubuntu-25.04-desktop-amd64.iso
+downloads/
