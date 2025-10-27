@@ -134,7 +134,8 @@ gottrent/
 
 ## Demo
 
-**Standard Mode:**
+Standard Mode:
+
 ![GoTorrent in action](assets/demo.gif)
 
 <p align="center">
