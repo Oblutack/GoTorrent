@@ -136,10 +136,10 @@ gottrent/
 
 Standard Mode:
 
-![GoTorrent in action](assets/demo.gif)
+![GoTorrent in action](assets/gif1.gif)
 
 <p align="center">
-  <em>For a more detailed, behind-the-scenes look at the P2P communication, check out the <a href="assets/demo-verbose.gif">verbose mode demo</a>.</em>
+  <em>For a more detailed, behind-the-scenes look at the P2P communication, check out the <a href="assets/gif2.gif">verbose mode demo</a>.</em>
 </p>
 
 ---
