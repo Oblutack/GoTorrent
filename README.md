@@ -132,6 +132,16 @@ gottrent/
 
 ---
 
+## Demo
+
+**Standard Mode:**
+![GoTorrent in action](assets/demo.gif)
+
+<p align="center">
+  <em>For a more detailed, behind-the-scenes look at the P2P communication, check out the <a href="assets/demo-verbose.gif">verbose mode demo</a>.</em>
+</p>
+
+---
 ## Roadmap
 
 -   [x] Custom Bencode Parser
