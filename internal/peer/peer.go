@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/Oblutack/GoTorrent/internal/logger"
@@ -18,7 +19,7 @@ const (
 	protocolStringLen = byte(len(ProtocolString))
 	handshakeTimeout  = 10 * time.Second
 	readTimeout       = 5 * time.Second
-	PipelineSize      = 20
+	PipelineSize      = 50
 )
 
 // Handshake represents the initial handshake message.
@@ -112,6 +113,8 @@ type Client struct {
 	WorkQueue chan *BlockRequest
 	Results   chan *PieceBlock
 
+	LastPieceReceived int64 // atomic unix seconds
+
 	// Dependencies injected from the session for seeding
 	ourBitfield       Bitfield
 	readBlockFromDisk func(index, begin, length uint32) ([]byte, error)
@@ -159,6 +162,7 @@ func NewClient(peerInfo tracker.PeerInfo, infoHash, ourID [20]byte, numPiecesInT
 		PeerInterested:     false, // Assume peer is not interested initially
 		WorkQueue:          make(chan *BlockRequest, PipelineSize),
 		Results:            make(chan *PieceBlock),
+		LastPieceReceived:  time.Now().Unix(),
 		ourBitfield:        ourBitfield,
 		readBlockFromDisk:  readBlockFunc,
 	}, nil
@@ -223,6 +227,7 @@ func (c *Client) Run() {
 		case MsgPiece:
 			var piecePayload MsgPiecePayload
 			if err := piecePayload.Parse(msg.Payload); err == nil {
+				atomic.StoreInt64(&c.LastPieceReceived, time.Now().Unix())
 				c.Results <- &PieceBlock{
 					Index: piecePayload.Index,
 					Begin: piecePayload.Begin,

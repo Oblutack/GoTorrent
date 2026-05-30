@@ -9,6 +9,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 
 	"strings"
 
@@ -586,7 +587,8 @@ func (s *TorrentSession) downloadLoop() error {
 					}
 				}
 				if !blockFound {
-					logger.Warning.Printf("Received unsolicited/late block for piece %d, offset %d. Discarding.\n", resultBlock.Index, resultBlock.Begin)
+					// Likely an overlapping request from our fast-snatch logic. Just discard silently.
+					// logger.Logf("Received unsolicited/late block for piece %d, offset %d. Discarding.\n", resultBlock.Index, resultBlock.Begin)
 				}
 				if pw.TotalBlocks > 0 && pw.ReceivedBlocks == pw.TotalBlocks {
 					// Offload hash & disk write to goroutine
@@ -650,6 +652,31 @@ func (s *TorrentSession) downloadLoop() error {
 
 			inEndgame := len(s.ActivePieces) < 15
 
+			// 0. Tracker rapid-re-announce if we are stuck.
+			// If we are missing pieces but have no active pieces (all connected peers don't have what we need),
+			// we should wake up the tracker Loop! We'll just do a hacky check here:
+			activePws := 0
+			for _, pw := range s.ActivePieces {
+				for i := range pw.Blocks {
+					if pw.Blocks[i].State == 1 {
+						activePws++
+						break
+					}
+				}
+			}
+
+			// If we are totally stalled despite having pieces left, and we have few peers, let's just close peers that aren't useful anymore.
+			if activePws == 0 && s.TrackerRequest.Left > 0 {
+				for _, peerClient := range s.ConnectedPeers {
+					now := time.Now().Unix()
+					// If they haven't sent a piece in 45s and we're stalled, drop them to force tracker/reconnect
+					if now-atomic.LoadInt64(&peerClient.LastPieceReceived) > 45 {
+						logger.Warning.Printf("Stalled download. Dropping inactive peer %s to find seeders.\n", peerClient.Conn.RemoteAddr())
+						peerClient.Close()
+					}
+				}
+			}
+
 			// 1. Check for timed out block requests
 			for _, pw := range s.ActivePieces {
 				for i := range pw.Blocks {
@@ -703,7 +730,14 @@ func (s *TorrentSession) downloadLoop() error {
 
 				for i := range pw.Blocks {
 					block := &pw.Blocks[i]
-					if block.State != 0 {
+					
+					// If the block is strictly completed, skip it.
+					if block.State == 2 {
+						continue
+					}
+					// If the block is currently in-flight but taking longer than 2.5 seconds,
+					// allow another peer to snatch it (overlapping/endgame strategy).
+					if block.State == 1 && time.Since(block.RequestedAt) < 2500*time.Millisecond {
 						continue
 					}
 
