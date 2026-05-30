@@ -176,6 +176,8 @@ func (c *Client) Run() {
 		return
 	}
 
+	go c.writeLoop()
+
 	for {
 		msg, err := c.ReadMessage()
 		if err != nil {
@@ -257,22 +259,28 @@ func (c *Client) Run() {
 			}
 		} // End switch
 
-		// Logic to send block requests from our work queue
-		if !c.PeerChoking { // Check if the PEER is not choking US
-			select {
-			case work := <-c.WorkQueue:
-				if c.Bitfield.HasPiece(work.Index) {
-					err := c.SendRequest(work.Index, work.Begin, work.Length)
-					if err != nil {
-						logger.Warning.Printf("Peer %s: failed to send request: %v\n", c.Conn.RemoteAddr(), err)
-						// TODO: Put work back in the main session's queue.
-					}
-				} else {
-					logger.Logf("Peer %s: was assigned work for piece %d it doesn't have.\n", c.Conn.RemoteAddr(), work.Index)
-					// TODO: Put work back in the main session's queue.
+		// In writeLoop now
+	}
+}
+
+func (c *Client) writeLoop() {
+	for work := range c.WorkQueue {
+		if c.PeerChoking {
+			time.Sleep(50 * time.Millisecond)
+			// Small sleep if choked to avoid burning CPU if we decide to re-queue
+			// But for now, we just drop the request or send it anyway?
+			// Actually session.go shouldn't send to WorkQueue if we are choked.
+			// Currently we'll just wait for the peer to unchoke.
+		}
+		
+		if !c.PeerChoking {
+			if c.Bitfield.HasPiece(work.Index) {
+				err := c.SendRequest(work.Index, work.Begin, work.Length)
+				if err != nil {
+					logger.Warning.Printf("Peer %s: failed to send request: %v\n", c.Conn.RemoteAddr(), err)
 				}
-			default:
-				// No work in queue, do nothing.
+			} else {
+				logger.Logf("Peer %s: was assigned work for piece %d it doesn't have.\n", c.Conn.RemoteAddr(), work.Index)
 			}
 		}
 	}

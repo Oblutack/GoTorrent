@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand"
 	"os"
 	"path/filepath"
 
@@ -545,9 +546,16 @@ func (s *TorrentSession) connectToPeer(peerInfo tracker.PeerInfo) {
 }
 
 func (s *TorrentSession) downloadLoop() error {
-	// Ticker for periodic tasks like checking for timeouts and assigning work.
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
+	// Ticker for timeout checks (e.g. 5 seconds)
+	timeoutTicker := time.NewTicker(5 * time.Second)
+	defer timeoutTicker.Stop()
+
+	// Ticker for work assignment (e.g. 50ms for pipelining)
+	workTicker := time.NewTicker(50 * time.Millisecond)
+	defer workTicker.Stop()
+
+	// Channel for async hash&disk ops
+	verifiedPiecesCh := make(chan *PieceWork, 100)
 
 	for s.TrackerRequest.Left > 0 {
 		select {
@@ -581,46 +589,63 @@ func (s *TorrentSession) downloadLoop() error {
 					logger.Warning.Printf("Received unsolicited/late block for piece %d, offset %d. Discarding.\n", resultBlock.Index, resultBlock.Begin)
 				}
 				if pw.TotalBlocks > 0 && pw.ReceivedBlocks == pw.TotalBlocks {
-					expectedHash := s.MetaInfo.PieceHashes[pw.Index]
-					actualHash := sha1.Sum(pw.Buffer)
-					if bytes.Equal(actualHash[:], expectedHash[:]) {
-						logger.Logf("========== Piece %d HASH VERIFIED! ==========\n", pw.Index)
-						if err := s.writePieceToDisk(pw.Index, pw.Buffer); err != nil {
-							logger.Error.Printf("CRITICAL: Failed to write piece %d: %v. Re-queueing.\n", pw.Index, err)
-							for i := range pw.Blocks {
-								pw.Blocks[i].State = 0
+					// Offload hash & disk write to goroutine
+					go func(offloadPw *PieceWork) {
+						expectedHash := s.MetaInfo.PieceHashes[offloadPw.Index]
+						actualHash := sha1.Sum(offloadPw.Buffer)
+						if bytes.Equal(actualHash[:], expectedHash[:]) {
+							if err := s.writePieceToDisk(offloadPw.Index, offloadPw.Buffer); err != nil {
+								logger.Error.Printf("CRITICAL: Failed to write piece %d: %v. Re-queueing.\n", offloadPw.Index, err)
+								offloadPw.Buffer = nil // Signal write error
+								verifiedPiecesCh <- offloadPw
+							} else {
+								verifiedPiecesCh <- offloadPw
 							}
-							pw.ReceivedBlocks = 0
-							s.PieceWorkQueue <- pw
 						} else {
-							s.OurBitfield.SetPiece(pw.Index)
-							s.TrackerRequest.Downloaded += pw.Length
-							s.TrackerRequest.Left -= pw.Length
-							logger.Logf("Updated downloaded/left: %d/%d\n", s.TrackerRequest.Downloaded, s.TrackerRequest.Left)
-							logger.Logf("Sending HAVE message for piece %d to all peers.\n", pw.Index)
-							for _, peerClient := range s.ConnectedPeers {
-								if err := peerClient.SendHave(pw.Index); err != nil {
-									logger.Warning.Printf("Failed to send HAVE: %v\n", err)
-								}
-							}
+							logger.Warning.Printf("!!!!!!!! Piece %d HASH MISMATCH! Re-queueing. !!!!!!!!\n", offloadPw.Index)
+							offloadPw.ReceivedBlocks = -1 // Signal hash mismatch
+							verifiedPiecesCh <- offloadPw
 						}
-					} else {
-						logger.Warning.Printf("!!!!!!!! Piece %d HASH MISMATCH! Re-queueing. !!!!!!!!\n", pw.Index)
-						for i := range pw.Blocks {
-							pw.Blocks[i].State = 0
-						}
-						pw.ReceivedBlocks = 0
-						s.PieceWorkQueue <- pw
-					}
-					delete(s.ActivePieces, pw.Index)
+					}(pw)
+
+					delete(s.ActivePieces, pw.Index) // Remove from active immediately
 				}
 			} else {
 				logger.Logf("Received block for non-active piece %d.\n", resultBlock.Index)
 			}
 			s.mu.Unlock()
 
-		case <-ticker.C:
-			// This case runs periodically.
+		case verifiedPw := <-verifiedPiecesCh:
+			s.mu.Lock()
+			if verifiedPw.Buffer == nil || verifiedPw.ReceivedBlocks == -1 {
+				// Re-queue
+				for i := range verifiedPw.Blocks {
+					verifiedPw.Blocks[i].State = 0
+				}
+				if verifiedPw.Buffer == nil {
+					verifiedPw.Buffer = make([]byte, verifiedPw.Length)
+				}
+				verifiedPw.ReceivedBlocks = 0
+				s.PieceWorkQueue <- verifiedPw
+			} else {
+				logger.Logf("========== Piece %d VERIFIED AND WRITTEN ==========\n", verifiedPw.Index)
+				s.OurBitfield.SetPiece(verifiedPw.Index)
+				s.TrackerRequest.Downloaded += verifiedPw.Length
+				s.TrackerRequest.Left -= verifiedPw.Length
+				logger.Logf("Updated downloaded/left: %d/%d\n", s.TrackerRequest.Downloaded, s.TrackerRequest.Left)
+				logger.Logf("Sending HAVE message for piece %d to all peers.\n", verifiedPw.Index)
+				for _, peerClient := range s.ConnectedPeers {
+					if err := peerClient.SendHave(verifiedPw.Index); err != nil {
+						logger.Warning.Printf("Failed to send HAVE: %v\n", err)
+					}
+				}
+				// Free buffer
+				verifiedPw.Buffer = nil
+			}
+			s.mu.Unlock()
+
+		case <-timeoutTicker.C:
+			// This case runs periodically for timeouts.
 			s.mu.Lock()
 
 			// 1. Check for timed out block requests
@@ -633,8 +658,11 @@ func (s *TorrentSession) downloadLoop() error {
 					}
 				}
 			}
+			s.mu.Unlock()
 
-			// 2. Rarest First and Work Assignment
+		case <-workTicker.C:
+			// Rarest First and Work Assignment
+			s.mu.Lock()
 			rarityMap := make(map[uint32]int)
 			for index := range s.ActivePieces {
 				if s.OurBitfield.HasPiece(index) {
@@ -652,7 +680,11 @@ func (s *TorrentSession) downloadLoop() error {
 			for index, count := range rarityMap {
 				raritySlice = append(raritySlice, pieceRarity{Index: index, Rarity: count})
 			}
-			sort.Slice(raritySlice, func(i, j int) bool { return raritySlice[i].Rarity < raritySlice[j].Rarity })
+			// Shuffle first to randomize ties
+			rand.Shuffle(len(raritySlice), func(i, j int) {
+				raritySlice[i], raritySlice[j] = raritySlice[j], raritySlice[i]
+			})
+			sort.SliceStable(raritySlice, func(i, j int) bool { return raritySlice[i].Rarity < raritySlice[j].Rarity })
 
 			// 3. Distribute blocks from the rarest pieces across all available peers
 			for _, piece := range raritySlice {
