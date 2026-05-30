@@ -32,7 +32,7 @@ import (
 
 const defaultBlockLength uint32 = 16384
 const maxPeers = 50
-const blockRequestTimeout = 30 * time.Second
+const blockRequestTimeout = 15 * time.Second
 
 type PieceWork struct {
 	Index          uint32
@@ -648,11 +648,17 @@ func (s *TorrentSession) downloadLoop() error {
 			// This case runs periodically for timeouts.
 			s.mu.Lock()
 
+			inEndgame := len(s.ActivePieces) < 15
+
 			// 1. Check for timed out block requests
 			for _, pw := range s.ActivePieces {
 				for i := range pw.Blocks {
 					block := &pw.Blocks[i]
-					if block.State == 1 && time.Since(block.RequestedAt) > blockRequestTimeout {
+					timeout := blockRequestTimeout
+					if inEndgame {
+						timeout = 3 * time.Second
+					}
+					if block.State == 1 && time.Since(block.RequestedAt) > timeout {
 						logger.Warning.Printf("TIMEOUT for block offset %d of piece %d. Re-queueing.\n", block.Offset, pw.Index)
 						block.State = 0 // Reset state to 'Needed'
 					}
@@ -674,7 +680,9 @@ func (s *TorrentSession) downloadLoop() error {
 						count++
 					}
 				}
-				rarityMap[index] = count
+				if count > 0 {
+					rarityMap[index] = count
+				}
 			}
 			raritySlice := make([]pieceRarity, 0, len(rarityMap))
 			for index, count := range rarityMap {

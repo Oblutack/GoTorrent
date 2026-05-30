@@ -18,7 +18,7 @@ const (
 	protocolStringLen = byte(len(ProtocolString))
 	handshakeTimeout  = 10 * time.Second
 	readTimeout       = 5 * time.Second
-	PipelineSize      = 50
+	PipelineSize      = 20
 )
 
 // Handshake represents the initial handshake message.
@@ -265,23 +265,19 @@ func (c *Client) Run() {
 
 func (c *Client) writeLoop() {
 	for work := range c.WorkQueue {
+		// If we are choked, drop the request. The session will timeout and re-request it,
+		// or we should ideally signal the session. For now, just drop it so we don't stall.
 		if c.PeerChoking {
-			time.Sleep(50 * time.Millisecond)
-			// Small sleep if choked to avoid burning CPU if we decide to re-queue
-			// But for now, we just drop the request or send it anyway?
-			// Actually session.go shouldn't send to WorkQueue if we are choked.
-			// Currently we'll just wait for the peer to unchoke.
+			continue
 		}
 		
-		if !c.PeerChoking {
-			if c.Bitfield.HasPiece(work.Index) {
-				err := c.SendRequest(work.Index, work.Begin, work.Length)
-				if err != nil {
-					logger.Warning.Printf("Peer %s: failed to send request: %v\n", c.Conn.RemoteAddr(), err)
-				}
-			} else {
-				logger.Logf("Peer %s: was assigned work for piece %d it doesn't have.\n", c.Conn.RemoteAddr(), work.Index)
+		if c.Bitfield.HasPiece(work.Index) {
+			err := c.SendRequest(work.Index, work.Begin, work.Length)
+			if err != nil {
+				logger.Warning.Printf("Peer %s: failed to send request: %v\n", c.Conn.RemoteAddr(), err)
 			}
+		} else {
+			logger.Logf("Peer %s: was assigned work for piece %d it doesn't have.\n", c.Conn.RemoteAddr(), work.Index)
 		}
 	}
 }
