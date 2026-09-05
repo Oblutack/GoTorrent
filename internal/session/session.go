@@ -1,7 +1,7 @@
 package session
 
 import (
-	"bytes"
+	"context"
 	"crypto/sha1"
 	"errors"
 	"fmt"
@@ -18,8 +18,6 @@ import (
 	"github.com/Oblutack/GoTorrent/internal/peer"
 	"github.com/Oblutack/GoTorrent/internal/storage"
 	"github.com/Oblutack/GoTorrent/internal/tracker"
-
-	"encoding/hex"
 
 	"sort"
 	"sync"
@@ -40,10 +38,16 @@ const blockRequestTimeout = 15 * time.Second
 // what keeps a 6 GB torrent from allocating 6 GB of heap at startup.
 const maxInFlightPieces = 64
 
+// defaultAnnounceInterval is used until a tracker tells us otherwise.
+const defaultAnnounceInterval = 30 * time.Minute
+
+// announceTimeout bounds one round of announces across all trackers.
+const announceTimeout = 60 * time.Second
+
 type PieceWork struct {
 	Index          uint32
 	Length         int64
-	Hash           [20]byte
+	Hash           metainfo.Hash
 	Buffer         []byte
 	Blocks         []BlockState
 	TotalBlocks    int
@@ -84,7 +88,7 @@ type TorrentSession struct {
 	// dialing tracks addresses with a connection attempt in flight, so the
 	// same peer is not dialled twice from overlapping tracker responses.
 	dialing            map[string]bool
-	TrackerRequest     tracker.TrackerRequest
+	TrackerRequest     tracker.AnnounceRequest
 	numPiecesInTorrent int
 
 	// layout is the only thing in the session allowed to turn a
@@ -106,7 +110,8 @@ type TorrentSession struct {
 	lastSampledBytes int64
 	currentSpeedBps  float64
 
-	trackerInterval int
+	trackerClient   *tracker.Client
+	trackerInterval time.Duration
 }
 
 type pieceRarity struct {
@@ -115,8 +120,7 @@ type pieceRarity struct {
 }
 
 func (s *TorrentSession) stateFilePath() string {
-	infoHashHex := hex.EncodeToString(s.MetaInfo.InfoHash[:])
-	return filepath.Join(s.DownloadDir, fmt.Sprintf(".%s.state", infoHashHex))
+	return filepath.Join(s.DownloadDir, fmt.Sprintf(".%s.state", s.MetaInfo.InfoHash))
 }
 
 // saveState writes OurBitfield to disk.
@@ -181,16 +185,16 @@ func New(metaInfo *metainfo.MetaInfo, listenPort uint16, downloadDir string) (*T
 		return nil, err
 	}
 
-	numPieces := len(metaInfo.PieceHashes)
-	trackerReq := tracker.TrackerRequest{
+	numPieces := metaInfo.NumPieces()
+	trackerReq := tracker.AnnounceRequest{
 		InfoHash:   metaInfo.InfoHash,
 		PeerID:     peerID,
 		Port:       listenPort,
 		Uploaded:   0,
 		Downloaded: 0,
 		Left:       metaInfo.TotalLength,
-		Compact:    1,
-		Event:      "started",
+		Compact:    true,
+		Event:      tracker.EventStarted,
 		NumWant:    50,
 	}
 
@@ -205,6 +209,7 @@ func New(metaInfo *metainfo.MetaInfo, listenPort uint16, downloadDir string) (*T
 		ConnectedPeers:     make(map[string]*peer.Client),
 		dialing:            make(map[string]bool),
 		TrackerRequest:     trackerReq,
+		trackerClient:      tracker.NewClient(nil),
 		numPiecesInTorrent: numPieces,
 		PieceWorkQueue:     make(chan *PieceWork, numPieces),
 		Results:            make(chan *peer.PieceBlock, 100),
@@ -220,7 +225,7 @@ func New(metaInfo *metainfo.MetaInfo, listenPort uint16, downloadDir string) (*T
 	if err := s.loadState(); err != nil {
 		logger.Logf("Warning: could not load previous state: %v. Continuing with a fresh download.", err)
 		// Reset OurBitfield in case loadState partially succeeded before failing.
-		s.OurBitfield = peer.NewBitfield(len(metaInfo.PieceHashes))
+		s.OurBitfield = peer.NewBitfield(metaInfo.NumPieces())
 	}
 
 	return s, nil
@@ -279,7 +284,7 @@ func (s *TorrentSession) Run() error {
 			logger.Error.Printf("Error saving state on exit: %v\n", err)
 		}
 
-		s.TrackerRequest.Event = "stopped"
+		s.TrackerRequest.Event = tracker.EventStopped
 		_, err := s.announceToTrackers()
 		if err != nil {
 			logger.Warning.Printf("Failed to send 'stopped' event to tracker: %v\n", err)
@@ -300,9 +305,9 @@ func (s *TorrentSession) Run() error {
 		}
 		logger.Logf("\nDownload complete.\n")
 		// Tell the tracker we finished.
-		s.TrackerRequest.Event = "completed"
+		s.TrackerRequest.Event = tracker.EventCompleted
 		go s.announceToTrackers()
-		s.TrackerRequest.Event = ""
+		s.TrackerRequest.Event = tracker.EventNone
 	}
 
 	// Whether we just finished downloading or started out complete, we end up
@@ -397,13 +402,13 @@ func (s *TorrentSession) displayLoop() {
 func (s *TorrentSession) trackerLoop() {
 	s.mu.Lock()
 	initialInterval := s.trackerInterval
-	if initialInterval == 0 {
-		initialInterval = 1800
+	if initialInterval <= 0 {
+		initialInterval = defaultAnnounceInterval
 	}
 	s.mu.Unlock()
 
-	logger.Logf("Tracker loop started. Announce interval: %d seconds.\n", initialInterval)
-	ticker := time.NewTicker(time.Duration(initialInterval) * time.Second)
+	logger.Logf("Tracker loop started. Announce interval: %s.\n", initialInterval)
+	ticker := time.NewTicker(initialInterval)
 	defer ticker.Stop()
 
 	for {
@@ -418,7 +423,7 @@ func (s *TorrentSession) trackerLoop() {
 				// ticker here instead if re-announcing as a seeder is unwanted.
 			}
 
-			s.TrackerRequest.Event = ""
+			s.TrackerRequest.Event = tracker.EventNone
 
 			logger.Logf("Re-announcing to tracker...\n")
 			trackerResponse, err := s.announceToTrackers()
@@ -432,8 +437,8 @@ func (s *TorrentSession) trackerLoop() {
 			s.mu.Unlock()
 
 			if newInterval > 0 {
-				logger.Logf("Tracker returned new interval: %d seconds.\n", newInterval)
-				ticker.Reset(time.Duration(newInterval) * time.Second)
+				logger.Logf("Tracker returned new interval: %s.\n", newInterval)
+				ticker.Reset(newInterval)
 			}
 
 			for _, peerInfo := range trackerResponse.Peers {
@@ -732,8 +737,7 @@ func (s *TorrentSession) downloadLoop() error {
 					// keeps servicing the wire while SHA-1 and I/O happen.
 					go func(offloadPw *PieceWork) {
 						expectedHash := s.MetaInfo.PieceHashes[offloadPw.Index]
-						actualHash := sha1.Sum(offloadPw.Buffer)
-						if !bytes.Equal(actualHash[:], expectedHash[:]) {
+						if metainfo.Hash(sha1.Sum(offloadPw.Buffer)) != expectedHash {
 							logger.Warning.Printf("!!!!!!!! Piece %d HASH MISMATCH! Re-queueing. !!!!!!!!\n", offloadPw.Index)
 							verifiedPiecesCh <- &pieceResult{pw: offloadPw, err: errHashMismatch}
 							return
@@ -959,64 +963,50 @@ func (s *TorrentSession) preallocateFiles() error {
 	return nil
 }
 
-func (s *TorrentSession) announceToTrackers() (*tracker.TrackerResponse, error) {
+func (s *TorrentSession) announceToTrackers() (*tracker.AnnounceResponse, error) {
 	logger.Logf("Attempting to announce to tracker(s)...")
 
-	var httpAnnounceURLs []string
-	if s.MetaInfo.Announce != "" && (strings.HasPrefix(s.MetaInfo.Announce, "http://") || strings.HasPrefix(s.MetaInfo.Announce, "https://")) {
-		httpAnnounceURLs = append(httpAnnounceURLs, s.MetaInfo.Announce)
-	}
-	for _, tier := range s.MetaInfo.AnnounceList {
-		for _, trackerURL := range tier {
-			if strings.HasPrefix(trackerURL, "http://") || strings.HasPrefix(trackerURL, "https://") {
-				isDuplicate := false
-				for _, u := range httpAnnounceURLs {
-					if u == trackerURL {
-						isDuplicate = true
-						break
-					}
-				}
-				if !isDuplicate {
-					httpAnnounceURLs = append(httpAnnounceURLs, trackerURL)
-				}
-			} else {
-				logger.Logf("Skipping non-HTTP(S) tracker: %s\n", trackerURL)
-			}
+	var announceURLs []string
+	for _, u := range s.MetaInfo.AnnounceURLs() {
+		if strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://") {
+			announceURLs = append(announceURLs, u)
+		} else {
+			logger.Logf("Skipping non-HTTP(S) tracker: %s\n", u)
 		}
 	}
-	if len(httpAnnounceURLs) == 0 {
+	if len(announceURLs) == 0 {
 		return nil, errors.New("no HTTP/HTTPS tracker announce URLs found")
 	}
 
-	var trackerResponse *tracker.TrackerResponse
-	var lastAnnounceErr error
-	for _, announceURL := range httpAnnounceURLs {
+	s.mu.Lock()
+	req := s.TrackerRequest
+	s.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), announceTimeout)
+	defer cancel()
+
+	var lastErr error
+	for _, announceURL := range announceURLs {
 		logger.Logf("Announcing to: %s\n", announceURL)
-		currentResponse, err := tracker.Announce(announceURL, s.TrackerRequest)
+		resp, err := s.trackerClient.Announce(ctx, announceURL, req)
 		if err != nil {
-			logger.Logf("Warning: Failed to announce to %s: %v\n", announceURL, err)
-			lastAnnounceErr = err
+			logger.Logf("Warning: announce to %s failed: %v\n", announceURL, err)
+			lastErr = err
 			continue
 		}
-		if currentResponse.FailureReason != "" {
-			logger.Logf("Tracker at %s returned failure: %s\n", announceURL, currentResponse.FailureReason)
-			lastAnnounceErr = fmt.Errorf("tracker failure at %s: %s", announceURL, currentResponse.FailureReason)
-			continue
+		if resp.WarningMessage != "" {
+			logger.Warning.Printf("Tracker %s: %s\n", announceURL, resp.WarningMessage)
 		}
 		logger.Logf("Successfully received response from: %s\n", announceURL)
-		trackerResponse = currentResponse
 
 		// Remember the interval for trackerLoop.
 		s.mu.Lock()
-		s.trackerInterval = trackerResponse.Interval
+		s.trackerInterval = resp.Interval
 		s.mu.Unlock()
 
-		break
+		return resp, nil
 	}
-	if trackerResponse == nil {
-		return nil, fmt.Errorf("failed to announce to any available HTTP/HTTPS tracker, last error: %w", lastAnnounceErr)
-	}
-	return trackerResponse, nil
+	return nil, fmt.Errorf("failed to announce to any HTTP/HTTPS tracker: %w", lastErr)
 }
 
 func (s *TorrentSession) writePieceToDisk(pieceIndex uint32, pieceBuffer []byte) error {

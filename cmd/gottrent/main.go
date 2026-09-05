@@ -25,7 +25,7 @@ func main() {
 	}
 
 	logger.Logf("Loading torrent file: %s\n", *torrentFilePath)
-	metaInfo, err := metainfo.LoadFromFile(*torrentFilePath)
+	metaInfo, err := metainfo.Load(*torrentFilePath)
 	if err != nil {
 		logger.Error.Fatalf("Error loading torrent file: %v\n", err)
 	}

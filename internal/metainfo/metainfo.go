@@ -1,16 +1,42 @@
+// Package metainfo parses .torrent files.
+//
+// The infohash is computed over the *raw* bytes of the info dictionary as they
+// appeared in the file, never over a re-encoding of the parsed form. Those raw
+// bytes are kept on the parsed value because BEP 9 metadata exchange has to
+// serve them to peers verbatim.
 package metainfo
 
 import (
-	"bytes"
 	"crypto/sha1"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 
-	"github.com/Oblutack/GoTorrent/internal/gobencode"
+	"github.com/Oblutack/GoTorrent/internal/bencode"
 )
 
+const (
+	// MinPieceLength / MaxPieceLength bound plausible torrent geometry. 16 KiB
+	// is the block size, so nothing smaller makes sense; 64 MiB is far above
+	// what any real client produces. Rejecting outside this range stops a
+	// malformed or hostile torrent from driving absurd allocations downstream.
+	MinPieceLength = 16 * 1024
+	MaxPieceLength = 64 * 1024 * 1024
+
+	// MaxPieces bounds the piece count. At 16 KiB pieces this still allows a
+	// 64 GiB torrent, and it caps the size of every per-piece structure.
+	MaxPieces = 4 << 20
+
+	// MaxTorrentFileSize caps what Load will read off disk.
+	MaxTorrentFileSize = 32 << 20
+)
+
+// ErrNoMetadata is returned by operations that need an info dictionary on a
+// torrent that does not have one yet (a magnet link before BEP 9 completes).
+var ErrNoMetadata = errors.New("metainfo: torrent has no metadata")
+
+// MetaInfo is a parsed .torrent file.
 type MetaInfo struct {
 	Announce     string
 	AnnounceList [][]string
@@ -20,202 +46,259 @@ type MetaInfo struct {
 
 	Info InfoDict
 
-	InfoHash    [20]byte
-	PieceHashes [][20]byte
+	// InfoBytes is the info dictionary exactly as it appeared in the file.
+	// InfoHash is its SHA-1. Keeping the bytes means the hash never depends on
+	// our encoder, and lets us serve the metadata to peers over BEP 9.
+	InfoBytes []byte
+	InfoHash  Hash
+
+	PieceHashes []Hash
 	TotalLength int64
 }
 
+// InfoDict is the info dictionary of a v1 torrent.
 type InfoDict struct {
-	PieceLength int64
-	Pieces      string
-	Private     int
 	Name        string
+	PieceLength int64
+	Private     bool
 
-	Length int64      `bencode:"length,omitempty"`
-	Files  []FileInfo `bencode:"files,omitempty"`
+	// Length is set for single-file torrents, Files for multi-file ones.
+	// Exactly one of them is populated.
+	Length int64
+	Files  []FileInfo
 }
 
+// FileInfo is one file in a multi-file torrent.
 type FileInfo struct {
 	Length int64
 	Path   []string
-	Md5sum string `bencode:"md5sum,omitempty"`
+	Md5sum string
 }
 
-func LoadFromFile(filePath string) (*MetaInfo, error) {
-	file, err := os.Open(filePath)
-	if err != nil {
-		return nil, fmt.Errorf("metainfo: could not open file %s: %w", filePath, err)
-	}
-	defer file.Close()
+// IsMultiFile reports whether the torrent describes a directory of files.
+func (d *InfoDict) IsMultiFile() bool { return len(d.Files) > 0 }
 
-	return New(file)
+// NumPieces returns the number of pieces in the torrent.
+func (mi *MetaInfo) NumPieces() int { return len(mi.PieceHashes) }
+
+// PieceLen returns the length of a specific piece, accounting for the short
+// final one. Out-of-range indexes return 0.
+func (mi *MetaInfo) PieceLen(index int) int64 {
+	n := len(mi.PieceHashes)
+	if index < 0 || index >= n {
+		return 0
+	}
+	if index == n-1 {
+		return mi.TotalLength - int64(n-1)*mi.Info.PieceLength
+	}
+	return mi.Info.PieceLength
 }
 
-func New(r io.Reader) (*MetaInfo, error) {
-	decodedData, err := gobencode.Decode(r)
+// AnnounceURLs flattens announce and announce-list into one deduplicated list,
+// preserving tier order. BEP 12 says announce-list supersedes announce, but
+// clients are expected to fall back, so both are included.
+func (mi *MetaInfo) AnnounceURLs() []string {
+	var out []string
+	seen := make(map[string]bool)
+	add := func(u string) {
+		if u == "" || seen[u] {
+			return
+		}
+		seen[u] = true
+		out = append(out, u)
+	}
+	for _, tier := range mi.AnnounceList {
+		for _, u := range tier {
+			add(u)
+		}
+	}
+	add(mi.Announce)
+	return out
+}
+
+// --- wire format ----------------------------------------------------------
+
+// torrentFile mirrors the top level of a .torrent.
+type torrentFile struct {
+	Announce     string             `bencode:"announce,omitempty"`
+	AnnounceList [][]string         `bencode:"announce-list,omitempty"`
+	Comment      string             `bencode:"comment,omitempty"`
+	CreatedBy    string             `bencode:"created by,omitempty"`
+	CreationDate int64              `bencode:"creation date,omitempty"`
+	Encoding     string             `bencode:"encoding,omitempty"`
+	Info         bencode.RawMessage `bencode:"info"`
+}
+
+// infoDictWire mirrors the info dictionary.
+type infoDictWire struct {
+	Name        string         `bencode:"name"`
+	PieceLength int64          `bencode:"piece length"`
+	Pieces      []byte         `bencode:"pieces"`
+	Private     int64          `bencode:"private,omitempty"`
+	Length      int64          `bencode:"length,omitempty"`
+	Files       []fileDictWire `bencode:"files,omitempty"`
+}
+
+type fileDictWire struct {
+	Length int64    `bencode:"length"`
+	Path   []string `bencode:"path"`
+	Md5sum string   `bencode:"md5sum,omitempty"`
+}
+
+// --- parsing --------------------------------------------------------------
+
+// Load reads and parses a .torrent file.
+func Load(path string) (*MetaInfo, error) {
+	f, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("metainfo: failed to decode torrent data: %w", err)
+		return nil, fmt.Errorf("metainfo: could not open %s: %w", path, err)
 	}
+	defer f.Close()
+	return Read(f)
+}
 
-	torrentMap, ok := decodedData.(map[string]interface{})
-	if !ok {
-		return nil, errors.New("metainfo: top-level bencode data is not a dictionary")
-	}
-
-	mi := &MetaInfo{}
-
-	if announce, ok := torrentMap["announce"].(string); ok {
-		mi.Announce = announce
-	} else {
-		return nil, errors.New("metainfo: 'announce' URL is missing or not a string")
-	}
-	if alRaw, ok := torrentMap["announce-list"].([]interface{}); ok {
-		mi.AnnounceList = make([][]string, len(alRaw))
-		for i, tierInterfaces := range alRaw {
-			if tierActual, tierOk := tierInterfaces.([]interface{}); tierOk {
-				mi.AnnounceList[i] = make([]string, len(tierActual))
-				for j, trackerInterface := range tierActual {
-					if trackerStr, okStr := trackerInterface.(string); okStr {
-						mi.AnnounceList[i][j] = trackerStr
-					}
-				}
-			}
-		}
-	}
-	if comment, ok := torrentMap["comment"].(string); ok {
-		mi.Comment = comment
-	}
-	if createdBy, ok := torrentMap["created by"].(string); ok {
-		mi.CreatedBy = createdBy
-	}
-	if creationDate, ok := torrentMap["creation date"].(int64); ok {
-		mi.CreationDate = creationDate
-	}
-
-	infoMapInterface, infoPresent := torrentMap["info"]
-	if !infoPresent {
-		return nil, errors.New("metainfo: 'info' dictionary missing")
-	}
-	infoMap, ok := infoMapInterface.(map[string]interface{})
-	if !ok {
-		return nil, errors.New("metainfo: 'info' is not a dictionary")
-	}
-
-	var infoBuf bytes.Buffer
-	if err := gobencode.Encode(&infoBuf, infoMap); err != nil {
-		return nil, fmt.Errorf("metainfo: failed to bencode 'info' dictionary for hashing: %w", err)
-	}
-	h := sha1.New()
-	_, err = h.Write(infoBuf.Bytes())
+// Read parses a .torrent from a stream, refusing anything implausibly large.
+func Read(r io.Reader) (*MetaInfo, error) {
+	data, err := io.ReadAll(io.LimitReader(r, MaxTorrentFileSize+1))
 	if err != nil {
-		return nil, fmt.Errorf("metainfo: failed to write to sha1 hasher: %w", err)
+		return nil, fmt.Errorf("metainfo: read failed: %w", err)
 	}
-	copy(mi.InfoHash[:], h.Sum(nil))
-
-	if pl, ok := infoMap["piece length"].(int64); ok {
-		if pl <= 0 {
-			return nil, errors.New("metainfo: 'piece length' must be positive")
-		}
-		mi.Info.PieceLength = pl
-	} else {
-		return nil, errors.New("metainfo: 'piece length' missing or not an integer")
+	if len(data) > MaxTorrentFileSize {
+		return nil, fmt.Errorf("metainfo: torrent file is larger than %d bytes", MaxTorrentFileSize)
 	}
+	return Parse(data)
+}
 
-	if piecesStr, ok := infoMap["pieces"].(string); ok {
-		if len(piecesStr)%sha1.Size != 0 {
-			return nil, fmt.Errorf("metainfo: 'pieces' length (%d) is not a multiple of %d", len(piecesStr), sha1.Size)
-		}
-		mi.Info.Pieces = piecesStr
-	} else {
-		return nil, errors.New("metainfo: 'pieces' missing or not a string")
+// Parse decodes a .torrent from its bytes.
+func Parse(data []byte) (*MetaInfo, error) {
+	var tf torrentFile
+	if err := bencode.Unmarshal(data, &tf); err != nil {
+		return nil, fmt.Errorf("metainfo: %w", err)
+	}
+	if len(tf.Info) == 0 {
+		return nil, errors.New("metainfo: 'info' dictionary is missing")
 	}
 
-	if name, ok := infoMap["name"].(string); ok {
-		// The name becomes a directory or file name on disk, so it is subject
-		// to the same rules as any other path segment.
-		if err := ValidatePathSegment(name); err != nil {
-			return nil, fmt.Errorf("metainfo: unsafe 'name': %w", err)
-		}
-		mi.Info.Name = name
-	} else {
-		return nil, errors.New("metainfo: 'name' missing or not a string")
+	mi := &MetaInfo{
+		Announce:     tf.Announce,
+		AnnounceList: tf.AnnounceList,
+		Comment:      tf.Comment,
+		CreatedBy:    tf.CreatedBy,
+		CreationDate: tf.CreationDate,
 	}
-
-	if private, ok := infoMap["private"].(int64); ok {
-		mi.Info.Private = int(private)
+	if err := mi.setInfo(tf.Info); err != nil {
+		return nil, err
 	}
-
-	if length, ok := infoMap["length"].(int64); ok {
-		if length < 0 {
-			return nil, errors.New("metainfo: 'length' cannot be negative")
-		}
-		mi.Info.Length = length
-		mi.TotalLength = length
-	} else if filesRaw, filesOk := infoMap["files"].([]interface{}); filesOk {
-		if len(filesRaw) == 0 {
-			return nil, errors.New("metainfo: 'files' array is present but empty")
-		}
-		mi.Info.Files = make([]FileInfo, len(filesRaw))
-		var currentTotalLength int64
-		for i, fileRawInterface := range filesRaw {
-			fileMap, fileMapOk := fileRawInterface.(map[string]interface{})
-			if !fileMapOk {
-				return nil, fmt.Errorf("metainfo: file entry %d in 'files' is not a dictionary", i)
-			}
-			var fi FileInfo
-			if l, lOk := fileMap["length"].(int64); lOk {
-				if l < 0 {
-					return nil, fmt.Errorf("metainfo: file entry %d has negative length", i)
-				}
-				fi.Length = l
-				currentTotalLength += l
-			} else {
-				return nil, fmt.Errorf("metainfo: file entry %d 'length' missing or not an integer", i)
-			}
-			if pRaw, pOk := fileMap["path"].([]interface{}); pOk {
-				if len(pRaw) == 0 {
-					return nil, fmt.Errorf("metainfo: file entry %d 'path' array is empty", i)
-				}
-				fi.Path = make([]string, len(pRaw))
-				for j, partInterface := range pRaw {
-					if partStr, partStrOk := partInterface.(string); partStrOk {
-						fi.Path[j] = partStr
-					} else {
-						return nil, fmt.Errorf("metainfo: file entry %d path segment %d is not a string", i, j)
-					}
-				}
-			} else {
-				return nil, fmt.Errorf("metainfo: file entry %d 'path' missing or not a list", i)
-			}
-			// Reject traversals, separators, device names and the rest
-			// before this path is ever joined onto the download directory.
-			if err := ValidatePath(fi.Path); err != nil {
-				return nil, fmt.Errorf("metainfo: unsafe path in file entry %d: %w", i, err)
-			}
-			if md5sum, md5Ok := fileMap["md5sum"].(string); md5Ok {
-				fi.Md5sum = md5sum
-			}
-			mi.Info.Files[i] = fi
-		}
-		mi.TotalLength = currentTotalLength
-	} else {
-		return nil, errors.New("metainfo: 'info' dictionary must contain either 'length' or 'files'")
-	}
-
-	if mi.Info.PieceLength > 0 {
-		numPieces := len(mi.Info.Pieces) / sha1.Size
-		mi.PieceHashes = make([][20]byte, numPieces)
-		for i := 0; i < numPieces; i++ {
-			copy(mi.PieceHashes[i][:], []byte(mi.Info.Pieces[i*sha1.Size:(i+1)*sha1.Size]))
-		}
-		expectedNumPieces := (mi.TotalLength + mi.Info.PieceLength - 1) / mi.Info.PieceLength
-		if mi.TotalLength == 0 && numPieces == 0 && len(mi.Info.Pieces) == 0 {
-		} else if int64(numPieces) != expectedNumPieces {
-			return nil, fmt.Errorf("metainfo: number of pieces from 'pieces' string (%d) does not match calculated expected number of pieces (%d)", numPieces, expectedNumPieces)
-		}
-	} else if len(mi.Info.Pieces) > 0 {
-		return nil, errors.New("metainfo: 'pieces' field is present but 'piece length' is zero or invalid")
-	}
-
 	return mi, nil
+}
+
+// ParseInfo builds a MetaInfo from an info dictionary alone. This is the entry
+// point for BEP 9: a magnet link gives us an infohash, peers give us these
+// bytes, and the caller must have already checked that they hash to the
+// expected infohash.
+func ParseInfo(infoBytes []byte) (*MetaInfo, error) {
+	mi := &MetaInfo{}
+	if err := mi.setInfo(infoBytes); err != nil {
+		return nil, err
+	}
+	return mi, nil
+}
+
+func (mi *MetaInfo) setInfo(infoBytes []byte) error {
+	var wire infoDictWire
+	if err := bencode.Unmarshal(infoBytes, &wire); err != nil {
+		return fmt.Errorf("metainfo: bad 'info' dictionary: %w", err)
+	}
+
+	mi.InfoBytes = append([]byte(nil), infoBytes...)
+	mi.InfoHash = sha1.Sum(mi.InfoBytes)
+
+	if err := validateName(wire.Name); err != nil {
+		return err
+	}
+	mi.Info.Name = wire.Name
+	mi.Info.Private = wire.Private != 0
+
+	if wire.PieceLength < MinPieceLength || wire.PieceLength > MaxPieceLength {
+		return fmt.Errorf("metainfo: implausible piece length %d, expected %d..%d",
+			wire.PieceLength, MinPieceLength, MaxPieceLength)
+	}
+	mi.Info.PieceLength = wire.PieceLength
+
+	if len(wire.Pieces)%HashSize != 0 {
+		return fmt.Errorf("metainfo: 'pieces' is %d bytes, not a multiple of %d", len(wire.Pieces), HashSize)
+	}
+	numPieces := len(wire.Pieces) / HashSize
+	if numPieces == 0 {
+		return errors.New("metainfo: torrent has no pieces")
+	}
+	if numPieces > MaxPieces {
+		return fmt.Errorf("metainfo: torrent claims %d pieces, limit is %d", numPieces, MaxPieces)
+	}
+
+	if err := mi.setFiles(&wire); err != nil {
+		return err
+	}
+
+	// The piece count has to agree with the total length, or the geometry is
+	// inconsistent and every offset calculation downstream is wrong.
+	expected := (mi.TotalLength + mi.Info.PieceLength - 1) / mi.Info.PieceLength
+	if int64(numPieces) != expected {
+		return fmt.Errorf("metainfo: 'pieces' describes %d pieces but %d bytes over %d-byte pieces needs %d",
+			numPieces, mi.TotalLength, mi.Info.PieceLength, expected)
+	}
+
+	mi.PieceHashes = make([]Hash, numPieces)
+	for i := range mi.PieceHashes {
+		copy(mi.PieceHashes[i][:], wire.Pieces[i*HashSize:(i+1)*HashSize])
+	}
+	return nil
+}
+
+func (mi *MetaInfo) setFiles(wire *infoDictWire) error {
+	switch {
+	case len(wire.Files) > 0:
+		if wire.Length != 0 {
+			return errors.New("metainfo: 'info' has both 'length' and 'files'")
+		}
+		mi.Info.Files = make([]FileInfo, len(wire.Files))
+		var total int64
+		for i, f := range wire.Files {
+			if f.Length < 0 {
+				return fmt.Errorf("metainfo: file %d has a negative length", i)
+			}
+			// Reject traversals, separators, device names and the rest before
+			// this path is ever joined onto the download directory.
+			if err := ValidatePath(f.Path); err != nil {
+				return fmt.Errorf("metainfo: unsafe path in file %d: %w", i, err)
+			}
+			mi.Info.Files[i] = FileInfo{Length: f.Length, Path: f.Path, Md5sum: f.Md5sum}
+			total += f.Length
+			if total < 0 {
+				return errors.New("metainfo: total length overflows")
+			}
+		}
+		if total == 0 {
+			return errors.New("metainfo: multi-file torrent is empty")
+		}
+		mi.TotalLength = total
+		return nil
+
+	case wire.Length > 0:
+		mi.Info.Length = wire.Length
+		mi.TotalLength = wire.Length
+		return nil
+
+	default:
+		return errors.New("metainfo: 'info' must contain a positive 'length' or a non-empty 'files'")
+	}
+}
+
+// validateName checks the torrent name, which becomes a file or directory name
+// on disk and so is subject to the same rules as any other path segment.
+func validateName(name string) error {
+	if err := ValidatePathSegment(name); err != nil {
+		return fmt.Errorf("metainfo: unsafe 'name': %w", err)
+	}
+	return nil
 }

@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Oblutack/GoTorrent/internal/gobencode"
+	"github.com/Oblutack/GoTorrent/internal/bencode"
 	"github.com/Oblutack/GoTorrent/internal/logger"
 	"github.com/Oblutack/GoTorrent/internal/metainfo"
 	"github.com/Oblutack/GoTorrent/internal/peer"
@@ -57,39 +57,45 @@ func buildTorrent(t *testing.T, name string, pieceLength int64, files []fileSpec
 		hashes = append(hashes, sum[:]...)
 	}
 
-	info := map[string]interface{}{
-		"name":         name,
-		"piece length": pieceLength,
-		"pieces":       string(hashes),
+	type fileWire struct {
+		Length int64    `bencode:"length"`
+		Path   []string `bencode:"path"`
 	}
+	type infoWire struct {
+		Files       []fileWire `bencode:"files,omitempty"`
+		Length      int64      `bencode:"length,omitempty"`
+		Name        string     `bencode:"name"`
+		PieceLength int64      `bencode:"piece length"`
+		Pieces      []byte     `bencode:"pieces"`
+	}
+
+	info := infoWire{Name: name, PieceLength: pieceLength, Pieces: hashes}
 	if len(files) == 1 && len(files[0].path) == 0 {
-		info["length"] = files[0].length
+		info.Length = files[0].length
 	} else {
-		list := make([]interface{}, 0, len(files))
 		for _, f := range files {
-			parts := make([]interface{}, len(f.path))
-			for i, p := range f.path {
-				parts[i] = p
-			}
-			list = append(list, map[string]interface{}{
-				"length": f.length,
-				"path":   parts,
-			})
+			info.Files = append(info.Files, fileWire{Length: f.length, Path: f.path})
 		}
-		info["files"] = list
 	}
 
-	torrent := map[string]interface{}{
-		"announce": "http://127.0.0.1:1/announce",
-		"info":     info,
+	// Encode the info dict on its own so the torrent carries it verbatim,
+	// which is exactly how a real .torrent is laid out.
+	infoBytes, err := bencode.Marshal(info)
+	if err != nil {
+		t.Fatalf("encode info dict: %v", err)
 	}
-
-	var buf bytes.Buffer
-	if err := gobencode.Encode(&buf, torrent); err != nil {
+	torrentBytes, err := bencode.Marshal(struct {
+		Announce string             `bencode:"announce"`
+		Info     bencode.RawMessage `bencode:"info"`
+	}{
+		Announce: "http://127.0.0.1:1/announce",
+		Info:     infoBytes,
+	})
+	if err != nil {
 		t.Fatalf("encode torrent: %v", err)
 	}
 
-	mi, err := metainfo.New(bytes.NewReader(buf.Bytes()))
+	mi, err := metainfo.Parse(torrentBytes)
 	if err != nil {
 		t.Fatalf("parse torrent: %v", err)
 	}
