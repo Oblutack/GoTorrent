@@ -54,6 +54,15 @@ func (a *Availability) RemovePeer(have *bitfield.Bitfield) {
 	})
 }
 
+// Reset clears every count, for when every peer has disconnected at once
+// (a torrent pause) and decrementing each one individually would just waste
+// cycles reaching the same all-zero result.
+func (a *Availability) Reset() {
+	for i := range a.counts {
+		a.counts[i] = 0
+	}
+}
+
 // Add records a single Have.
 func (a *Availability) Add(index int) {
 	if index >= 0 && index < len(a.counts) {

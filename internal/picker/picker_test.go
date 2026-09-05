@@ -533,3 +533,36 @@ func BenchmarkPickRarestFirst(b *testing.B) {
 		p.Pick(everything, 16, now)
 	}
 }
+
+// TestResetAllPending is the regression test for a real bug: when every peer
+// disconnects at once (a pause), blocks that were mid-flight stayed marked
+// pending, so a freshly reconnected peer could not be asked for them again
+// until RequestTimeout (15s by default) elapsed on its own.
+func TestResetAllPending(t *testing.T) {
+	p := newTestPicker(t, 2, nil)
+	seedAvailability(p, 2)
+	now := time.Now()
+
+	reqs := p.Pick(everything, 8, now)
+	if len(reqs) == 0 {
+		t.Fatal("Pick returned no requests to seed the test")
+	}
+	// Store one block so the fix is also verified not to disturb completed
+	// work, only in-flight requests.
+	p.Received(reqs[0].Index, reqs[0].Begin, reqs[0].Length)
+
+	p.ResetAllPending()
+
+	// Every block except the one already received must be immediately
+	// available again, with no timeout wait.
+	again := p.Pick(everything, 100, now)
+	want := len(reqs) - 1
+	if len(again) != want {
+		t.Fatalf("after ResetAllPending, Pick returned %d requests, want %d", len(again), want)
+	}
+	for _, r := range again {
+		if r == reqs[0] {
+			t.Fatal("ResetAllPending re-offered a block that was already received")
+		}
+	}
+}

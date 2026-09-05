@@ -116,6 +116,20 @@ feed:
 	return result, failure
 }
 
+// VerifyOne hashes a single piece against the metainfo and reports whether
+// it matches. It is what the torrent actor calls right after a piece
+// receives its last block, rather than re-running the whole-torrent Verify.
+func (s *Storage) VerifyOne(ctx context.Context, mi *metainfo.MetaInfo, index int) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if mi == nil {
+		return false, metainfo.ErrNoMetadata
+	}
+	buf := make([]byte, mi.PieceLen(index))
+	return s.verifyPiece(mi, index, buf)
+}
+
 // verifyPiece reads one piece and compares its SHA-1 with the metainfo. A
 // piece that is missing or truncated on disk reports false with no error: that
 // is what an incomplete download looks like.

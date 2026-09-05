@@ -434,6 +434,14 @@ func (c *Client) handleMessage(msg *Message) bool {
 			logger.Warning.Printf("Peer %s: malformed Have: %v\n", c.Conn.RemoteAddr(), err)
 			return false
 		}
+		// NumPieces == 0 means our own metadata is not known yet (the
+		// magnet-link path before BEP 9 completes). There is no range to
+		// validate against and no bitfield of ours to update, but the event
+		// still fires: the owner may care that the peer has pieces at all.
+		if c.Torrent.NumPieces == 0 {
+			c.notify(Event{Kind: EventHave, PieceIndex: havePayload.PieceIndex})
+			break
+		}
 		if int64(havePayload.PieceIndex) >= int64(c.Torrent.NumPieces) {
 			logger.Warning.Printf("Peer %s: Have for out-of-range piece %d\n", c.Conn.RemoteAddr(), havePayload.PieceIndex)
 			return false
@@ -442,6 +450,14 @@ func (c *Client) handleMessage(msg *Message) bool {
 		c.notify(Event{Kind: EventHave, PieceIndex: havePayload.PieceIndex})
 
 	case MsgBitfield:
+		// Same reasoning as MsgHave above: with no metadata yet, our
+		// bitfield is necessarily zero-width, so any real peer's Bitfield
+		// message is unvalidatable rather than invalid. Accept it without
+		// storing it.
+		if c.Torrent.NumPieces == 0 {
+			c.notify(Event{Kind: EventBitfield})
+			break
+		}
 		if err := c.setBitfield(msg.Payload); err != nil {
 			logger.Warning.Printf("Peer %s: rejected Bitfield: %v\n", c.Conn.RemoteAddr(), err)
 			return false
@@ -658,6 +674,14 @@ func (c *Client) SendHave(pieceIndex uint32) error {
 func (c *Client) SendRequest(index, begin, length uint32) error {
 	payload := MsgRequestPayload{Index: index, Begin: begin, Length: length}
 	return c.SendMessage(MsgRequest, payload.Serialize())
+}
+
+// SendCancel withdraws a previously sent Request. BEP 3 gives Cancel the
+// same payload layout as Request, so MsgRequestPayload is reused rather than
+// defining an identical type.
+func (c *Client) SendCancel(index, begin, length uint32) error {
+	payload := MsgRequestPayload{Index: index, Begin: begin, Length: length}
+	return c.SendMessage(MsgCancel, payload.Serialize())
 }
 
 func (c *Client) SendPiece(index, begin uint32, block []byte) error {

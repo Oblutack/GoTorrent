@@ -213,6 +213,21 @@ func (p *Picker) MarkVerified(index int) {
 	delete(p.active, index)
 }
 
+// ResetAllPending puts every outstanding (pending) block back to needed,
+// without disturbing blocks that already arrived. Call this when every peer
+// disconnects at once (a torrent pause): requests orphaned by the
+// disconnection would otherwise sit pending until their timeout, since
+// nothing else notices that the peer they were sent to is gone.
+func (p *Picker) ResetAllPending() {
+	for _, pp := range p.active {
+		for i, state := range pp.states {
+			if state == blockPending {
+				pp.states[i] = blockNeeded
+			}
+		}
+	}
+}
+
 // MarkFailed puts a piece back after a hash mismatch. Every block is
 // re-requested; there is no way to tell which one was corrupt.
 func (p *Picker) MarkFailed(index int) {
