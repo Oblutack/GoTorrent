@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Oblutack/GoTorrent/internal/bencode"
+	"github.com/Oblutack/GoTorrent/internal/bitfield"
 	"github.com/Oblutack/GoTorrent/internal/logger"
 	"github.com/Oblutack/GoTorrent/internal/metainfo"
 	"github.com/Oblutack/GoTorrent/internal/peer"
@@ -167,11 +168,8 @@ func (f *fakeSeeder) handle(conn net.Conn) {
 
 	// Advertise the complete torrent, then unchoke unconditionally.
 	numPieces := len(f.mi.PieceHashes)
-	bf := peer.NewBitfield(numPieces)
-	for i := 0; i < numPieces; i++ {
-		bf.SetPiece(uint32(i))
-	}
-	if err := writeMsg(conn, peer.MsgBitfield, bf); err != nil {
+	bf := bitfield.Full(numPieces)
+	if err := writeMsg(conn, peer.MsgBitfield, bf.Bytes()); err != nil {
 		return
 	}
 	if err := writeMsg(conn, peer.MsgUnchoke, nil); err != nil {
@@ -450,7 +448,7 @@ func TestResumeFromState(t *testing.T) {
 		t.Fatalf("session.New: %v", err)
 	}
 	for i := range mi.PieceHashes {
-		s.OurBitfield.SetPiece(uint32(i))
+		s.OurBitfield.Set(i)
 	}
 	if err := s.saveState(); err != nil {
 		t.Fatalf("saveState: %v", err)

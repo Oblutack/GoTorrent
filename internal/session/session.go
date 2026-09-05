@@ -12,6 +12,7 @@ import (
 
 	"strings"
 
+	"github.com/Oblutack/GoTorrent/internal/bitfield"
 	"github.com/Oblutack/GoTorrent/internal/logger"
 
 	"github.com/Oblutack/GoTorrent/internal/metainfo"
@@ -78,7 +79,7 @@ type TorrentSession struct {
 	OurPeerID   [20]byte
 	ListenPort  uint16
 	DownloadDir string
-	OurBitfield peer.Bitfield
+	OurBitfield *bitfield.Bitfield
 
 	// ConnectedPeers is keyed by remote address. The peer ID from the
 	// handshake is attacker-controlled, so keying on it let one peer evict
@@ -126,7 +127,7 @@ func (s *TorrentSession) stateFilePath() string {
 // saveState writes OurBitfield to disk.
 func (s *TorrentSession) saveState() error {
 	logger.Logf("Saving download state to %s\n", s.stateFilePath())
-	return os.WriteFile(s.stateFilePath(), s.OurBitfield, 0644)
+	return os.WriteFile(s.stateFilePath(), s.OurBitfield.Bytes(), 0644)
 }
 
 // loadState reads OurBitfield back from disk.
@@ -142,19 +143,18 @@ func (s *TorrentSession) loadState() error {
 		return fmt.Errorf("could not read state file: %w", err)
 	}
 
-	if len(data) != len(s.OurBitfield) {
-		return fmt.Errorf("state file has incorrect size. Expected %d, got %d. Starting fresh.",
-			len(s.OurBitfield), len(data))
+	loaded, err := bitfield.FromBytes(data, s.numPiecesInTorrent)
+	if err != nil {
+		return fmt.Errorf("state file is unusable: %w", err)
 	}
-
-	copy(s.OurBitfield, data)
+	s.OurBitfield = loaded
 	logger.Logf("Successfully loaded download state from %s\n", filePath)
 
 	// Recompute Downloaded/Left from the loaded bitfield. This assumes every
 	// piece is the full piece length except the last one.
 	var downloadedBytes int64
 	for i := 0; i < s.numPiecesInTorrent; i++ {
-		if s.OurBitfield.HasPiece(uint32(i)) {
+		if s.OurBitfield.Has(i) {
 			var pieceLength int64
 			if i == s.numPiecesInTorrent-1 {
 				pieceLength = s.MetaInfo.TotalLength - (int64(s.numPiecesInTorrent-1) * s.MetaInfo.Info.PieceLength)
@@ -205,7 +205,7 @@ func New(metaInfo *metainfo.MetaInfo, listenPort uint16, downloadDir string) (*T
 		ListenPort:         listenPort,
 		DownloadDir:        downloadDir,
 		layout:             layout,
-		OurBitfield:        peer.NewBitfield(numPieces),
+		OurBitfield:        bitfield.New(numPieces),
 		ConnectedPeers:     make(map[string]*peer.Client),
 		dialing:            make(map[string]bool),
 		TrackerRequest:     trackerReq,
@@ -225,7 +225,7 @@ func New(metaInfo *metainfo.MetaInfo, listenPort uint16, downloadDir string) (*T
 	if err := s.loadState(); err != nil {
 		logger.Logf("Warning: could not load previous state: %v. Continuing with a fresh download.", err)
 		// Reset OurBitfield in case loadState partially succeeded before failing.
-		s.OurBitfield = peer.NewBitfield(metaInfo.NumPieces())
+		s.OurBitfield = bitfield.New(metaInfo.NumPieces())
 	}
 
 	return s, nil
@@ -472,7 +472,7 @@ func (s *TorrentSession) putPieceBuffer(buf []byte) {
 func (s *TorrentSession) populateWorkQueue() {
 	for i := 0; i < s.numPiecesInTorrent; i++ {
 		idx := uint32(i)
-		if !s.OurBitfield.HasPiece(idx) {
+		if !s.OurBitfield.Has(i) {
 			pieceLength := s.MetaInfo.Info.PieceLength
 			if i == s.numPiecesInTorrent-1 {
 				pieceLength = s.MetaInfo.TotalLength - (int64(s.numPiecesInTorrent-1) * s.MetaInfo.Info.PieceLength)
@@ -593,7 +593,7 @@ func (s *TorrentSession) readBlockFromDisk(index, begin, length uint32) ([]byte,
 func (s *TorrentSession) hasPiece(index uint32) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.OurBitfield.HasPiece(index)
+	return s.OurBitfield.Has(int(index))
 }
 
 // connectToPeer dials one peer and pumps its results into the session. It is
@@ -776,7 +776,7 @@ func (s *TorrentSession) downloadLoop() error {
 
 			s.mu.Lock()
 			logger.Logf("========== Piece %d VERIFIED AND WRITTEN ==========\n", verifiedPw.Index)
-			s.OurBitfield.SetPiece(verifiedPw.Index)
+			s.OurBitfield.Set(int(verifiedPw.Index))
 			s.TrackerRequest.Downloaded += verifiedPw.Length
 			s.TrackerRequest.Left -= verifiedPw.Length
 			logger.Logf("Updated downloaded/left: %d/%d\n", s.TrackerRequest.Downloaded, s.TrackerRequest.Left)
@@ -840,7 +840,7 @@ func (s *TorrentSession) downloadLoop() error {
 			s.mu.Lock()
 			rarityMap := make(map[uint32]int)
 			for index := range s.ActivePieces {
-				if s.OurBitfield.HasPiece(index) {
+				if s.OurBitfield.Has(int(index)) {
 					continue
 				}
 				count := 0

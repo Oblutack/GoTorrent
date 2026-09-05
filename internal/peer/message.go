@@ -130,32 +130,3 @@ func (p *MsgPiecePayload) Serialize() []byte {
 	copy(buf[8:], p.Block)
 	return buf
 }
-
-type Bitfield []byte
-
-func (bf Bitfield) HasPiece(index uint32) bool {
-	byteIndex := index / 8
-	offset := index % 8
-	if byteIndex >= uint32(len(bf)) {
-		return false
-	}
-	return (bf[byteIndex]>>(7-offset))&1 != 0
-}
-
-func (bf Bitfield) SetPiece(index uint32) {
-	byteIndex := index / 8
-	offset := index % 8
-	if byteIndex >= uint32(len(bf)) {
-
-		return
-	}
-	bf[byteIndex] |= (1 << (7 - offset))
-}
-
-func NewBitfield(numPieces int) Bitfield {
-	if numPieces <= 0 {
-		return nil
-	}
-	numBytes := (numPieces + 7) / 8
-	return make(Bitfield, numBytes)
-}

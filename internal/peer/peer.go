@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Oblutack/GoTorrent/internal/bitfield"
 	"github.com/Oblutack/GoTorrent/internal/logger"
 	"github.com/Oblutack/GoTorrent/internal/tracker"
 )
@@ -164,7 +165,7 @@ type Client struct {
 	// bitfield is written by the read loop (Have/Bitfield) and read by the
 	// session's rarity scan.
 	bitfieldMu sync.RWMutex
-	bitfield   Bitfield
+	bitfield   *bitfield.Bitfield
 
 	WorkQueue chan *BlockRequest
 	Results   chan *PieceBlock
@@ -223,7 +224,7 @@ func NewClient(
 		Torrent:           torrent,
 		OurID:             ourID,
 		RemoteID:          peerHandshake.PeerID,
-		bitfield:          NewBitfield(torrent.NumPieces),
+		bitfield:          bitfield.New(torrent.NumPieces),
 		WorkQueue:         make(chan *BlockRequest, PipelineSize),
 		Results:           make(chan *PieceBlock),
 		outbound:          make(chan []byte, outboundQueueSize),
@@ -260,25 +261,29 @@ func (c *Client) LastPieceReceivedUnix() int64 { return c.lastPieceReceived.Load
 func (c *Client) HasPiece(index uint32) bool {
 	c.bitfieldMu.RLock()
 	defer c.bitfieldMu.RUnlock()
-	return c.bitfield.HasPiece(index)
+	return c.bitfield.Has(int(index))
 }
 
 func (c *Client) setPiece(index uint32) {
 	c.bitfieldMu.Lock()
-	c.bitfield.SetPiece(index)
+	c.bitfield.Set(int(index))
 	c.bitfieldMu.Unlock()
 }
 
 // setBitfield replaces the peer's bitfield wholesale. It reports false if the
 // payload is not exactly the expected width, which is a protocol violation.
-func (c *Client) setBitfield(raw []byte) bool {
+func (c *Client) setBitfield(raw []byte) error {
 	c.bitfieldMu.Lock()
 	defer c.bitfieldMu.Unlock()
-	if len(raw) != len(c.bitfield) {
-		return false
-	}
-	copy(c.bitfield, raw)
-	return true
+	return c.bitfield.CopyFrom(raw)
+}
+
+// BitfieldSnapshot returns a copy of what the peer has advertised, for the
+// availability index to fold in and out.
+func (c *Client) BitfieldSnapshot() *bitfield.Bitfield {
+	c.bitfieldMu.RLock()
+	defer c.bitfieldMu.RUnlock()
+	return c.bitfield.Clone()
 }
 
 // --- lifecycle -------------------------------------------------------------
@@ -365,8 +370,8 @@ func (c *Client) handleMessage(msg *Message) bool {
 		c.setPiece(havePayload.PieceIndex)
 
 	case MsgBitfield:
-		if !c.setBitfield(msg.Payload) {
-			logger.Warning.Printf("Peer %s: Bitfield of wrong width (%d bytes)\n", c.Conn.RemoteAddr(), len(msg.Payload))
+		if err := c.setBitfield(msg.Payload); err != nil {
+			logger.Warning.Printf("Peer %s: rejected Bitfield: %v\n", c.Conn.RemoteAddr(), err)
 			return false
 		}
 
