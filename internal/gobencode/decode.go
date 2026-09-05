@@ -10,15 +10,28 @@ import (
 
 var ErrMalformedData = errors.New("gobencode: malformed data")
 
+// ErrTooDeep is returned when a value nests past maxDepth.
+var ErrTooDeep = errors.New("gobencode: nesting too deep")
+
+// maxDepth bounds how deeply lists and dictionaries may nest. The decoder is
+// recursive, so without this a 100 KB file of "lllll..." exhausts the
+// goroutine stack and takes the process down. Real torrents nest three or
+// four levels.
+const maxDepth = 64
+
 func Decode(r io.Reader) (interface{}, error) {
 	br, ok := r.(*bufio.Reader)
 	if !ok {
 		br = bufio.NewReader(r)
 	}
-	return decodeRecursive(br)
+	return decodeRecursive(br, 0)
 }
 
-func decodeRecursive(br *bufio.Reader) (interface{}, error) {
+func decodeRecursive(br *bufio.Reader, depth int) (interface{}, error) {
+	if depth > maxDepth {
+		return nil, fmt.Errorf("%w: exceeded %d levels", ErrTooDeep, maxDepth)
+	}
+
 	firstByte, err := br.ReadByte()
 	if err != nil {
 		if err == io.EOF {
@@ -32,11 +45,9 @@ func decodeRecursive(br *bufio.Reader) (interface{}, error) {
 	case firstByte == 'i':
 		return parseInteger(br)
 	case firstByte == 'l':
-		return parseList(br)
-		return nil, fmt.Errorf("gobencode: list parsing not yet implemented")
+		return parseList(br, depth)
 	case firstByte == 'd':
-		return parseDictionary(br)
-		return nil, fmt.Errorf("gobencode: dictionary parsing not yet implemented")
+		return parseDictionary(br, depth)
 	case firstByte >= '0' && firstByte <= '9':
 		if err := br.UnreadByte(); err != nil {
 			return nil, err
@@ -142,7 +153,7 @@ func parseString(br *bufio.Reader) (string, error) {
 	return string(strBytes), nil
 }
 
-func parseList(br *bufio.Reader) ([]interface{}, error) {
+func parseList(br *bufio.Reader, depth int) ([]interface{}, error) {
 	list := make([]interface{}, 0)
 	for {
 
@@ -162,7 +173,7 @@ func parseList(br *bufio.Reader) ([]interface{}, error) {
 			break
 		}
 
-		element, err := decodeRecursive(br)
+		element, err := decodeRecursive(br, depth+1)
 		if err != nil {
 
 			return nil, fmt.Errorf("gobencode: error parsing list element: %w", err)
@@ -172,7 +183,7 @@ func parseList(br *bufio.Reader) ([]interface{}, error) {
 	return list, nil
 }
 
-func parseDictionary(br *bufio.Reader) (map[string]interface{}, error) {
+func parseDictionary(br *bufio.Reader, depth int) (map[string]interface{}, error) {
 	dict := make(map[string]interface{})
 	var lastKey string
 	firstKeyProcessed := false
@@ -195,7 +206,7 @@ func parseDictionary(br *bufio.Reader) (map[string]interface{}, error) {
 			break
 		}
 
-		keyInterface, err := decodeRecursive(br)
+		keyInterface, err := decodeRecursive(br, depth+1)
 		if err != nil {
 			return nil, fmt.Errorf("gobencode: error parsing dictionary key: %w", err)
 		}
@@ -212,7 +223,7 @@ func parseDictionary(br *bufio.Reader) (map[string]interface{}, error) {
 		lastKey = key
 		firstKeyProcessed = true
 
-		value, err := decodeRecursive(br)
+		value, err := decodeRecursive(br, depth+1)
 		if err != nil {
 			return nil, fmt.Errorf("gobencode: error parsing dictionary value for key '%s': %w", key, err)
 		}

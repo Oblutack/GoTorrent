@@ -206,3 +206,41 @@ func TestDecode(t *testing.T) {
 		})
 	}
 }
+
+// TestDecodeRejectsDeepNesting covers the recursion limit: the decoder walks
+// nested containers with the goroutine stack, so an unbounded "lllll..." input
+// used to take the whole process down rather than returning an error.
+func TestDecodeRejectsDeepNesting(t *testing.T) {
+	tests := []struct {
+		name    string
+		depth   int
+		wantErr bool
+	}{
+		{name: "within the limit", depth: maxDepth - 1},
+		{name: "one past the limit", depth: maxDepth + 2, wantErr: true},
+		{name: "far past the limit", depth: 100000, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			input := strings.Repeat("l", tt.depth) + strings.Repeat("e", tt.depth)
+			_, err := Decode(strings.NewReader(input))
+			if tt.wantErr && err == nil {
+				t.Fatalf("Decode of %d nested lists returned no error", tt.depth)
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("Decode of %d nested lists = %v, want nil", tt.depth, err)
+			}
+		})
+	}
+}
+
+// TestDecodeRejectsDeepDictNesting checks the dictionary path too, since keys
+// and values recurse independently.
+func TestDecodeRejectsDeepDictNesting(t *testing.T) {
+	depth := maxDepth + 5
+	input := strings.Repeat("d1:a", depth) + "0:" + strings.Repeat("e", depth)
+	if _, err := Decode(strings.NewReader(input)); err == nil {
+		t.Fatalf("Decode of %d nested dictionaries returned no error", depth)
+	}
+}

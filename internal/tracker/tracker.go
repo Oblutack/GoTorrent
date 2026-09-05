@@ -4,7 +4,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -13,6 +13,10 @@ import (
 
 	"github.com/Oblutack/GoTorrent/internal/gobencode"
 )
+
+// maxResponseBytes caps a tracker announce response. Real responses are a few
+// kilobytes; anything approaching this is a broken or hostile tracker.
+const maxResponseBytes = 4 << 20
 
 type TrackerRequest struct {
 	InfoHash   [20]byte
@@ -108,12 +112,16 @@ func Announce(announceURL string, req TrackerRequest) (*TrackerResponse, error) 
 	}
 	defer resp.Body.Close()
 
+	// A tracker is not trusted to be well-behaved: cap what we are willing to
+	// read so a hostile or broken one cannot stream gigabytes at us.
+	body := io.LimitReader(resp.Body, maxResponseBytes)
+
 	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := ioutil.ReadAll(resp.Body)
+		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return nil, fmt.Errorf("tracker: request failed with status %d: %s", resp.StatusCode, string(bodyBytes))
 	}
 
-	decodedResponse, err := gobencode.Decode(resp.Body)
+	decodedResponse, err := gobencode.Decode(body)
 	if err != nil {
 		return nil, fmt.Errorf("tracker: failed to decode tracker response: %w", err)
 	}

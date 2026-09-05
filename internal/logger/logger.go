@@ -1,7 +1,7 @@
 package logger
 
 import (
-	"io/ioutil"
+	"io"
 	"log"
 )
 
@@ -13,11 +13,18 @@ var (
 	verbose bool
 )
 
+// init gives every logger a usable value before main runs. Without it, any
+// code path that logs before logger.Init — including tests — dereferences a
+// nil *log.Logger and panics.
+func init() {
+	Init(false)
+}
+
 func Init(isVerbose bool) {
 	verbose = isVerbose
 
-	infoHandle := ioutil.Discard
-	warnHandle := ioutil.Discard
+	infoHandle := io.Discard
+	warnHandle := io.Discard
 	if verbose {
 		infoHandle = log.Writer()
 		warnHandle = log.Writer()

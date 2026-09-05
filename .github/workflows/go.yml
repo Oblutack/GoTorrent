@@ -16,10 +16,24 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v4
       with:
-        go-version: '1.24' 
+        go-version: '1.24'
+
+    - name: Check formatting
+      run: |
+        unformatted=$(gofmt -l .)
+        if [ -n "$unformatted" ]; then
+          echo "These files are not gofmt-clean:"
+          echo "$unformatted"
+          exit 1
+        fi
+
+    - name: Vet
+      run: go vet ./...
 
     - name: Build
       run: go build -v ./cmd/gottrent/
 
-    - name: Test
-      run: go test -v ./...
+    # The race detector needs a 64-bit C toolchain, which the Windows dev
+    # machine does not have. CI is where this gate is actually enforced.
+    - name: Test (race)
+      run: go test -race -v ./...

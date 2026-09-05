@@ -70,12 +70,20 @@ type pieceResult struct {
 }
 
 type TorrentSession struct {
-	MetaInfo           *metainfo.MetaInfo
-	OurPeerID          [20]byte
-	ListenPort         uint16
-	DownloadDir        string
-	OurBitfield        peer.Bitfield
-	ConnectedPeers     map[[20]byte]*peer.Client
+	MetaInfo    *metainfo.MetaInfo
+	OurPeerID   [20]byte
+	ListenPort  uint16
+	DownloadDir string
+	OurBitfield peer.Bitfield
+
+	// ConnectedPeers is keyed by remote address. The peer ID from the
+	// handshake is attacker-controlled, so keying on it let one peer evict
+	// another's entry just by claiming its ID.
+	ConnectedPeers map[string]*peer.Client
+
+	// dialing tracks addresses with a connection attempt in flight, so the
+	// same peer is not dialled twice from overlapping tracker responses.
+	dialing            map[string]bool
 	TrackerRequest     tracker.TrackerRequest
 	numPiecesInTorrent int
 
@@ -111,18 +119,18 @@ func (s *TorrentSession) stateFilePath() string {
 	return filepath.Join(s.DownloadDir, fmt.Sprintf(".%s.state", infoHashHex))
 }
 
-// saveState čuva OurBitfield na disk
+// saveState writes OurBitfield to disk.
 func (s *TorrentSession) saveState() error {
 	logger.Logf("Saving download state to %s\n", s.stateFilePath())
 	return os.WriteFile(s.stateFilePath(), s.OurBitfield, 0644)
 }
 
-// loadState učitava OurBitfield sa diska
+// loadState reads OurBitfield back from disk.
 func (s *TorrentSession) loadState() error {
 	filePath := s.stateFilePath()
 	if _, err := os.Stat(filePath); os.IsNotExist(err) {
 		logger.Logf("No previous state file found. Starting from scratch.")
-		return nil // Nije greška ako fajl ne postoji
+		return nil // A missing state file just means a fresh download.
 	}
 
 	data, err := os.ReadFile(filePath)
@@ -138,8 +146,8 @@ func (s *TorrentSession) loadState() error {
 	copy(s.OurBitfield, data)
 	logger.Logf("Successfully loaded download state from %s\n", filePath)
 
-	// Ažuriraj Downloaded/Left na osnovu učitanog stanja
-	// Ovo je pojednostavljeno, pretpostavlja da su svi delovi iste dužine osim poslednjeg
+	// Recompute Downloaded/Left from the loaded bitfield. This assumes every
+	// piece is the full piece length except the last one.
 	var downloadedBytes int64
 	for i := 0; i < s.numPiecesInTorrent; i++ {
 		if s.OurBitfield.HasPiece(uint32(i)) {
@@ -153,7 +161,7 @@ func (s *TorrentSession) loadState() error {
 		}
 	}
 	s.TrackerRequest.Downloaded = downloadedBytes
-	s.bytesDownloaded = downloadedBytes // Ažuriraj i statistiku za brzinu
+	s.bytesDownloaded = downloadedBytes // keep the speed counter consistent
 	s.lastSampledBytes = downloadedBytes
 	s.TrackerRequest.Left = s.MetaInfo.TotalLength - downloadedBytes
 	logger.Logf("Resuming download. Downloaded: %d, Left: %d\n", s.TrackerRequest.Downloaded, s.TrackerRequest.Left)
@@ -194,7 +202,8 @@ func New(metaInfo *metainfo.MetaInfo, listenPort uint16, downloadDir string) (*T
 		DownloadDir:        downloadDir,
 		layout:             layout,
 		OurBitfield:        peer.NewBitfield(numPieces),
-		ConnectedPeers:     make(map[[20]byte]*peer.Client),
+		ConnectedPeers:     make(map[string]*peer.Client),
+		dialing:            make(map[string]bool),
 		TrackerRequest:     trackerReq,
 		numPiecesInTorrent: numPieces,
 		PieceWorkQueue:     make(chan *PieceWork, numPieces),
@@ -210,7 +219,7 @@ func New(metaInfo *metainfo.MetaInfo, listenPort uint16, downloadDir string) (*T
 
 	if err := s.loadState(); err != nil {
 		logger.Logf("Warning: could not load previous state: %v. Continuing with a fresh download.", err)
-		// Resetuj OurBitfield za svaki slučaj ako je loadState delimično uspeo pre greške
+		// Reset OurBitfield in case loadState partially succeeded before failing.
 		s.OurBitfield = peer.NewBitfield(len(metaInfo.PieceHashes))
 	}
 
@@ -224,23 +233,19 @@ func (s *TorrentSession) Run() error {
 		return fmt.Errorf("session setup failed during file pre-allocation: %w", err)
 	}
 
-	// Učitaj prethodno stanje i proveri da li treba uopšte preuzimati
-	if err := s.loadState(); err != nil {
-		logger.Warning.Printf("Could not load previous state: %v. Continuing fresh.\n", err)
-		s.OurBitfield = peer.NewBitfield(s.numPiecesInTorrent)
-	}
-
-	// Ako ne moramo ništa da preuzmemo, odmah idemo u seeding mod.
+	// New already loaded the resume state; loading it a second time here only
+	// duplicated the work.
 	if s.TrackerRequest.Left == 0 {
 		logger.Logf("All pieces already present. Starting in seeding mode.\n")
 	} else {
-		// Ako imamo šta da preuzmemo, popuni red za posao
+		// There is something to fetch, so fill the work queue.
 		s.populateWorkQueue()
 	}
 
 	trackerResponse, err := s.announceToTrackers()
 	if err != nil {
-		// Čak i ako tracker ne uspe, možda možemo da seedujemo ako imamo ceo fajl
+		// Even if the tracker fails we can still seed, provided we have the
+		// complete file.
 		if s.TrackerRequest.Left > 0 {
 			return fmt.Errorf("session setup failed during tracker announce: %w", err)
 		}
@@ -255,11 +260,11 @@ func (s *TorrentSession) Run() error {
 		logger.Logf("  Received %d peers.\n", len(trackerResponse.Peers))
 		logger.Logf("-----------------------------------------------------\n")
 
-		// Pokreni gorutine za povezivanje samo ako smo dobili peerove
-		if len(trackerResponse.Peers) > 0 {
-			for _, peerInfo := range trackerResponse.Peers {
-				go s.connectToPeer(peerInfo)
-			}
+		// connectToPeer enforces the maxPeers cap and deduplicates by
+		// address, so a tracker returning thousands of peers cannot make us
+		// open thousands of sockets.
+		for _, peerInfo := range trackerResponse.Peers {
+			go s.connectToPeer(peerInfo)
 		}
 	}
 
@@ -282,28 +287,29 @@ func (s *TorrentSession) Run() error {
 		os.Exit(0)
 	}()
 
-	// Pokreni pozadinske gorutine
+	// Start the background loops.
 	go s.displayLoop()
 	go s.trackerLoop()
 	go s.chokingLoop()
 
-	// Pokreni glavnu download petlju samo ako ima šta da se preuzme
+	// Only run the download loop if there is anything left to fetch.
 	if s.TrackerRequest.Left > 0 {
 		err = s.downloadLoop()
 		if err != nil {
 			logger.Error.Printf("Download loop finished with error: %v\n", err)
 		}
 		logger.Logf("\nDownload complete.\n")
-		// Nakon završetka preuzimanja, obavesti tracker
+		// Tell the tracker we finished.
 		s.TrackerRequest.Event = "completed"
 		go s.announceToTrackers()
 		s.TrackerRequest.Event = ""
 	}
 
-	// Bilo da smo završili preuzimanje ili smo počeli kao seeder, ulazimo u seeding petlju
+	// Whether we just finished downloading or started out complete, we end up
+	// seeding.
 	logger.Logf("Entering seeding mode. Press Ctrl-C to exit.\n")
 
-	// Blokiraj zauvek dok Ctrl+C ne prekine program
+	// Block until Ctrl-C tears the process down.
 	select {}
 }
 
@@ -408,9 +414,8 @@ func (s *TorrentSession) trackerLoop() {
 			s.mu.Unlock()
 
 			if left == 0 {
-				// Ako smo u seeding modu, periodično obaveštavaj trackera, ali ne moramo prestajati.
-				// Opciono, ovde se može zaustaviti ticker ako ne želimo da re-announce-ujemo dok seedujemo.
-				// Za sada, neka nastavi.
+				// While seeding we keep announcing periodically. We could stop the
+				// ticker here instead if re-announcing as a seeder is unwanted.
 			}
 
 			s.TrackerRequest.Event = ""
@@ -431,15 +436,9 @@ func (s *TorrentSession) trackerLoop() {
 				ticker.Reset(time.Duration(newInterval) * time.Second)
 			}
 
-			s.mu.Lock()
 			for _, peerInfo := range trackerResponse.Peers {
-				if len(s.ConnectedPeers) >= maxPeers {
-					break
-				}
-				// Poziv sa samo jednim argumentom
 				go s.connectToPeer(peerInfo)
 			}
-			s.mu.Unlock()
 		}
 	}
 }
@@ -592,8 +591,37 @@ func (s *TorrentSession) hasPiece(index uint32) bool {
 	return s.OurBitfield.HasPiece(index)
 }
 
+// connectToPeer dials one peer and pumps its results into the session. It is
+// safe to call for an address that is already connected or already being
+// dialled: the duplicate is dropped before the socket is opened.
 func (s *TorrentSession) connectToPeer(peerInfo tracker.PeerInfo) {
-	logger.Logf("Attempting to connect and handshake with peer: %s\n", net.JoinHostPort(peerInfo.IP.String(), strconv.Itoa(int(peerInfo.Port))))
+	address := net.JoinHostPort(peerInfo.IP.String(), strconv.Itoa(int(peerInfo.Port)))
+
+	s.mu.Lock()
+	switch {
+	case s.ConnectedPeers[address] != nil:
+		s.mu.Unlock()
+		logger.Logf("Already connected to %s, skipping.\n", address)
+		return
+	case s.dialing[address]:
+		s.mu.Unlock()
+		logger.Logf("Already dialling %s, skipping.\n", address)
+		return
+	case len(s.ConnectedPeers)+len(s.dialing) >= maxPeers:
+		s.mu.Unlock()
+		logger.Logf("Peer limit of %d reached, not dialling %s.\n", maxPeers, address)
+		return
+	}
+	s.dialing[address] = true
+	s.mu.Unlock()
+
+	defer func() {
+		s.mu.Lock()
+		delete(s.dialing, address)
+		s.mu.Unlock()
+	}()
+
+	logger.Logf("Attempting to connect and handshake with peer: %s\n", address)
 
 	torrentInfo := peer.TorrentInfo{
 		InfoHash:    s.MetaInfo.InfoHash,
@@ -603,12 +631,12 @@ func (s *TorrentSession) connectToPeer(peerInfo tracker.PeerInfo) {
 	}
 	client, err := peer.NewClient(peerInfo, torrentInfo, s.OurPeerID, s.hasPiece, s.readBlockFromDisk)
 	if err != nil {
-		logger.Warning.Printf("Failed to connect or handshake with peer %s: %v\n", peerInfo.IP.String(), err)
+		logger.Warning.Printf("Failed to connect or handshake with peer %s: %v\n", address, err)
 		return
 	}
 
 	s.mu.Lock()
-	s.ConnectedPeers[client.RemoteID] = client
+	s.ConnectedPeers[address] = client
 	s.mu.Unlock()
 
 	go client.Run()
@@ -620,7 +648,7 @@ func (s *TorrentSession) connectToPeer(peerInfo tracker.PeerInfo) {
 	logger.Logf("Peer %s disconnected.\n", client.Conn.RemoteAddr())
 
 	s.mu.Lock()
-	delete(s.ConnectedPeers, client.RemoteID)
+	delete(s.ConnectedPeers, address)
 	s.mu.Unlock()
 }
 
@@ -840,7 +868,7 @@ func (s *TorrentSession) downloadLoop() error {
 
 				for i := range pw.Blocks {
 					block := &pw.Blocks[i]
-					
+
 					// If the block is strictly completed, skip it.
 					if block.State == 2 {
 						continue
@@ -978,7 +1006,7 @@ func (s *TorrentSession) announceToTrackers() (*tracker.TrackerResponse, error) 
 		logger.Logf("Successfully received response from: %s\n", announceURL)
 		trackerResponse = currentResponse
 
-		// Sačuvaj interval za kasniju upotrebu u trackerLoop
+		// Remember the interval for trackerLoop.
 		s.mu.Lock()
 		s.trackerInterval = trackerResponse.Interval
 		s.mu.Unlock()
@@ -1064,9 +1092,9 @@ func (s *TorrentSession) writePieceToDisk(pieceIndex uint32, pieceBuffer []byte)
 }
 
 func (s *TorrentSession) chokingLoop() {
-	const unchokeSlots = 4 // Koliko peerova unchoke-ujemo istovremeno
+	const unchokeSlots = 4 // how many peers we unchoke at once
 
-	// Ticker koji se aktivira svakih 10 sekundi za ponovnu procenu
+	// Re-evaluate who is unchoked every 10 seconds.
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 
