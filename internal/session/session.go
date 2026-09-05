@@ -16,6 +16,7 @@ import (
 
 	"github.com/Oblutack/GoTorrent/internal/metainfo"
 	"github.com/Oblutack/GoTorrent/internal/peer"
+	"github.com/Oblutack/GoTorrent/internal/storage"
 	"github.com/Oblutack/GoTorrent/internal/tracker"
 
 	"encoding/hex"
@@ -77,6 +78,10 @@ type TorrentSession struct {
 	ConnectedPeers     map[[20]byte]*peer.Client
 	TrackerRequest     tracker.TrackerRequest
 	numPiecesInTorrent int
+
+	// layout is the only thing in the session allowed to turn a
+	// torrent-supplied name into a filesystem path.
+	layout *storage.Layout
 
 	PieceWorkQueue chan *PieceWork
 	Results        chan *peer.PieceBlock
@@ -163,6 +168,11 @@ func New(metaInfo *metainfo.MetaInfo, listenPort uint16, downloadDir string) (*T
 	}
 	logger.Logf("Generated Peer ID (first 8 chars): %s (hex: %x)\n", string(peerID[:8]), peerID)
 
+	layout, err := storage.NewLayout(downloadDir, metaInfo.Info.Name, len(metaInfo.Info.Files) > 0)
+	if err != nil {
+		return nil, err
+	}
+
 	numPieces := len(metaInfo.PieceHashes)
 	trackerReq := tracker.TrackerRequest{
 		InfoHash:   metaInfo.InfoHash,
@@ -182,6 +192,7 @@ func New(metaInfo *metainfo.MetaInfo, listenPort uint16, downloadDir string) (*T
 		OurPeerID:          peerID,
 		ListenPort:         listenPort,
 		DownloadDir:        downloadDir,
+		layout:             layout,
 		OurBitfield:        peer.NewBitfield(numPieces),
 		ConnectedPeers:     make(map[[20]byte]*peer.Client),
 		TrackerRequest:     trackerReq,
@@ -510,9 +521,10 @@ func (s *TorrentSession) readBlockFromDisk(index, begin, length uint32) ([]byte,
 			fileEnd := currentOffset + fileInfo.Length
 
 			if blockOffsetInTorrent >= fileStart && blockOffsetInTorrent < fileEnd {
-				torrentBaseDir := filepath.Join(s.DownloadDir, s.MetaInfo.Info.Name)
-				pathParts := append([]string{torrentBaseDir}, fileInfo.Path...)
-				fullFilePath := filepath.Join(pathParts...)
+				fullFilePath, err := s.layout.Resolve(fileInfo.Path)
+				if err != nil {
+					return nil, err
+				}
 
 				file, err := os.Open(fullFilePath)
 				if err != nil {
@@ -542,7 +554,10 @@ func (s *TorrentSession) readBlockFromDisk(index, begin, length uint32) ([]byte,
 		}
 
 	} else {
-		fullFilePath := filepath.Join(s.DownloadDir, s.MetaInfo.Info.Name)
+		fullFilePath, err := s.layout.Resolve(nil)
+		if err != nil {
+			return nil, err
+		}
 		file, err := os.Open(fullFilePath)
 		if err != nil {
 			return nil, err
@@ -868,14 +883,16 @@ func (s *TorrentSession) preallocateFiles() error {
 	}
 
 	if len(s.MetaInfo.Info.Files) > 0 {
-		torrentBaseDir := filepath.Join(s.DownloadDir, s.MetaInfo.Info.Name)
+		torrentBaseDir := s.layout.Base()
 		logger.Logf("Multi-file torrent. Base directory: %s\n", torrentBaseDir)
 		if err := os.MkdirAll(torrentBaseDir, 0755); err != nil {
 			return fmt.Errorf("failed to create base torrent directory %s: %w", torrentBaseDir, err)
 		}
 		for _, fileInfo := range s.MetaInfo.Info.Files {
-			pathParts := append([]string{torrentBaseDir}, fileInfo.Path...)
-			fullFilePath := filepath.Join(pathParts...)
+			fullFilePath, err := s.layout.Resolve(fileInfo.Path)
+			if err != nil {
+				return err
+			}
 			if err := os.MkdirAll(filepath.Dir(fullFilePath), 0755); err != nil {
 				return fmt.Errorf("failed to create subdirectory for %s: %w", fullFilePath, err)
 			}
@@ -893,7 +910,10 @@ func (s *TorrentSession) preallocateFiles() error {
 			}
 		}
 	} else {
-		fullFilePath := filepath.Join(s.DownloadDir, s.MetaInfo.Info.Name)
+		fullFilePath, err := s.layout.Resolve(nil)
+		if err != nil {
+			return err
+		}
 		logger.Logf("Single-file torrent. File: %s (size: %d bytes)\n", fullFilePath, s.MetaInfo.Info.Length)
 		file, err := os.OpenFile(fullFilePath, os.O_CREATE|os.O_RDWR, 0644)
 		if err != nil {
@@ -986,9 +1006,10 @@ func (s *TorrentSession) writePieceToDisk(pieceIndex uint32, pieceBuffer []byte)
 				continue
 			}
 
-			torrentBaseDir := filepath.Join(s.DownloadDir, s.MetaInfo.Info.Name)
-			pathParts := append([]string{torrentBaseDir}, fileInfo.Path...)
-			fullFilePath := filepath.Join(pathParts...)
+			fullFilePath, err := s.layout.Resolve(fileInfo.Path)
+			if err != nil {
+				return err
+			}
 			file, err := os.OpenFile(fullFilePath, os.O_WRONLY, 0644)
 			if err != nil {
 				return fmt.Errorf("opening file %s: %w", fullFilePath, err)
@@ -1017,7 +1038,10 @@ func (s *TorrentSession) writePieceToDisk(pieceIndex uint32, pieceBuffer []byte)
 			pieceOffsetInTorrent = 0
 		}
 	} else {
-		fullFilePath := filepath.Join(s.DownloadDir, s.MetaInfo.Info.Name)
+		fullFilePath, err := s.layout.Resolve(nil)
+		if err != nil {
+			return err
+		}
 		file, err := os.OpenFile(fullFilePath, os.O_WRONLY, 0644)
 		if err != nil {
 			return fmt.Errorf("opening file %s: %w", fullFilePath, err)

@@ -131,6 +131,11 @@ func New(r io.Reader) (*MetaInfo, error) {
 	}
 
 	if name, ok := infoMap["name"].(string); ok {
+		// The name becomes a directory or file name on disk, so it is subject
+		// to the same rules as any other path segment.
+		if err := ValidatePathSegment(name); err != nil {
+			return nil, fmt.Errorf("metainfo: unsafe 'name': %w", err)
+		}
 		mi.Info.Name = name
 	} else {
 		return nil, errors.New("metainfo: 'name' missing or not a string")
@@ -181,6 +186,11 @@ func New(r io.Reader) (*MetaInfo, error) {
 				}
 			} else {
 				return nil, fmt.Errorf("metainfo: file entry %d 'path' missing or not a list", i)
+			}
+			// Reject traversals, separators, device names and the rest
+			// before this path is ever joined onto the download directory.
+			if err := ValidatePath(fi.Path); err != nil {
+				return nil, fmt.Errorf("metainfo: unsafe path in file entry %d: %w", i, err)
 			}
 			if md5sum, md5Ok := fileMap["md5sum"].(string); md5Ok {
 				fi.Md5sum = md5sum
