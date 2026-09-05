@@ -409,3 +409,80 @@ func TestSendNeverBlocks(t *testing.T) {
 		t.Fatal("SendHave blocked when the outbound queue was full")
 	}
 }
+
+// TestEventsFireOnStateChanges is the contract the torrent actor depends on:
+// Have, Bitfield, and choke/interest changes must surface as Events, not just
+// as accessor state a poller would have to notice on its own.
+func TestEventsFireOnStateChanges(t *testing.T) {
+	client, server := dialTestPeer(t, func(uint32) bool { return false }, nil)
+	go client.Run()
+
+	// Consume the Interested the client sends on startup.
+	readFrame(t, server)
+
+	writeFrame(t, server, MsgBitfield, []byte{0xF0})
+	if ev := waitEvent(t, client.Events); ev.Kind != EventBitfield {
+		t.Fatalf("first event = %s, want Bitfield", ev.Kind)
+	}
+
+	writeFrame(t, server, MsgUnchoke, nil)
+	if ev := waitEvent(t, client.Events); ev.Kind != EventChokeChanged {
+		t.Fatalf("event = %s, want ChokeChanged", ev.Kind)
+	}
+	if client.PeerChoking() {
+		t.Fatal("PeerChoking() is still true after an Unchoke event fired")
+	}
+
+	writeFrame(t, server, MsgChoke, nil)
+	if ev := waitEvent(t, client.Events); ev.Kind != EventChokeChanged {
+		t.Fatalf("event = %s, want ChokeChanged", ev.Kind)
+	}
+
+	writeFrame(t, server, MsgInterested, nil)
+	if ev := waitEvent(t, client.Events); ev.Kind != EventInterestedChanged {
+		t.Fatalf("event = %s, want InterestedChanged", ev.Kind)
+	}
+
+	havePayload := MsgHavePayload{PieceIndex: 2}
+	writeFrame(t, server, MsgHave, havePayload.Serialize())
+	ev := waitEvent(t, client.Events)
+	if ev.Kind != EventHave || ev.PieceIndex != 2 {
+		t.Fatalf("event = %+v, want Have for piece 2", ev)
+	}
+	if !client.HasPiece(2) {
+		t.Fatal("HasPiece(2) is false after the Have event fired")
+	}
+}
+
+// TestEventsCloseWithResults matters for the fan-in pattern the actor uses:
+// both channels must reach a terminal state together so a select over both
+// cannot leak.
+func TestEventsCloseWithResults(t *testing.T) {
+	client, server := dialTestPeer(t, func(uint32) bool { return false }, nil)
+	runDone := make(chan struct{})
+	go func() { client.Run(); close(runDone) }()
+
+	server.Close()
+	<-runDone
+
+	if _, ok := <-client.Events; ok {
+		t.Fatal("Events was not closed after Run returned")
+	}
+	if _, ok := <-client.Results; ok {
+		t.Fatal("Results was not closed after Run returned")
+	}
+}
+
+func waitEvent(t *testing.T, events <-chan Event) Event {
+	t.Helper()
+	select {
+	case ev, ok := <-events:
+		if !ok {
+			t.Fatal("Events closed while waiting for an event")
+		}
+		return ev
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for an event")
+		return Event{}
+	}
+}

@@ -143,6 +143,50 @@ type PieceBlock struct {
 	Block []byte
 }
 
+// EventKind identifies a control-plane change on a peer connection: state a
+// torrent actor needs to react to but that is not itself a data block.
+type EventKind uint8
+
+const (
+	// EventBitfield fires once, after a Bitfield message replaces the peer's
+	// advertised pieces wholesale.
+	EventBitfield EventKind = iota
+	// EventHave fires per piece the peer announces after the initial bitfield.
+	EventHave
+	// EventChokeChanged fires when the peer chokes or unchokes us.
+	EventChokeChanged
+	// EventInterestedChanged fires when the peer's interest in us changes.
+	EventInterestedChanged
+)
+
+func (k EventKind) String() string {
+	switch k {
+	case EventBitfield:
+		return "Bitfield"
+	case EventHave:
+		return "Have"
+	case EventChokeChanged:
+		return "ChokeChanged"
+	case EventInterestedChanged:
+		return "InterestedChanged"
+	default:
+		return fmt.Sprintf("UnknownEvent(%d)", k)
+	}
+}
+
+// Event is a control-plane notification from a Client's read loop. It carries
+// no peer pointer — the owner already knows which Client it came from, since
+// each Client's Events channel is private to it.
+type Event struct {
+	Kind       EventKind
+	PieceIndex uint32 // valid for EventHave only
+}
+
+// eventQueueSize bounds how many pending events a slow consumer may leave
+// unread. Have/choke/interest traffic is low-rate compared to blocks, so this
+// is generous headroom rather than a tight budget.
+const eventQueueSize = 256
+
 // Client represents a connection to a single BitTorrent peer.
 //
 // Concurrency contract: exactly one goroutine ever writes to Conn (sendLoop),
@@ -169,6 +213,11 @@ type Client struct {
 
 	WorkQueue chan *BlockRequest
 	Results   chan *PieceBlock
+
+	// Events carries control-plane changes (Have, Bitfield, choke/interest) to
+	// whatever owns this Client. It is closed alongside Results when Run
+	// returns.
+	Events chan Event
 
 	// outbound carries serialized frames to the single writer goroutine.
 	outbound  chan []byte
@@ -227,6 +276,7 @@ func NewClient(
 		bitfield:          bitfield.New(torrent.NumPieces),
 		WorkQueue:         make(chan *BlockRequest, PipelineSize),
 		Results:           make(chan *PieceBlock),
+		Events:            make(chan Event, eventQueueSize),
 		outbound:          make(chan []byte, outboundQueueSize),
 		done:              make(chan struct{}),
 		hasPiece:          hasPiece,
@@ -286,6 +336,22 @@ func (c *Client) BitfieldSnapshot() *bitfield.Bitfield {
 	return c.bitfield.Clone()
 }
 
+// notify pushes an Event to whoever owns this Client. It only ever runs on
+// the read-loop goroutine (Run and the handleMessage it calls), so it is the
+// single producer that makes closing Events from a deferred call in Run safe.
+//
+// The send is non-blocking: dropping an event under extreme backpressure
+// degrades a heuristic (the availability index used for rarest-first) rather
+// than breaking correctness, since HasPiece already reflects every Have and
+// Bitfield synchronously for whoever calls it directly.
+func (c *Client) notify(ev Event) {
+	select {
+	case c.Events <- ev:
+	default:
+		logger.Logf("Peer %s: event queue full, dropping %s\n", c.Conn.RemoteAddr(), ev.Kind)
+	}
+}
+
 // --- lifecycle -------------------------------------------------------------
 
 // Close shuts the connection down and unblocks every goroutine attached to it.
@@ -304,7 +370,8 @@ func (c *Client) Close() error {
 // Run is the main read loop for a peer connection. It owns the only read on
 // Conn and returns when the connection dies or the peer misbehaves.
 func (c *Client) Run() {
-	// Ordered so the writers stop before the session sees Results close.
+	// Ordered so the writers stop before the owner sees Results/Events close.
+	defer close(c.Events)
 	defer close(c.Results)
 	defer c.Close()
 
@@ -341,21 +408,25 @@ func (c *Client) handleMessage(msg *Message) bool {
 	case MsgChoke:
 		c.peerChoking.Store(true)
 		logger.Logf("Peer %s choked us.\n", c.Conn.RemoteAddr())
+		c.notify(Event{Kind: EventChokeChanged})
 
 	case MsgUnchoke:
 		c.peerChoking.Store(false)
 		logger.Logf("Peer %s unchoked us.\n", c.Conn.RemoteAddr())
+		c.notify(Event{Kind: EventChokeChanged})
 
 	case MsgInterested:
-		// Note: we deliberately do NOT unchoke here. chokingLoop in the session
-		// is the sole authority on AmChoking; the old ad-hoc unchoke on this
-		// path permanently disagreed with it.
+		// Note: we deliberately do NOT unchoke here. The choker is the sole
+		// authority on AmChoking; an ad-hoc unchoke on this path would
+		// permanently disagree with it.
 		c.peerInterested.Store(true)
 		logger.Logf("Peer %s is now interested in us.\n", c.Conn.RemoteAddr())
+		c.notify(Event{Kind: EventInterestedChanged})
 
 	case MsgNotInterested:
 		c.peerInterested.Store(false)
 		logger.Logf("Peer %s is no longer interested in us.\n", c.Conn.RemoteAddr())
+		c.notify(Event{Kind: EventInterestedChanged})
 
 	case MsgHave:
 		var havePayload MsgHavePayload
@@ -368,12 +439,14 @@ func (c *Client) handleMessage(msg *Message) bool {
 			return false
 		}
 		c.setPiece(havePayload.PieceIndex)
+		c.notify(Event{Kind: EventHave, PieceIndex: havePayload.PieceIndex})
 
 	case MsgBitfield:
 		if err := c.setBitfield(msg.Payload); err != nil {
 			logger.Warning.Printf("Peer %s: rejected Bitfield: %v\n", c.Conn.RemoteAddr(), err)
 			return false
 		}
+		c.notify(Event{Kind: EventBitfield})
 
 	case MsgPiece:
 		var piecePayload MsgPiecePayload
