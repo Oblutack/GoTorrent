@@ -9,7 +9,6 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
-	"sync/atomic"
 
 	"strings"
 
@@ -569,10 +568,25 @@ func (s *TorrentSession) readBlockFromDisk(index, begin, length uint32) ([]byte,
 	return buffer, nil
 }
 
+// hasPiece reports whether we have a verified copy of a piece. Peer
+// connections call this from their own goroutines, so it must take the mutex
+// rather than sharing OurBitfield directly.
+func (s *TorrentSession) hasPiece(index uint32) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.OurBitfield.HasPiece(index)
+}
+
 func (s *TorrentSession) connectToPeer(peerInfo tracker.PeerInfo) {
 	logger.Logf("Attempting to connect and handshake with peer: %s\n", net.JoinHostPort(peerInfo.IP.String(), strconv.Itoa(int(peerInfo.Port))))
 
-	client, err := peer.NewClient(peerInfo, s.MetaInfo.InfoHash, s.OurPeerID, s.numPiecesInTorrent, s.OurBitfield, s.readBlockFromDisk)
+	torrentInfo := peer.TorrentInfo{
+		InfoHash:    s.MetaInfo.InfoHash,
+		NumPieces:   s.numPiecesInTorrent,
+		PieceLength: s.MetaInfo.Info.PieceLength,
+		TotalLength: s.MetaInfo.TotalLength,
+	}
+	client, err := peer.NewClient(peerInfo, torrentInfo, s.OurPeerID, s.hasPiece, s.readBlockFromDisk)
 	if err != nil {
 		logger.Warning.Printf("Failed to connect or handshake with peer %s: %v\n", peerInfo.IP.String(), err)
 		return
@@ -647,6 +661,15 @@ func (s *TorrentSession) downloadLoop() error {
 				for i := range pw.Blocks {
 					block := &pw.Blocks[i]
 					if block.Offset == resultBlock.Begin && block.State == 1 {
+						// The peer layer already bounds the block to the piece,
+						// but the block must also be exactly the size we asked
+						// for or the piece would contain a hole.
+						if uint32(len(resultBlock.Block)) != block.Length {
+							logger.Warning.Printf("Discarding block for piece %d offset %d: got %d bytes, expected %d.\n",
+								resultBlock.Index, resultBlock.Begin, len(resultBlock.Block), block.Length)
+							blockFound = true
+							break
+						}
 						block.State = 2
 						copy(pw.Buffer[resultBlock.Begin:], resultBlock.Block)
 						pw.ReceivedBlocks++
@@ -742,7 +765,7 @@ func (s *TorrentSession) downloadLoop() error {
 				for _, peerClient := range s.ConnectedPeers {
 					now := time.Now().Unix()
 					// If they haven't sent a piece in 45s and we're stalled, drop them to force tracker/reconnect
-					if now-atomic.LoadInt64(&peerClient.LastPieceReceived) > 45 {
+					if now-peerClient.LastPieceReceivedUnix() > 45 {
 						logger.Warning.Printf("Stalled download. Dropping inactive peer %s to find seeders.\n", peerClient.Conn.RemoteAddr())
 						peerClient.Close()
 					}
@@ -775,7 +798,7 @@ func (s *TorrentSession) downloadLoop() error {
 				}
 				count := 0
 				for _, peerClient := range s.ConnectedPeers {
-					if peerClient.Bitfield.HasPiece(index) {
+					if peerClient.HasPiece(index) {
 						count++
 					}
 				}
@@ -814,7 +837,7 @@ func (s *TorrentSession) downloadLoop() error {
 					}
 
 					for _, peerClient := range s.ConnectedPeers {
-						if !peerClient.PeerChoking && peerClient.Bitfield.HasPiece(pw.Index) {
+						if !peerClient.PeerChoking() && peerClient.HasPiece(pw.Index) {
 							if len(peerClient.WorkQueue) < cap(peerClient.WorkQueue) {
 								block.State = 1
 								block.RequestedAt = time.Now()
@@ -1028,38 +1051,25 @@ func (s *TorrentSession) chokingLoop() {
 		case <-ticker.C:
 			s.mu.Lock()
 
-			// Napravi listu zainteresovanih peerova
-			interestedPeers := make([]*peer.Client, 0)
-			for _, peerClient := range s.ConnectedPeers {
-				if peerClient.PeerInterested {
-					interestedPeers = append(interestedPeers, peerClient)
-				}
-			}
-
-			// TODO: Implementirati sortiranje po brzini uploada za pravi Tit-for-Tat.
-			// Za sada, samo uzimamo prvih N.
-
+			// TODO: sort by upload rate for real tit-for-tat. For now we just
+			// take the first N interested peers.
 			unchokedCount := 0
-			// Prođi kroz sve konektovane peerove i odluči koga choke/unchoke
 			for _, peerClient := range s.ConnectedPeers {
-				// Da li je ovaj peer u listi onih koje treba da unchoke-ujemo?
-				shouldUnchoke := false
-				if peerClient.PeerInterested && unchokedCount < unchokeSlots {
-					shouldUnchoke = true
+				shouldUnchoke := peerClient.PeerInterested() && unchokedCount < unchokeSlots
+				if shouldUnchoke {
 					unchokedCount++
 				}
 
-				if shouldUnchoke && peerClient.AmChoking {
-					// Bili smo ga choke-ovali, a sada treba da ga unchoke-ujemo
-					peerClient.AmChoking = false
+				switch {
+				case shouldUnchoke && peerClient.AmChoking():
+					// SendUnchoke owns the AmChoking flag, so the flag and the
+					// wire message cannot drift apart.
 					if err := peerClient.SendUnchoke(); err != nil {
 						logger.Logf("Failed to send Unchoke to %s: %v", peerClient.Conn.RemoteAddr(), err)
 					} else {
 						logger.Logf("Optimistically unchoking peer %s", peerClient.Conn.RemoteAddr())
 					}
-				} else if !shouldUnchoke && !peerClient.AmChoking {
-					// Nije u listi za unchoke, a trenutno je unchoked. Choke-uj ga.
-					peerClient.AmChoking = true
+				case !shouldUnchoke && !peerClient.AmChoking():
 					if err := peerClient.SendChoke(); err != nil {
 						logger.Logf("Failed to send Choke to %s: %v", peerClient.Conn.RemoteAddr(), err)
 					} else {
