@@ -1,0 +1,11 @@
+# Keep line endings LF everywhere, including in the working tree on Windows.
+# Without this, git checks Go files out as CRLF and `gofmt -l .` reports every
+# one of them as unformatted while CI, running on Linux, sees them as fine.
+* text=auto eol=lf
+
+*.png binary
+*.gif binary
+*.jpg binary
+*.iso binary
+*.exe binary
+*.torrent binary
