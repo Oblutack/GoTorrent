@@ -35,6 +35,11 @@ const defaultBlockLength uint32 = 16384
 const maxPeers = 50
 const blockRequestTimeout = 15 * time.Second
 
+// maxInFlightPieces bounds how many pieces may hold a full piece buffer at
+// once. Peak memory is roughly maxInFlightPieces * Info.PieceLength, which is
+// what keeps a 6 GB torrent from allocating 6 GB of heap at startup.
+const maxInFlightPieces = 64
+
 type PieceWork struct {
 	Index          uint32
 	Length         int64
@@ -52,6 +57,18 @@ type BlockState struct {
 	RequestedAt time.Time
 }
 
+// errHashMismatch marks a piece whose SHA-1 did not match the metainfo.
+var errHashMismatch = errors.New("piece hash mismatch")
+
+// pieceResult reports the outcome of the asynchronous verify-and-write step
+// back to downloadLoop. This used to be signalled in-band on PieceWork itself
+// (a nil Buffer meant "write failed", ReceivedBlocks == -1 meant "hash
+// mismatch"), which made it impossible to recycle the buffer.
+type pieceResult struct {
+	pw  *PieceWork
+	err error
+}
+
 type TorrentSession struct {
 	MetaInfo           *metainfo.MetaInfo
 	OurPeerID          [20]byte
@@ -67,6 +84,9 @@ type TorrentSession struct {
 
 	mu           sync.Mutex
 	ActivePieces map[uint32]*PieceWork
+
+	// bufferPool recycles full-size piece buffers between active pieces.
+	bufferPool sync.Pool
 
 	muDownloaded     sync.Mutex
 	bytesDownloaded  int64
@@ -170,6 +190,12 @@ func New(metaInfo *metainfo.MetaInfo, listenPort uint16, downloadDir string) (*T
 		PieceWorkQueue:     make(chan *PieceWork, numPieces),
 		Results:            make(chan *peer.PieceBlock, 100),
 		lastSampledTime:    time.Now(),
+	}
+
+	pieceLength := metaInfo.Info.PieceLength
+	s.bufferPool.New = func() interface{} {
+		buf := make([]byte, pieceLength)
+		return &buf
 	}
 
 	if err := s.loadState(); err != nil {
@@ -408,6 +434,27 @@ func (s *TorrentSession) trackerLoop() {
 	}
 }
 
+// getPieceBuffer hands out a buffer of exactly length bytes, reusing a pooled
+// allocation when one is available. The returned slice always has the pool's
+// full-size backing array so putPieceBuffer can hand it straight back.
+func (s *TorrentSession) getPieceBuffer(length int64) []byte {
+	bufPtr := s.bufferPool.Get().(*[]byte)
+	buf := *bufPtr
+	if int64(cap(buf)) < length {
+		buf = make([]byte, length)
+	}
+	return buf[:length]
+}
+
+// putPieceBuffer returns a buffer to the pool. Passing nil is a no-op.
+func (s *TorrentSession) putPieceBuffer(buf []byte) {
+	if buf == nil {
+		return
+	}
+	full := buf[:cap(buf)]
+	s.bufferPool.Put(&full)
+}
+
 func (s *TorrentSession) populateWorkQueue() {
 	for i := 0; i < s.numPiecesInTorrent; i++ {
 		idx := uint32(i)
@@ -420,11 +467,13 @@ func (s *TorrentSession) populateWorkQueue() {
 				pieceLength = 0
 			}
 
+			// Buffer stays nil here. It is allocated from bufferPool only when
+			// the piece becomes active, so queued work costs a few hundred
+			// bytes per piece instead of a full piece length.
 			pw := &PieceWork{
 				Index:  idx,
 				Length: pieceLength,
 				Hash:   s.MetaInfo.PieceHashes[i],
-				Buffer: make([]byte, pieceLength),
 			}
 
 			numBlocks := int((pieceLength + int64(defaultBlockLength) - 1) / int64(defaultBlockLength))
@@ -556,12 +605,32 @@ func (s *TorrentSession) downloadLoop() error {
 	defer workTicker.Stop()
 
 	// Channel for async hash&disk ops
-	verifiedPiecesCh := make(chan *PieceWork, 100)
+	verifiedPiecesCh := make(chan *pieceResult, 100)
 
-	for s.TrackerRequest.Left > 0 {
+	for {
+		s.mu.Lock()
+		left := s.TrackerRequest.Left
+		activeCount := len(s.ActivePieces)
+		s.mu.Unlock()
+
+		if left <= 0 {
+			break
+		}
+
+		// Every active piece holds a full piece buffer, so the in-flight cap is
+		// what bounds memory. Receiving from a nil channel blocks forever, which
+		// disables the intake arm of the select until a piece completes.
+		var workQueue <-chan *PieceWork
+		if activeCount < maxInFlightPieces {
+			workQueue = s.PieceWorkQueue
+		}
+
 		select {
-		case pieceWork := <-s.PieceWorkQueue:
+		case pieceWork := <-workQueue:
 			s.mu.Lock()
+			if pieceWork.Buffer == nil {
+				pieceWork.Buffer = s.getPieceBuffer(pieceWork.Length)
+			}
 			s.ActivePieces[pieceWork.Index] = pieceWork
 			s.mu.Unlock()
 			logger.Logf("Piece %d moved to active work.\n", pieceWork.Index)
@@ -591,58 +660,61 @@ func (s *TorrentSession) downloadLoop() error {
 					// logger.Logf("Received unsolicited/late block for piece %d, offset %d. Discarding.\n", resultBlock.Index, resultBlock.Begin)
 				}
 				if pw.TotalBlocks > 0 && pw.ReceivedBlocks == pw.TotalBlocks {
-					// Offload hash & disk write to goroutine
+					delete(s.ActivePieces, pw.Index) // Remove from active immediately
+
+					// Offload hash & disk write to a goroutine so downloadLoop
+					// keeps servicing the wire while SHA-1 and I/O happen.
 					go func(offloadPw *PieceWork) {
 						expectedHash := s.MetaInfo.PieceHashes[offloadPw.Index]
 						actualHash := sha1.Sum(offloadPw.Buffer)
-						if bytes.Equal(actualHash[:], expectedHash[:]) {
-							if err := s.writePieceToDisk(offloadPw.Index, offloadPw.Buffer); err != nil {
-								logger.Error.Printf("CRITICAL: Failed to write piece %d: %v. Re-queueing.\n", offloadPw.Index, err)
-								offloadPw.Buffer = nil // Signal write error
-								verifiedPiecesCh <- offloadPw
-							} else {
-								verifiedPiecesCh <- offloadPw
-							}
-						} else {
+						if !bytes.Equal(actualHash[:], expectedHash[:]) {
 							logger.Warning.Printf("!!!!!!!! Piece %d HASH MISMATCH! Re-queueing. !!!!!!!!\n", offloadPw.Index)
-							offloadPw.ReceivedBlocks = -1 // Signal hash mismatch
-							verifiedPiecesCh <- offloadPw
+							verifiedPiecesCh <- &pieceResult{pw: offloadPw, err: errHashMismatch}
+							return
 						}
+						if err := s.writePieceToDisk(offloadPw.Index, offloadPw.Buffer); err != nil {
+							logger.Error.Printf("CRITICAL: Failed to write piece %d: %v. Re-queueing.\n", offloadPw.Index, err)
+							verifiedPiecesCh <- &pieceResult{pw: offloadPw, err: err}
+							return
+						}
+						verifiedPiecesCh <- &pieceResult{pw: offloadPw}
 					}(pw)
-
-					delete(s.ActivePieces, pw.Index) // Remove from active immediately
 				}
 			} else {
 				logger.Logf("Received block for non-active piece %d.\n", resultBlock.Index)
 			}
 			s.mu.Unlock()
 
-		case verifiedPw := <-verifiedPiecesCh:
-			s.mu.Lock()
-			if verifiedPw.Buffer == nil || verifiedPw.ReceivedBlocks == -1 {
-				// Re-queue
+		case result := <-verifiedPiecesCh:
+			verifiedPw := result.pw
+
+			// The buffer has done its job either way: on success the bytes are
+			// on disk, on failure the piece is re-downloaded from scratch.
+			s.putPieceBuffer(verifiedPw.Buffer)
+			verifiedPw.Buffer = nil
+
+			if result.err != nil {
 				for i := range verifiedPw.Blocks {
 					verifiedPw.Blocks[i].State = 0
 				}
-				if verifiedPw.Buffer == nil {
-					verifiedPw.Buffer = make([]byte, verifiedPw.Length)
-				}
 				verifiedPw.ReceivedBlocks = 0
+				// PieceWorkQueue is buffered to numPieces and a given piece can
+				// only be in it once, so this send cannot block.
 				s.PieceWorkQueue <- verifiedPw
-			} else {
-				logger.Logf("========== Piece %d VERIFIED AND WRITTEN ==========\n", verifiedPw.Index)
-				s.OurBitfield.SetPiece(verifiedPw.Index)
-				s.TrackerRequest.Downloaded += verifiedPw.Length
-				s.TrackerRequest.Left -= verifiedPw.Length
-				logger.Logf("Updated downloaded/left: %d/%d\n", s.TrackerRequest.Downloaded, s.TrackerRequest.Left)
-				logger.Logf("Sending HAVE message for piece %d to all peers.\n", verifiedPw.Index)
-				for _, peerClient := range s.ConnectedPeers {
-					if err := peerClient.SendHave(verifiedPw.Index); err != nil {
-						logger.Warning.Printf("Failed to send HAVE: %v\n", err)
-					}
+				continue
+			}
+
+			s.mu.Lock()
+			logger.Logf("========== Piece %d VERIFIED AND WRITTEN ==========\n", verifiedPw.Index)
+			s.OurBitfield.SetPiece(verifiedPw.Index)
+			s.TrackerRequest.Downloaded += verifiedPw.Length
+			s.TrackerRequest.Left -= verifiedPw.Length
+			logger.Logf("Updated downloaded/left: %d/%d\n", s.TrackerRequest.Downloaded, s.TrackerRequest.Left)
+			logger.Logf("Sending HAVE message for piece %d to all peers.\n", verifiedPw.Index)
+			for _, peerClient := range s.ConnectedPeers {
+				if err := peerClient.SendHave(verifiedPw.Index); err != nil {
+					logger.Warning.Printf("Failed to send HAVE: %v\n", err)
 				}
-				// Free buffer
-				verifiedPw.Buffer = nil
 			}
 			s.mu.Unlock()
 
