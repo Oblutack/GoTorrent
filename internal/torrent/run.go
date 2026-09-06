@@ -274,8 +274,21 @@ func (t *Torrent) removePeer(pc *peerConn) {
 		return
 	}
 	delete(t.peers, pc.addr)
+	t.flushUploaded(pc) // bank its final total before pc is discarded
 	if t.pick != nil {
 		t.pick.Availability().RemovePeer(pc.client.BitfieldSnapshot())
+	}
+}
+
+// flushUploaded folds however many more bytes pc has served since the last
+// flush into t.uploaded. peer.Client counts upload bytes on its own
+// read-loop goroutine as it serves requests, so this delta is how that count
+// reaches the actor-owned aggregate without double-counting across calls.
+func (t *Torrent) flushUploaded(pc *peerConn) {
+	total := pc.client.Uploaded()
+	if delta := total - pc.lastUploaded; delta > 0 {
+		t.uploaded.Add(delta)
+		pc.lastUploaded = total
 	}
 }
 
@@ -448,6 +461,11 @@ func (t *Torrent) tick(now time.Time) {
 	t.pick.Expire(now)
 
 	for _, pc := range t.peers {
+		// Independent of whether the peer is choking us (that only affects
+		// what we can request from them): we may be uploading to them
+		// regardless, and this is where that count reaches t.uploaded.
+		t.flushUploaded(pc)
+
 		if pc.client.PeerChoking() {
 			continue
 		}

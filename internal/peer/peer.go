@@ -240,6 +240,7 @@ type Client struct {
 	closeOnce sync.Once
 
 	lastPieceReceived atomic.Int64 // unix seconds
+	uploaded          atomic.Int64 // cumulative bytes served to this peer
 
 	// limits bounds our transfer rate on this connection; see Limits. Set
 	// once at construction, read by the read loop (download) and sendLoop
@@ -557,9 +558,13 @@ func (c *Client) serveRequest(req MsgRequestPayload) {
 		logger.Warning.Printf("Error sending Piece message to peer %s: %v\n", c.Conn.RemoteAddr(), err)
 		return
 	}
+	c.uploaded.Add(int64(len(blockData)))
 	logger.Logf("Sent piece %d, block offset %d to peer %s\n", req.Index, req.Begin, c.Conn.RemoteAddr())
-	// TODO: Update Uploaded stats for session
 }
+
+// Uploaded returns the cumulative bytes served to this peer, for the owner's
+// aggregate upload accounting (torrent.Stats, resume data, tracker announce).
+func (c *Client) Uploaded() int64 { return c.uploaded.Load() }
 
 // validateRequest rejects a peer request before its length ever reaches
 // make([]byte, n). An unvalidated length here is a remote allocation

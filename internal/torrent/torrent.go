@@ -84,6 +84,13 @@ type peerConn struct {
 	outstanding    int       // requests sent to this peer, awaiting a Piece
 	lastAdaptBytes int64     // pc.downloaded at the last adaptation
 	lastAdaptTime  time.Time // when pipelineTarget was last recomputed
+
+	// lastUploaded is pc.client.Uploaded() as of the last flushUploaded call,
+	// so its delta can be folded into t.uploaded without double-counting.
+	// Upload bytes are counted on peer.Client's own read-loop goroutine (it
+	// serves requests as they arrive), not the actor, so this is how that
+	// count reaches the actor-owned aggregate.
+	lastUploaded int64
 }
 
 func (p *peerConn) ID() string             { return p.addr }

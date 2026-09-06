@@ -1,6 +1,7 @@
 package peer
 
 import (
+	"bytes"
 	"encoding/binary"
 	"io"
 	"net"
@@ -282,6 +283,53 @@ func TestOversizedRequestDropsPeer(t *testing.T) {
 	}
 	if served != 0 {
 		t.Fatalf("readBlockFromDisk was called %d times for an invalid request", served)
+	}
+}
+
+// TestUploadedBytesAreCounted proves serveRequest's accounting, not just
+// that it serves the block: Client.Uploaded is what internal/torrent's
+// flushUploaded reads to build the aggregate upload total reported to
+// trackers and stats.
+func TestUploadedBytesAreCounted(t *testing.T) {
+	const blockLen = 4096
+	want := bytes.Repeat([]byte{0xAB}, blockLen)
+	readBlock := func(index, begin, length uint32) ([]byte, error) {
+		return want, nil
+	}
+	client, server := dialTestPeer(t, func(uint32) bool { return true }, readBlock)
+	if err := client.SendUnchoke(); err != nil {
+		t.Fatalf("SendUnchoke: %v", err)
+	}
+	go client.Run()
+
+	if body := readFrame(t, server); MessageID(body[0]) != MsgUnchoke {
+		t.Fatalf("expected Unchoke first, got %s", MessageID(body[0]))
+	}
+	if body := readFrame(t, server); MessageID(body[0]) != MsgInterested {
+		t.Fatalf("expected Interested second, got %s", MessageID(body[0]))
+	}
+
+	if got := client.Uploaded(); got != 0 {
+		t.Fatalf("Uploaded() = %d before any request was served, want 0", got)
+	}
+
+	req := MsgRequestPayload{Index: 0, Begin: 0, Length: blockLen}
+	writeFrame(t, server, MsgRequest, req.Serialize())
+
+	body := readFrame(t, server)
+	if MessageID(body[0]) != MsgPiece {
+		t.Fatalf("expected Piece, got %s", MessageID(body[0]))
+	}
+	var piece MsgPiecePayload
+	if err := piece.Parse(body[1:]); err != nil {
+		t.Fatalf("parse Piece: %v", err)
+	}
+	if !bytes.Equal(piece.Block, want) {
+		t.Fatal("served block content does not match what readBlockFromDisk returned")
+	}
+
+	if got := client.Uploaded(); got != blockLen {
+		t.Fatalf("Uploaded() = %d after serving one block, want %d", got, blockLen)
 	}
 }
 
