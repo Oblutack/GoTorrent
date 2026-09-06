@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/Oblutack/GoTorrent/internal/logger"
@@ -51,20 +52,39 @@ type Defaults struct {
 // Summary is a point-in-time view of one managed torrent, safe to read from
 // any goroutine.
 type Summary struct {
-	InfoHash    metainfo.Hash
-	TorrentPath string
+	InfoHash metainfo.Hash
+	// Source is what Add was given: a .torrent file path, or a magnet: URI.
+	Source string
+	// Name is the best name available: the verified name from metadata once
+	// known (Torrent.Metadata().Info.Name), else a magnet's dn= hint, else
+	// the infohash. The dn= case is a hint from whoever authored the magnet,
+	// not verified against anything — display it as such, don't treat it as
+	// authoritative.
+	Name        string
 	DownloadDir string
 	Stats       torrent.Stats
 }
 
 // managedTorrent is what the Engine tracks per torrent beyond what Torrent
-// itself already knows — the .torrent file path and resolved download
-// directory need to survive a restart, so they are exactly what the
-// manifest records.
+// itself already knows — the source, resolved download directory, and (for
+// a magnet with no metadata yet) its display-name hint need to survive a
+// restart, so they are exactly what the manifest records.
 type managedTorrent struct {
 	t           *torrent.Torrent
-	torrentPath string
+	source      string
 	downloadDir string
+	displayName string
+}
+
+// displayNameFor picks the best name available for mt — see Summary.Name.
+func displayNameFor(mt *managedTorrent) string {
+	if mi := mt.t.Metadata(); mi != nil {
+		return mi.Info.Name
+	}
+	if mt.displayName != "" {
+		return mt.displayName
+	}
+	return mt.t.InfoHash().String()
 }
 
 // Engine owns a set of running torrents and the manifest that lets them
@@ -89,22 +109,40 @@ func New(stateDir string, defaults Defaults) (*Engine, error) {
 	}, nil
 }
 
-// Add loads a .torrent file and starts it running under the engine's
-// management. downloadDir overrides the engine's default for this torrent
-// alone; pass "" to use the default. The torrent is persisted to the
-// manifest before it is started, so Add either leaves the fleet exactly as
-// it was or commits both the in-memory and on-disk state together.
-func (e *Engine) Add(torrentPath, downloadDir string) (metainfo.Hash, error) {
-	mi, err := metainfo.Load(torrentPath)
-	if err != nil {
-		return metainfo.Hash{}, fmt.Errorf("engine: loading %s: %w", torrentPath, err)
+// Add starts a torrent running under the engine's management from either a
+// .torrent file path or a magnet: URI — anything metainfo.ParseMagnet
+// recognises by its "magnet:" prefix is treated as the latter. downloadDir
+// overrides the engine's default for this torrent alone; pass "" to use the
+// default. The torrent is persisted to the manifest before it is started, so
+// Add either leaves the fleet exactly as it was or commits both the
+// in-memory and on-disk state together.
+func (e *Engine) Add(source, downloadDir string) (metainfo.Hash, error) {
+	var (
+		hash     metainfo.Hash
+		mi       *metainfo.MetaInfo
+		trackers []string
+		dn       string
+	)
+
+	if strings.HasPrefix(source, "magnet:") {
+		m, err := metainfo.ParseMagnet(source)
+		if err != nil {
+			return metainfo.Hash{}, fmt.Errorf("engine: parsing magnet: %w", err)
+		}
+		hash, trackers, dn = m.InfoHash, m.Trackers, m.DisplayName
+	} else {
+		loaded, err := metainfo.Load(source)
+		if err != nil {
+			return metainfo.Hash{}, fmt.Errorf("engine: loading %s: %w", source, err)
+		}
+		mi, hash = loaded, loaded.InfoHash
 	}
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	if _, exists := e.torrents[mi.InfoHash]; exists {
-		return mi.InfoHash, fmt.Errorf("engine: %s is already added", mi.InfoHash)
+	if _, exists := e.torrents[hash]; exists {
+		return hash, fmt.Errorf("engine: %s is already added", hash)
 	}
 	if downloadDir == "" {
 		downloadDir = e.defaults.DownloadDir
@@ -113,32 +151,41 @@ func (e *Engine) Add(torrentPath, downloadDir string) (metainfo.Hash, error) {
 		return metainfo.Hash{}, errors.New("engine: no download directory given and no default configured")
 	}
 
-	tr, err := torrent.New(mi, e.torrentConfig(downloadDir))
+	cfg := e.torrentConfig(downloadDir)
+	cfg.Trackers = trackers
+
+	var tr *torrent.Torrent
+	var err error
+	if mi != nil {
+		tr, err = torrent.New(mi, cfg)
+	} else {
+		tr, err = torrent.NewFromInfoHash(hash, cfg)
+	}
 	if err != nil {
 		return metainfo.Hash{}, fmt.Errorf("engine: creating torrent: %w", err)
 	}
 
-	mt := &managedTorrent{t: tr, torrentPath: torrentPath, downloadDir: downloadDir}
-	e.torrents[mi.InfoHash] = mt
+	mt := &managedTorrent{t: tr, source: source, downloadDir: downloadDir, displayName: dn}
+	e.torrents[hash] = mt
 
 	if err := e.saveManifestLocked(); err != nil {
-		delete(e.torrents, mi.InfoHash)
+		delete(e.torrents, hash)
 		return metainfo.Hash{}, fmt.Errorf("engine: persisting manifest: %w", err)
 	}
 
 	go func() {
 		if err := tr.Run(context.Background()); err != nil {
-			logger.Error.Printf("engine: torrent %s: %v\n", mi.InfoHash, err)
+			logger.Error.Printf("engine: torrent %s: %v\n", hash, err)
 		}
 	}()
 
-	return mi.InfoHash, nil
+	return hash, nil
 }
 
 // Load reloads every torrent recorded in the manifest, e.g. at process
-// startup. A torrent file that fails to load is logged and skipped rather
-// than aborting the rest of the fleet — a single moved or deleted .torrent
-// file should not take every other torrent down with it.
+// startup. A torrent that fails to load is logged and skipped rather than
+// aborting the rest of the fleet — one moved or deleted .torrent file
+// shouldn't take every other torrent down with it.
 func (e *Engine) Load() error {
 	entries, err := e.readManifest()
 	if err != nil {
@@ -148,8 +195,8 @@ func (e *Engine) Load() error {
 		return fmt.Errorf("engine: reading manifest: %w", err)
 	}
 	for _, ent := range entries {
-		if _, err := e.Add(ent.TorrentPath, ent.DownloadDir); err != nil {
-			logger.Warning.Printf("engine: could not reload %s: %v\n", ent.TorrentPath, err)
+		if _, err := e.Add(ent.Source, ent.DownloadDir); err != nil {
+			logger.Warning.Printf("engine: could not reload %s: %v\n", ent.Source, err)
 		}
 	}
 	return nil
@@ -201,7 +248,8 @@ func (e *Engine) List() []Summary {
 	for hash, mt := range e.torrents {
 		out = append(out, Summary{
 			InfoHash:    hash,
-			TorrentPath: mt.torrentPath,
+			Source:      mt.source,
+			Name:        displayNameFor(mt),
 			DownloadDir: mt.downloadDir,
 			Stats:       mt.t.Stats(),
 		})

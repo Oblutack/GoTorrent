@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -20,15 +19,16 @@ import (
 	"github.com/Oblutack/GoTorrent/internal/ratelimit"
 )
 
-// torrentPaths collects a flag that may be repeated, one -torrent per file.
-type torrentPaths []string
+// torrentSources collects a flag that may be repeated, one -torrent per
+// .torrent file or magnet: URI.
+type torrentSources []string
 
-func (p *torrentPaths) String() string     { return strings.Join(*p, ",") }
-func (p *torrentPaths) Set(v string) error { *p = append(*p, v); return nil }
+func (p *torrentSources) String() string     { return strings.Join(*p, ",") }
+func (p *torrentSources) Set(v string) error { *p = append(*p, v); return nil }
 
 func main() {
-	var torrentFiles torrentPaths
-	flag.Var(&torrentFiles, "torrent", "Path to a .torrent file (repeat for multiple torrents)")
+	var sources torrentSources
+	flag.Var(&sources, "torrent", "A .torrent file path or a magnet: URI (repeat for multiple torrents)")
 	downloadDir := flag.String("dir", ".", "Default directory to save downloaded files")
 	stateDir := flag.String("state-dir", "", "Directory for the fleet manifest (default: a directory under the OS config dir)")
 	listenPort := flag.Uint("port", 6881, "Port advertised to trackers (no inbound listener yet)")
@@ -64,14 +64,14 @@ func main() {
 		logger.Error.Fatalf("Error loading fleet manifest: %v\n", err)
 	}
 
-	for _, path := range torrentFiles {
-		if _, err := e.Add(path, ""); err != nil {
-			logger.Warning.Printf("Could not add %s: %v\n", path, err)
+	for _, src := range sources {
+		if _, err := e.Add(src, ""); err != nil {
+			logger.Warning.Printf("Could not add %s: %v\n", src, err)
 		}
 	}
 
 	if len(e.List()) == 0 {
-		fmt.Println("Usage: gottrent -torrent <path_to_torrent_file> [-torrent <path2> ...] [-dir <download_directory>] [-port <listen_port>]")
+		fmt.Println("Usage: gottrent -torrent <path_to_torrent_file | magnet_uri> [-torrent <another> ...] [-dir <download_directory>] [-port <listen_port>]")
 		flag.PrintDefaults()
 		return
 	}
@@ -129,7 +129,7 @@ func displayFleet(e *engine.Engine, shutdownDone <-chan struct{}) {
 				percent = float64(s.Stats.Downloaded) / float64(s.Stats.TotalLength) * 100
 			}
 
-			name := strings.TrimSuffix(filepath.Base(s.TorrentPath), ".torrent")
+			name := s.Name
 			if len(name) > 24 {
 				name = name[:21] + "..."
 			}

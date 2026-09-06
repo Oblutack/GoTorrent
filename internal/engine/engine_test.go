@@ -125,8 +125,58 @@ func TestAddStartsAndListsTheTorrent(t *testing.T) {
 	if list[0].InfoHash != hash {
 		t.Fatalf("List()[0].InfoHash = %s, want %s", list[0].InfoHash, hash)
 	}
-	if list[0].TorrentPath != path {
-		t.Fatalf("List()[0].TorrentPath = %q, want %q", list[0].TorrentPath, path)
+	if list[0].Source != path {
+		t.Fatalf("List()[0].Source = %q, want %q", list[0].Source, path)
+	}
+}
+
+// TestAddAcceptsMagnetURI proves Add's file-path-vs-magnet branch actually
+// takes the magnet path: no .torrent file involved at all, just a
+// "magnet:?xt=..." string, and the torrent should come up in
+// FetchingMetadata (there is no metadata yet) with the dn= hint as its
+// display name until real metadata says otherwise.
+func TestAddAcceptsMagnetURI(t *testing.T) {
+	e := newTestEngine(t)
+
+	hash := metainfo.Hash{0xaa, 0xbb, 0xcc}
+	uri := "magnet:?xt=urn:btih:" + hash.String() + "&dn=A+Cool+Torrent&tr=http%3A%2F%2F127.0.0.1%3A1%2Fannounce"
+
+	got, err := e.Add(uri, "")
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if got != hash {
+		t.Fatalf("Add returned %s, want %s", got, hash)
+	}
+
+	tr, ok := e.Get(hash)
+	if !ok {
+		t.Fatal("Get did not find the added torrent")
+	}
+	if tr.Metadata() != nil {
+		t.Fatal("a magnet-sourced torrent already has metadata")
+	}
+	waitForState(t, tr, torrent.StateFetchingMetadata, 5*time.Second)
+
+	list := e.List()
+	if len(list) != 1 {
+		t.Fatalf("List() has %d entries, want 1", len(list))
+	}
+	if list[0].Source != uri {
+		t.Fatalf("List()[0].Source = %q, want the original magnet URI", list[0].Source)
+	}
+	if list[0].Name != "A Cool Torrent" {
+		t.Fatalf("List()[0].Name = %q, want the magnet's dn= hint", list[0].Name)
+	}
+}
+
+func TestAddRejectsBadMagnetURI(t *testing.T) {
+	e := newTestEngine(t)
+	if _, err := e.Add("magnet:?dn=NoInfoHash", ""); err == nil {
+		t.Fatal("Add accepted a magnet with no infohash, want an error")
+	}
+	if len(e.List()) != 0 {
+		t.Fatal("a rejected magnet Add left an entry behind")
 	}
 }
 

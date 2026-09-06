@@ -77,11 +77,10 @@ func (t *Torrent) doPause() error {
 	if !t.State().Active() {
 		return nil
 	}
+	t.stopAnnounceLoop()
 	t.shutdownPeers()
 	t.checkpoint()
-	if mi := t.mi.Load(); mi != nil {
-		t.announceOnce(mi, tracker.EventStopped, announceTimeout)
-	}
+	t.announceOnce(tracker.EventStopped, announceTimeout)
 	t.setState(StatePaused)
 	return nil
 }
@@ -91,17 +90,15 @@ func (t *Torrent) doResume() error {
 		return nil
 	}
 	mi := t.mi.Load()
-	if mi == nil {
+	switch {
+	case mi == nil:
 		t.setState(StateFetchingMetadata)
-		return nil
-	}
-	if t.pick.Complete() {
+	case t.pick.Complete():
 		t.setState(StateSeeding)
-	} else {
+	default:
 		t.setState(StateDownloading)
 	}
-	t.wg.Add(1)
-	go t.announceLoop(t.ctx, tracker.EventStarted)
+	t.restartAnnounceLoop(tracker.EventStarted)
 	return nil
 }
 
@@ -125,11 +122,14 @@ func (t *Torrent) doRecheck() error {
 	t.publishHave(have)
 	t.downloaded.Store(bytesForBitfield(mi, have))
 	t.afterVerify()
-	t.wg.Add(1)
-	go t.announceLoop(t.ctx, tracker.EventNone)
+	t.restartAnnounceLoop(tracker.EventNone)
 	return nil
 }
 
+// doSetMetadata does not touch the announce loop at all: one has been
+// running continuously since Run started (announcing to Config.Trackers,
+// the magnet's tr= parameters), and announceURLs will pick up
+// mi.AnnounceURLs() on its very next iteration now that t.mi is set.
 func (t *Torrent) doSetMetadata(mi *metainfo.MetaInfo) error {
 	if t.State() != StateFetchingMetadata {
 		return errors.New("torrent: metadata already known")
@@ -139,8 +139,6 @@ func (t *Torrent) doSetMetadata(mi *metainfo.MetaInfo) error {
 		t.setState(StateError)
 		return err
 	}
-	t.wg.Add(1)
-	go t.announceLoop(t.ctx, tracker.EventStarted)
 	return nil
 }
 

@@ -13,7 +13,10 @@ import (
 // manifestVersion is bumped whenever the on-disk format changes
 // incompatibly. Like resume data, a version this build does not recognise is
 // treated as absent rather than corrupt.
-const manifestVersion = 1
+//
+// v2: torrent_path (a filesystem path only) became source (a filesystem path
+// or a magnet: URI), when Add gained magnet support.
+const manifestVersion = 2
 
 var manifestMagic = [4]byte{'G', 'T', 'F', 'L'}
 
@@ -21,7 +24,7 @@ var manifestMagic = [4]byte{'G', 'T', 'F', 'L'}
 // wire form.
 type manifestEntry struct {
 	InfoHash    metainfo.Hash
-	TorrentPath string
+	Source      string
 	DownloadDir string
 }
 
@@ -31,7 +34,7 @@ type manifestEntry struct {
 // the type.
 type manifestEntryWire struct {
 	InfoHash    string `bencode:"info_hash"`
-	TorrentPath string `bencode:"torrent_path"`
+	Source      string `bencode:"source"`
 	DownloadDir string `bencode:"download_dir"`
 }
 
@@ -57,7 +60,7 @@ func (e *Engine) saveManifestLocked() error {
 	for hash, mt := range e.torrents {
 		wire.Entries = append(wire.Entries, manifestEntryWire{
 			InfoHash:    hash.String(),
-			TorrentPath: mt.torrentPath,
+			Source:      mt.source,
 			DownloadDir: mt.downloadDir,
 		})
 	}
@@ -101,11 +104,11 @@ func (e *Engine) readManifest() ([]manifestEntry, error) {
 	for _, we := range wire.Entries {
 		hash, err := metainfo.ParseHash(we.InfoHash)
 		if err != nil {
-			return nil, fmt.Errorf("engine: manifest entry %q: %w", we.TorrentPath, err)
+			return nil, fmt.Errorf("engine: manifest entry %q: %w", we.Source, err)
 		}
 		entries = append(entries, manifestEntry{
 			InfoHash:    hash,
-			TorrentPath: we.TorrentPath,
+			Source:      we.Source,
 			DownloadDir: we.DownloadDir,
 		})
 	}

@@ -8,6 +8,8 @@ import (
 	"io"
 	"math/rand"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"sync"
@@ -630,6 +632,54 @@ func TestFetchingMetadataAcceptsPeers(t *testing.T) {
 	}
 	if tr.State() != StateFetchingMetadata {
 		t.Fatalf("State() = %s, want it to remain FetchingMetadata", tr.State())
+	}
+}
+
+// TestMagnetTorrentAnnouncesToConfiguredTrackers proves the other half of
+// the magnet-link path: a torrent built from just an infohash (no DialPeer
+// call from the test) discovers and connects to a peer entirely on its own,
+// via a tracker URL supplied through Config.Trackers — the magnet's tr=
+// parameters, in a real client. This is what announceURLs falling back to
+// Config.Trackers before metadata exists is actually for.
+func TestMagnetTorrentAnnouncesToConfiguredTrackers(t *testing.T) {
+	const pieceLength = 16384
+	mi, content := buildTorrent(t, "viaMagnet.bin", pieceLength, []fileSpec{{length: pieceLength * 2}})
+	seeder := newFakeSeeder(t, mi, content)
+	pi := seeder.peerInfo()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		compact := append(append([]byte{}, pi.IP.To4()...), byte(pi.Port>>8), byte(pi.Port))
+		resp := struct {
+			Interval int64  `bencode:"interval"`
+			Peers    []byte `bencode:"peers"`
+		}{Interval: 3600, Peers: compact}
+		data, err := bencode.Marshal(resp)
+		if err != nil {
+			t.Fatalf("marshal fake tracker response: %v", err)
+		}
+		w.Write(data)
+	}))
+	defer srv.Close()
+
+	cfg := newTestConfig(t)
+	cfg.Trackers = []string{srv.URL + "/announce"}
+
+	tr, err := NewFromInfoHash(mi.InfoHash, cfg)
+	if err != nil {
+		t.Fatalf("NewFromInfoHash: %v", err)
+	}
+	runInBackground(t, tr)
+	waitForState(t, tr, StateFetchingMetadata, 2*time.Second)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if tr.Stats().PeerCount > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if tr.Stats().PeerCount == 0 {
+		t.Fatal("torrent never connected to the peer discovered via its magnet-configured tracker")
 	}
 }
 

@@ -68,6 +68,11 @@ type Config struct {
 	// than each torrent independently.
 	DownLimit *ratelimit.Limiter
 	UpLimit   *ratelimit.Limiter
+	// Trackers seeds the announce loop before metadata is known — a magnet
+	// link's tr= parameters. Ignored once mi is set: from then on
+	// announceURLs reads mi.AnnounceURLs() instead. Meaningless for a
+	// Config passed to New, which always has metadata from the start.
+	Trackers []string
 }
 
 // peerConn is one connected peer plus the bookkeeping the actor needs that
@@ -142,6 +147,11 @@ type Torrent struct {
 
 	piecesVerifiedSinceCheckpoint int
 	lastCheckpoint                time.Time
+
+	// announceCancel stops the currently-running announceLoop, if any. It
+	// exists so Pause/Resume/Recheck can restart the loop cleanly instead of
+	// accumulating a duplicate every cycle — see restartAnnounceLoop.
+	announceCancel context.CancelFunc
 	// --- end actor-owned ---
 
 	downloaded atomic.Int64
@@ -330,19 +340,22 @@ func (t *Torrent) Run(ctx context.Context) error {
 			t.setState(StateError)
 			return nil
 		}
-		t.wg.Add(1)
-		go t.announceLoop(t.ctx, tracker.EventStarted)
 	} else {
 		t.setState(StateFetchingMetadata)
 	}
+	// Started unconditionally: a magnet-link torrent announces to its
+	// magnet-supplied trackers (Config.Trackers) from the moment it starts,
+	// and the same loop picks up mi.AnnounceURLs() once metadata arrives —
+	// see announceLoop's comment.
+	t.restartAnnounceLoop(tracker.EventStarted)
 
 	t.run(t.ctx)
 
 	t.shutdownPeers()
-	if mi := t.mi.Load(); mi != nil {
+	if t.mi.Load() != nil {
 		t.checkpoint()
-		t.announceOnce(mi, tracker.EventStopped, shutdownAnnounceT)
 	}
+	t.announceOnce(tracker.EventStopped, shutdownAnnounceT)
 	t.wg.Wait()
 
 	// Only safe once wg.Wait has returned: a straggling verify goroutine
