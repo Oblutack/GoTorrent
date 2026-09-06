@@ -93,7 +93,17 @@ func NewHandshake(infoHash, peerID [20]byte) *Handshake {
 		PeerID:   peerID,
 	}
 	copy(hs.Pstr[:], ProtocolString)
+	// Advertise BEP 10 extension-protocol support unconditionally — this
+	// client always understands the envelope, even before it supported any
+	// extension riding inside it.
+	hs.Reserved[extensionReservedByte] |= extensionReservedBit
 	return hs
+}
+
+// SupportsExtensions reports whether the reserved bits in a handshake
+// advertise BEP 10 extension-protocol support.
+func (h *Handshake) SupportsExtensions() bool {
+	return h.Reserved[extensionReservedByte]&extensionReservedBit != 0
 }
 
 func (h *Handshake) Serialize() []byte {
@@ -162,6 +172,14 @@ const (
 	EventChokeChanged
 	// EventInterestedChanged fires when the peer's interest in us changes.
 	EventInterestedChanged
+	// EventExtendedHandshake fires once, after the peer's BEP 10 extended
+	// handshake is processed — the owner can then check SupportsUtMetadata
+	// and PeerMetadataSize to decide whether to fetch metadata from this
+	// peer.
+	EventExtendedHandshake
+	// EventMetadataReject fires when the peer refuses a requested metadata
+	// piece (BEP 9 msg_type 2). PieceIndex is the rejected piece.
+	EventMetadataReject
 )
 
 func (k EventKind) String() string {
@@ -174,6 +192,10 @@ func (k EventKind) String() string {
 		return "ChokeChanged"
 	case EventInterestedChanged:
 		return "InterestedChanged"
+	case EventExtendedHandshake:
+		return "ExtendedHandshake"
+	case EventMetadataReject:
+		return "MetadataReject"
 	default:
 		return fmt.Sprintf("UnknownEvent(%d)", k)
 	}
@@ -184,7 +206,7 @@ func (k EventKind) String() string {
 // each Client's Events channel is private to it.
 type Event struct {
 	Kind       EventKind
-	PieceIndex uint32 // valid for EventHave only
+	PieceIndex uint32 // valid for EventHave and EventMetadataReject
 }
 
 // eventQueueSize bounds how many pending events a slow consumer may leave
@@ -202,6 +224,20 @@ type Limits struct {
 	Up   *ratelimit.Limiter
 }
 
+// Callbacks are the owner's hooks for serving another peer's requests. All
+// three are optional; a nil one just means "we never have anything to
+// serve" for that kind of request rather than a panic.
+type Callbacks struct {
+	// HasPiece reports whether we have a given piece, for answering Request.
+	HasPiece func(index uint32) bool
+	// ReadBlock reads one block off disk, for answering Request.
+	ReadBlock func(index, begin, length uint32) ([]byte, error)
+	// MetadataBytes returns the raw info-dictionary bytes if known, for
+	// answering a BEP 9 ut_metadata request — nil means we don't have
+	// metadata yet ourselves (e.g. we're mid-magnet too).
+	MetadataBytes func() []byte
+}
+
 // Client represents a connection to a single BitTorrent peer.
 //
 // Concurrency contract: exactly one goroutine ever writes to Conn (sendLoop),
@@ -210,9 +246,15 @@ type Limits struct {
 // bitfieldMu — nothing is a plain field read across goroutines.
 type Client struct {
 	Conn     net.Conn
-	Torrent  TorrentInfo
 	OurID    [20]byte
 	RemoteID [20]byte
+
+	// torrentInfo starts out possibly NumPieces==0 (the magnet-link path)
+	// and is upgraded exactly once, by UpgradeMetadata, when the owner
+	// learns the real metadata — from a goroutine other than this
+	// connection's own read loop, hence the atomic rather than a plain
+	// field like everything else that never changes after construction.
+	torrentInfo atomic.Pointer[TorrentInfo]
 
 	// Choke/interest state. Written by the read loop and by the session's
 	// choking algorithm, read by both plus writeLoop.
@@ -222,17 +264,27 @@ type Client struct {
 	peerInterested atomic.Bool // the peer is interested in us
 
 	// bitfield is written by the read loop (Have/Bitfield) and read by the
-	// session's rarity scan.
-	bitfieldMu sync.RWMutex
-	bitfield   *bitfield.Bitfield
+	// session's rarity scan. pendingBitfield holds a peer's raw Bitfield
+	// bytes received before torrentInfo had a nonzero NumPieces to validate
+	// them against; UpgradeMetadata applies it once that's known. BEP 3
+	// sends Bitfield at most once, so this is the only chance to ever learn
+	// what an early one said.
+	bitfieldMu      sync.RWMutex
+	bitfield        *bitfield.Bitfield
+	pendingBitfield []byte
 
 	WorkQueue chan *BlockRequest
 	Results   chan *PieceBlock
 
-	// Events carries control-plane changes (Have, Bitfield, choke/interest) to
-	// whatever owns this Client. It is closed alongside Results when Run
-	// returns.
+	// Events carries control-plane changes (Have, Bitfield, choke/interest,
+	// extended handshake, metadata reject) to whatever owns this Client. It
+	// is closed alongside Results when Run returns.
 	Events chan Event
+
+	// MetadataPieces carries BEP 9 metadata chunks as they arrive — data-
+	// bearing like Results, not lightweight like Events. Closed alongside
+	// Results when Run returns.
+	MetadataPieces chan MetadataPiece
 
 	// outbound carries serialized frames to the single writer goroutine.
 	outbound  chan []byte
@@ -247,19 +299,32 @@ type Client struct {
 	// (upload), so it needs no synchronization of its own.
 	limits Limits
 
-	// Dependencies injected from the session for seeding.
+	// peerSupportsExt is read from the handshake's reserved bits at
+	// construction and never changes, so it needs no synchronization.
+	peerSupportsExt bool
+	// peerUtMetadataID is the id (BEP 10, from the peer's own "m" dict) to
+	// address them by when we want to send a ut_metadata message; 0 means
+	// they haven't told us, or don't support it.
+	peerUtMetadataID atomic.Int32
+	// peerMetadataSize is their advertised metadata_size, once known.
+	peerMetadataSize atomic.Int64
+
+	// Dependencies injected from the owner for serving another peer's
+	// requests. See Callbacks.
 	hasPiece          func(index uint32) bool
 	readBlockFromDisk func(index, begin, length uint32) ([]byte, error)
+	metadataBytes     func() []byte
 }
 
 // NewClient attempts to connect to a peer and perform a handshake. A zero
-// Limits leaves both directions unlimited.
+// Limits leaves both directions unlimited; a zero Callbacks means this
+// connection never serves anything to the peer (fine for a client that only
+// ever downloads).
 func NewClient(
 	peerInfo tracker.PeerInfo,
 	torrent TorrentInfo,
 	ourID [20]byte,
-	hasPiece func(index uint32) bool,
-	readBlockFunc func(index, begin, length uint32) ([]byte, error),
+	callbacks Callbacks,
 	limits Limits,
 ) (*Client, error) {
 	if limits.Down == nil {
@@ -299,19 +364,22 @@ func NewClient(
 
 	c := &Client{
 		Conn:              conn,
-		Torrent:           torrent,
 		OurID:             ourID,
 		RemoteID:          peerHandshake.PeerID,
 		bitfield:          bitfield.New(torrent.NumPieces),
 		WorkQueue:         make(chan *BlockRequest, MaxPipelineSize),
 		Results:           make(chan *PieceBlock),
 		Events:            make(chan Event, eventQueueSize),
+		MetadataPieces:    make(chan MetadataPiece),
 		outbound:          make(chan []byte, outboundQueueSize),
 		done:              make(chan struct{}),
 		limits:            limits,
-		hasPiece:          hasPiece,
-		readBlockFromDisk: readBlockFunc,
+		peerSupportsExt:   peerHandshake.SupportsExtensions(),
+		hasPiece:          callbacks.HasPiece,
+		readBlockFromDisk: callbacks.ReadBlock,
+		metadataBytes:     callbacks.MetadataBytes,
 	}
+	c.torrentInfo.Store(&torrent)
 	c.amChoking.Store(true)   // we start by choking the peer
 	c.peerChoking.Store(true) // assume the peer is choking us initially
 	c.lastPieceReceived.Store(time.Now().Unix())
@@ -336,6 +404,41 @@ func (c *Client) PeerInterested() bool { return c.peerInterested.Load() }
 // LastPieceReceivedUnix is the unix time of the most recent block from this
 // peer, used by the session to drop stalled connections.
 func (c *Client) LastPieceReceivedUnix() int64 { return c.lastPieceReceived.Load() }
+
+// info returns the connection's current understanding of the torrent's
+// geometry — NumPieces==0 until metadata is known (or, before UpgradeMetadata
+// is ever called, for the life of a connection that started as a magnet).
+func (c *Client) info() TorrentInfo { return *c.torrentInfo.Load() }
+
+// UpgradeMetadata is called at most once, by the owner, when metadata
+// becomes known for a connection that started before it did (the
+// magnet-link path). It publishes the real NumPieces/PieceLength/
+// TotalLength for every future validation on this connection, and applies
+// whatever Bitfield the peer sent before there was anything to validate it
+// against — see pendingBitfield's field comment for why that particular
+// message can't just be re-requested if it was missed the first time.
+func (c *Client) UpgradeMetadata(info TorrentInfo) error {
+	c.torrentInfo.Store(&info)
+
+	c.bitfieldMu.Lock()
+	defer c.bitfieldMu.Unlock()
+
+	raw := c.pendingBitfield
+	c.pendingBitfield = nil
+	if raw == nil {
+		// No Bitfield ever arrived — some clients skip it when they have
+		// nothing to offer yet. Resize to the now-known width so a future
+		// Have has a correctly-sized bitfield to set a bit in.
+		c.bitfield = bitfield.New(info.NumPieces)
+		return nil
+	}
+	bf, err := bitfield.FromBytes(raw, info.NumPieces)
+	if err != nil {
+		return fmt.Errorf("pending bitfield is invalid against the now-known piece count: %w", err)
+	}
+	c.bitfield = bf
+	return nil
+}
 
 // HasPiece reports whether the peer has advertised the given piece.
 func (c *Client) HasPiece(index uint32) bool {
@@ -403,6 +506,7 @@ func (c *Client) Run() {
 	// Ordered so the writers stop before the owner sees Results/Events close.
 	defer close(c.Events)
 	defer close(c.Results)
+	defer close(c.MetadataPieces)
 	defer c.Close()
 
 	logger.Logf("Starting communication loop for peer %s\n", c.Conn.RemoteAddr())
@@ -413,6 +517,13 @@ func (c *Client) Run() {
 	if err := c.SendInterested(); err != nil {
 		logger.Logf("Error sending Interested to %s: %v\n", c.Conn.RemoteAddr(), err)
 		return
+	}
+	if c.peerSupportsExt {
+		if err := c.sendExtendedHandshake(); err != nil {
+			// Not fatal to the connection: we just won't get metadata or any
+			// other extension traffic from this peer.
+			logger.Logf("Error sending extended handshake to %s: %v\n", c.Conn.RemoteAddr(), err)
+		}
 	}
 
 	for {
@@ -468,11 +579,15 @@ func (c *Client) handleMessage(msg *Message) bool {
 		// magnet-link path before BEP 9 completes). There is no range to
 		// validate against and no bitfield of ours to update, but the event
 		// still fires: the owner may care that the peer has pieces at all.
-		if c.Torrent.NumPieces == 0 {
+		// Unlike Bitfield, an early Have isn't cached for UpgradeMetadata to
+		// replay — a peer completing a piece during the brief metadata-fetch
+		// window goes unrecorded until its next Have or a fresh Bitfield.
+		// Accepted as a narrow, self-healing gap rather than a second cache.
+		if c.info().NumPieces == 0 {
 			c.notify(Event{Kind: EventHave, PieceIndex: havePayload.PieceIndex})
 			break
 		}
-		if int64(havePayload.PieceIndex) >= int64(c.Torrent.NumPieces) {
+		if int64(havePayload.PieceIndex) >= int64(c.info().NumPieces) {
 			logger.Warning.Printf("Peer %s: Have for out-of-range piece %d\n", c.Conn.RemoteAddr(), havePayload.PieceIndex)
 			return false
 		}
@@ -480,11 +595,14 @@ func (c *Client) handleMessage(msg *Message) bool {
 		c.notify(Event{Kind: EventHave, PieceIndex: havePayload.PieceIndex})
 
 	case MsgBitfield:
-		// Same reasoning as MsgHave above: with no metadata yet, our
-		// bitfield is necessarily zero-width, so any real peer's Bitfield
-		// message is unvalidatable rather than invalid. Accept it without
-		// storing it.
-		if c.Torrent.NumPieces == 0 {
+		// With no metadata yet, our bitfield is necessarily zero-width, so
+		// any real peer's Bitfield message is unvalidatable rather than
+		// invalid — cache the raw bytes for UpgradeMetadata to apply once
+		// metadata (and a real width to check them against) exists.
+		if c.info().NumPieces == 0 {
+			c.bitfieldMu.Lock()
+			c.pendingBitfield = append([]byte(nil), msg.Payload...)
+			c.bitfieldMu.Unlock()
 			c.notify(Event{Kind: EventBitfield})
 			break
 		}
@@ -533,6 +651,30 @@ func (c *Client) handleMessage(msg *Message) bool {
 			return false
 		}
 		c.serveRequest(reqPayload)
+
+	case MsgExtended:
+		if len(msg.Payload) < 1 {
+			logger.Warning.Printf("Peer %s: empty Extended message\n", c.Conn.RemoteAddr())
+			return false
+		}
+		extID, body := msg.Payload[0], msg.Payload[1:]
+		var err error
+		switch {
+		case extID == 0:
+			err = c.handleExtendedHandshake(body)
+		case int(extID) == localUtMetadataID:
+			err = c.handleUtMetadataMessage(body)
+		default:
+			// An extended id for something we didn't advertise support for —
+			// either a stale id from before a renegotiation, or the peer
+			// sending garbage. Neither is a protocol violation worth
+			// dropping the connection over.
+			logger.Logf("Peer %s: extended message for unknown id %d, ignoring\n", c.Conn.RemoteAddr(), extID)
+		}
+		if err != nil {
+			logger.Warning.Printf("Peer %s: %v\n", c.Conn.RemoteAddr(), err)
+			return false
+		}
 	}
 
 	return true
@@ -578,10 +720,11 @@ func (c *Client) validateRequest(index, begin, length uint32) error {
 
 // validateBlock checks that [begin, begin+length) lies inside piece index.
 func (c *Client) validateBlock(index, begin, length uint32) error {
-	if int64(index) >= int64(c.Torrent.NumPieces) {
-		return fmt.Errorf("piece index %d out of range (%d pieces)", index, c.Torrent.NumPieces)
+	info := c.info()
+	if int64(index) >= int64(info.NumPieces) {
+		return fmt.Errorf("piece index %d out of range (%d pieces)", index, info.NumPieces)
 	}
-	pieceLen := c.Torrent.PieceLen(index)
+	pieceLen := info.PieceLen(index)
 	// uint64 arithmetic so begin+length cannot wrap.
 	if uint64(begin)+uint64(length) > uint64(pieceLen) {
 		return fmt.Errorf("block [%d,%d) exceeds piece %d length %d",

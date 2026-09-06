@@ -139,6 +139,25 @@ func (t *Torrent) doSetMetadata(mi *metainfo.MetaInfo) error {
 		t.setState(StateError)
 		return err
 	}
+
+	// Every peer connected before now did its handshake against NumPieces
+	// == 0: their Client has no meaningful NumPieces/PieceLength to validate
+	// against, and — BEP 3 sends Bitfield at most once — no way to ever
+	// re-learn what pieces they have if that message arrived and was
+	// necessarily left unapplied. UpgradeMetadata fixes both in one call;
+	// see its doc comment. Without this, a torrent that fetched its own
+	// metadata over BEP 9 would sit in Downloading forever with a peer
+	// already connected and willing, because HasPiece would never agree.
+	info := t.peerTorrentInfo()
+	for _, pc := range t.peers {
+		if err := pc.client.UpgradeMetadata(info); err != nil {
+			logger.Warning.Printf("torrent %s: %s's cached bitfield didn't fit the real piece count, dropping: %v\n",
+				t.infoHash, pc.addr, err)
+			pc.client.Close()
+			continue
+		}
+		t.pick.Availability().AddPeer(pc.client.BitfieldSnapshot())
+	}
 	return nil
 }
 
@@ -156,6 +175,8 @@ func (t *Torrent) handleEvent(ev any) {
 		t.onBlock(e.pc, e.block)
 	case eventPeerControl:
 		t.onPeerControl(e.pc, e.ev)
+	case eventMetadataPiece:
+		t.onMetadataPiece(e.pc, e.piece)
 	case eventPeerGone:
 		t.removePeer(e.pc)
 	case eventPieceVerified:
@@ -194,7 +215,8 @@ func (t *Torrent) dial(pi tracker.PeerInfo) {
 func (t *Torrent) connectAndPump(ctx context.Context, pi tracker.PeerInfo) {
 	defer t.wg.Done()
 
-	client, err := peer.NewClient(pi, t.peerTorrentInfo(), t.cfg.OurID, t.hasPieceSafe, t.readBlockSafe,
+	client, err := peer.NewClient(pi, t.peerTorrentInfo(), t.cfg.OurID,
+		peer.Callbacks{HasPiece: t.hasPieceSafe, ReadBlock: t.readBlockSafe, MetadataBytes: t.metadataBytesSafe},
 		peer.Limits{Down: t.cfg.DownLimit, Up: t.cfg.UpLimit})
 	if err != nil {
 		t.sendEvent(ctx, eventDialFailed{addr: pi.Addr()})
@@ -211,8 +233,8 @@ func (t *Torrent) connectAndPump(ctx context.Context, pi tracker.PeerInfo) {
 
 	go client.Run()
 
-	resultsOpen, eventsOpen := true, true
-	for resultsOpen || eventsOpen {
+	resultsOpen, eventsOpen, metadataOpen := true, true, true
+	for resultsOpen || eventsOpen || metadataOpen {
 		select {
 		case <-ctx.Done():
 			client.Close()
@@ -228,6 +250,11 @@ func (t *Torrent) connectAndPump(ctx context.Context, pi tracker.PeerInfo) {
 					eventsOpen = false
 				}
 			}
+			for metadataOpen {
+				if _, ok := <-client.MetadataPieces; !ok {
+					metadataOpen = false
+				}
+			}
 		case block, ok := <-client.Results:
 			if !ok {
 				resultsOpen = false
@@ -240,6 +267,12 @@ func (t *Torrent) connectAndPump(ctx context.Context, pi tracker.PeerInfo) {
 				continue
 			}
 			t.sendEvent(ctx, eventPeerControl{pc: pc, ev: pev})
+		case mp, ok := <-client.MetadataPieces:
+			if !ok {
+				metadataOpen = false
+				continue
+			}
+			t.sendEvent(ctx, eventMetadataPiece{pc: pc, piece: mp})
 		}
 	}
 
@@ -276,6 +309,7 @@ func (t *Torrent) removePeer(pc *peerConn) {
 	if t.pick != nil {
 		t.pick.Availability().RemovePeer(pc.client.BitfieldSnapshot())
 	}
+	t.abandonMetadataFetch(pc)
 }
 
 // flushUploaded folds however many more bytes pc has served since the last
@@ -291,10 +325,25 @@ func (t *Torrent) flushUploaded(pc *peerConn) {
 }
 
 // onPeerControl folds a peer's Have/Bitfield/choke/interest change into the
-// picker's availability index. Choke/interest changes need no bookkeeping
-// here — Pick and the choker read the peer's own accessors directly — so
-// only Have and Bitfield do anything.
+// picker's availability index, and drives the BEP 9 metadata fetch state
+// machine from the two event kinds that matter before metadata exists.
 func (t *Torrent) onPeerControl(pc *peerConn, ev peer.Event) {
+	switch ev.Kind {
+	case peer.EventExtendedHandshake:
+		// This is exactly the state where t.pick is nil (no metadata yet),
+		// so it has to be handled before the pick==nil early return below,
+		// not after it.
+		t.maybeStartMetadataFetch()
+		return
+	case peer.EventMetadataReject:
+		if t.metadataFetch != nil && t.metadataFetch.peer == pc {
+			logger.Warning.Printf("torrent %s: %s rejected metadata piece %d, trying another peer\n",
+				t.infoHash, pc.addr, ev.PieceIndex)
+			t.abandonMetadataFetch(pc)
+		}
+		return
+	}
+
 	if t.pick == nil {
 		return // no metadata yet; availability has nothing to track
 	}
@@ -594,6 +643,16 @@ func (t *Torrent) readBlockSafe(index, begin, length uint32) ([]byte, error) {
 		return nil, err
 	}
 	return buf, nil
+}
+
+// metadataBytesSafe answers a peer's BEP 9 ut_metadata request. t.mi is an
+// atomic pointer, so this needs no actor round-trip either — nil means we
+// don't have metadata ourselves yet.
+func (t *Torrent) metadataBytesSafe() []byte {
+	if mi := t.mi.Load(); mi != nil {
+		return mi.InfoBytes
+	}
+	return nil
 }
 
 func (t *Torrent) peerTorrentInfo() peer.TorrentInfo {

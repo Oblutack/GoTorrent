@@ -9,9 +9,19 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Oblutack/GoTorrent/internal/bencode"
 	"github.com/Oblutack/GoTorrent/internal/logger"
 	"github.com/Oblutack/GoTorrent/internal/tracker"
 )
+
+func mustMarshal(t *testing.T, v any) []byte {
+	t.Helper()
+	data, err := bencode.Marshal(v)
+	if err != nil {
+		t.Fatalf("bencode.Marshal(%#v): %v", v, err)
+	}
+	return data
+}
 
 func TestMain(m *testing.M) {
 	logger.Init(false)
@@ -27,7 +37,7 @@ var testTorrent = TorrentInfo{
 // dialTestPeer stands up a loopback listener, completes a handshake on it, and
 // returns the real Client together with the raw server-side connection so a
 // test can drive the wire directly.
-func dialTestPeer(t *testing.T, hasPiece func(uint32) bool, readBlock func(index, begin, length uint32) ([]byte, error)) (*Client, net.Conn) {
+func dialTestPeer(t *testing.T, callbacks Callbacks) (*Client, net.Conn) {
 	t.Helper()
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -70,8 +80,7 @@ func dialTestPeer(t *testing.T, hasPiece func(uint32) bool, readBlock func(index
 		tracker.PeerInfo{IP: addr.IP, Port: uint16(addr.Port)},
 		testTorrent,
 		[20]byte{},
-		hasPiece,
-		readBlock,
+		callbacks,
 		Limits{},
 	)
 	if err != nil {
@@ -123,7 +132,7 @@ func writeFrame(t *testing.T, conn net.Conn, id MessageID, payload []byte) {
 // so a large Piece frame could be split across syscalls and spliced with a
 // Have, producing garbage length prefixes at the far end.
 func TestConcurrentSendsProduceIntactFrames(t *testing.T) {
-	client, server := dialTestPeer(t, func(uint32) bool { return true }, nil)
+	client, server := dialTestPeer(t, Callbacks{HasPiece: func(uint32) bool { return true }})
 
 	go client.sendLoop()
 
@@ -215,7 +224,8 @@ func TestConcurrentSendsProduceIntactFrames(t *testing.T) {
 }
 
 func TestValidateRequest(t *testing.T) {
-	c := &Client{Torrent: testTorrent}
+	c := &Client{}
+	c.torrentInfo.Store(&testTorrent)
 	lastPieceLen := testTorrent.PieceLen(uint32(testTorrent.NumPieces - 1))
 	if lastPieceLen != 100 {
 		t.Fatalf("test fixture is wrong: last piece is %d bytes", lastPieceLen)
@@ -262,7 +272,7 @@ func TestOversizedRequestDropsPeer(t *testing.T) {
 		served++
 		return make([]byte, length), nil
 	}
-	client, server := dialTestPeer(t, func(uint32) bool { return true }, readBlock)
+	client, server := dialTestPeer(t, Callbacks{HasPiece: func(uint32) bool { return true }, ReadBlock: readBlock})
 	if err := client.SendUnchoke(); err != nil {
 		t.Fatalf("SendUnchoke: %v", err)
 	}
@@ -296,7 +306,7 @@ func TestUploadedBytesAreCounted(t *testing.T) {
 	readBlock := func(index, begin, length uint32) ([]byte, error) {
 		return want, nil
 	}
-	client, server := dialTestPeer(t, func(uint32) bool { return true }, readBlock)
+	client, server := dialTestPeer(t, Callbacks{HasPiece: func(uint32) bool { return true }, ReadBlock: readBlock})
 	if err := client.SendUnchoke(); err != nil {
 		t.Fatalf("SendUnchoke: %v", err)
 	}
@@ -307,6 +317,9 @@ func TestUploadedBytesAreCounted(t *testing.T) {
 	}
 	if body := readFrame(t, server); MessageID(body[0]) != MsgInterested {
 		t.Fatalf("expected Interested second, got %s", MessageID(body[0]))
+	}
+	if body := readFrame(t, server); MessageID(body[0]) != MsgExtended {
+		t.Fatalf("expected an extended handshake third, got %s", MessageID(body[0]))
 	}
 
 	if got := client.Uploaded(); got != 0 {
@@ -334,7 +347,7 @@ func TestUploadedBytesAreCounted(t *testing.T) {
 }
 
 func TestMalformedBitfieldDropsPeer(t *testing.T) {
-	client, server := dialTestPeer(t, func(uint32) bool { return false }, nil)
+	client, server := dialTestPeer(t, Callbacks{HasPiece: func(uint32) bool { return false }})
 
 	runDone := make(chan struct{})
 	go func() { client.Run(); close(runDone) }()
@@ -354,13 +367,17 @@ func TestMalformedBitfieldDropsPeer(t *testing.T) {
 // work to WorkQueue, the client emits a Request, and the reply comes back out
 // on Results.
 func TestBlockRoundTrip(t *testing.T) {
-	client, server := dialTestPeer(t, func(uint32) bool { return false }, nil)
+	client, server := dialTestPeer(t, Callbacks{HasPiece: func(uint32) bool { return false }})
 
 	go client.Run()
 
-	// The client sends Interested on startup; consume it.
+	// The client sends Interested, then an extended handshake (our fake
+	// server's own handshake advertised extension support), on startup.
 	if body := readFrame(t, server); MessageID(body[0]) != MsgInterested {
 		t.Fatalf("expected Interested first, got %s", MessageID(body[0]))
+	}
+	if body := readFrame(t, server); MessageID(body[0]) != MsgExtended {
+		t.Fatalf("expected an extended handshake second, got %s", MessageID(body[0]))
 	}
 
 	writeFrame(t, server, MsgBitfield, []byte{0xF0}) // we have all 4 pieces
@@ -408,10 +425,174 @@ func TestBlockRoundTrip(t *testing.T) {
 	}
 }
 
+// TestExtendedHandshakeAdvertisesOurMetadata checks the handshake we send
+// unprompted on connect: extended-message-id 0, advertising ut_metadata
+// under our fixed local id, and metadata_size when Callbacks.MetadataBytes
+// says we have something to serve.
+func TestExtendedHandshakeAdvertisesOurMetadata(t *testing.T) {
+	content := bytes.Repeat([]byte{0x99}, 12345)
+	client, server := dialTestPeer(t, Callbacks{
+		HasPiece:      func(uint32) bool { return false },
+		MetadataBytes: func() []byte { return content },
+	})
+	go client.Run()
+
+	if body := readFrame(t, server); MessageID(body[0]) != MsgInterested {
+		t.Fatalf("expected Interested first, got %s", MessageID(body[0]))
+	}
+	body := readFrame(t, server)
+	if MessageID(body[0]) != MsgExtended {
+		t.Fatalf("expected an extended handshake second, got %s", MessageID(body[0]))
+	}
+	if body[1] != 0 {
+		t.Fatalf("extended-message-id = %d, want 0 (the handshake itself)", body[1])
+	}
+	var hs extHandshakeWire
+	if err := bencode.Unmarshal(body[2:], &hs); err != nil {
+		t.Fatalf("parse extended handshake: %v", err)
+	}
+	if hs.M["ut_metadata"] != localUtMetadataID {
+		t.Fatalf("m[ut_metadata] = %d, want %d", hs.M["ut_metadata"], localUtMetadataID)
+	}
+	if hs.MetadataSize != len(content) {
+		t.Fatalf("metadata_size = %d, want %d", hs.MetadataSize, len(content))
+	}
+}
+
+// TestMetadataRequestResponseRoundTrip drives the client side of BEP 9: a
+// fake peer advertises ut_metadata under an id of its own choosing (not
+// localUtMetadataID, to prove the client addresses outgoing requests by the
+// peer's id, not its own), and the client requests and receives one piece.
+func TestMetadataRequestResponseRoundTrip(t *testing.T) {
+	content := bytes.Repeat([]byte{0x42}, 20)
+	client, server := dialTestPeer(t, Callbacks{HasPiece: func(uint32) bool { return false }})
+	go client.Run()
+
+	if body := readFrame(t, server); MessageID(body[0]) != MsgInterested {
+		t.Fatalf("expected Interested first, got %s", MessageID(body[0]))
+	}
+	if body := readFrame(t, server); MessageID(body[0]) != MsgExtended {
+		t.Fatalf("expected our extended handshake second, got %s", MessageID(body[0]))
+	}
+
+	const peerUtMetadataID = 7
+	hsPayload := append([]byte{0}, mustMarshal(t, extHandshakeWire{
+		M:            map[string]int{"ut_metadata": peerUtMetadataID},
+		MetadataSize: len(content),
+	})...)
+	writeFrame(t, server, MsgExtended, hsPayload)
+
+	if ev := waitEvent(t, client.Events); ev.Kind != EventExtendedHandshake {
+		t.Fatalf("event = %s, want ExtendedHandshake", ev.Kind)
+	}
+	if !client.SupportsUtMetadata() {
+		t.Fatal("SupportsUtMetadata() = false after a handshake advertising it")
+	}
+	if client.PeerMetadataSize() != len(content) {
+		t.Fatalf("PeerMetadataSize() = %d, want %d", client.PeerMetadataSize(), len(content))
+	}
+
+	if err := client.SendMetadataRequest(0); err != nil {
+		t.Fatalf("SendMetadataRequest: %v", err)
+	}
+
+	body := readFrame(t, server)
+	if MessageID(body[0]) != MsgExtended {
+		t.Fatalf("expected Extended, got %s", MessageID(body[0]))
+	}
+	if int(body[1]) != peerUtMetadataID {
+		t.Fatalf("extended-message-id = %d, want %d (the peer's own advertised id)", body[1], peerUtMetadataID)
+	}
+	var raw bencode.RawMessage
+	if err := bencode.Unmarshal(body[2:], &raw); err != nil {
+		t.Fatalf("parse request header: %v", err)
+	}
+	var hdr utMetadataWire
+	if err := bencode.Unmarshal(raw, &hdr); err != nil {
+		t.Fatalf("parse request header: %v", err)
+	}
+	if hdr.MsgType != utMetadataRequest || hdr.Piece != 0 {
+		t.Fatalf("got %+v, want a request for piece 0", hdr)
+	}
+
+	// The fake peer addresses this to us using OUR advertised id
+	// (localUtMetadataID), not its own — extended ids are chosen
+	// independently by each side.
+	dataPayload := append([]byte{localUtMetadataID}, mustMarshal(t, utMetadataWire{
+		MsgType: utMetadataData, Piece: 0, TotalSize: len(content),
+	})...)
+	dataPayload = append(dataPayload, content...)
+	writeFrame(t, server, MsgExtended, dataPayload)
+
+	select {
+	case mp := <-client.MetadataPieces:
+		if mp.Piece != 0 || mp.TotalSize != len(content) || !bytes.Equal(mp.Data, content) {
+			t.Fatalf("got %+v", mp)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("metadata piece never arrived on MetadataPieces")
+	}
+}
+
+// TestServesMetadataRequestFromPeer drives the server side: a peer asks us
+// for a metadata piece, and we answer from Callbacks.MetadataBytes,
+// addressing the reply using the id the peer advertised for itself.
+func TestServesMetadataRequestFromPeer(t *testing.T) {
+	content := bytes.Repeat([]byte{0x7a}, 20000) // spans two 16 KiB pieces
+	client, server := dialTestPeer(t, Callbacks{
+		HasPiece:      func(uint32) bool { return false },
+		MetadataBytes: func() []byte { return content },
+	})
+	go client.Run()
+
+	if body := readFrame(t, server); MessageID(body[0]) != MsgInterested {
+		t.Fatalf("expected Interested first, got %s", MessageID(body[0]))
+	}
+	if body := readFrame(t, server); MessageID(body[0]) != MsgExtended {
+		t.Fatalf("expected our extended handshake second, got %s", MessageID(body[0]))
+	}
+
+	const peerUtMetadataID = 3
+	hsPayload := append([]byte{0}, mustMarshal(t, extHandshakeWire{
+		M: map[string]int{"ut_metadata": peerUtMetadataID},
+	})...)
+	writeFrame(t, server, MsgExtended, hsPayload)
+	waitEvent(t, client.Events) // ExtendedHandshake
+
+	reqPayload := append([]byte{localUtMetadataID}, mustMarshal(t, utMetadataWire{
+		MsgType: utMetadataRequest, Piece: 1,
+	})...)
+	writeFrame(t, server, MsgExtended, reqPayload)
+
+	body := readFrame(t, server)
+	if MessageID(body[0]) != MsgExtended {
+		t.Fatalf("expected Extended, got %s", MessageID(body[0]))
+	}
+	if int(body[1]) != peerUtMetadataID {
+		t.Fatalf("extended-message-id = %d, want %d (the peer's own advertised id)", body[1], peerUtMetadataID)
+	}
+	var raw bencode.RawMessage
+	if err := bencode.Unmarshal(body[2:], &raw); err != nil {
+		t.Fatalf("parse data header: %v", err)
+	}
+	var hdr utMetadataWire
+	if err := bencode.Unmarshal(raw, &hdr); err != nil {
+		t.Fatalf("parse data header: %v", err)
+	}
+	if hdr.MsgType != utMetadataData || hdr.Piece != 1 || hdr.TotalSize != len(content) {
+		t.Fatalf("got %+v, want data for piece 1, total_size %d", hdr, len(content))
+	}
+	got := body[2+len(raw):]
+	want := content[MetadataPieceSize:20000]
+	if !bytes.Equal(got, want) {
+		t.Fatalf("served piece 1 is %d bytes, want %d matching bytes", len(got), len(want))
+	}
+}
+
 // TestCloseUnblocksWriteLoop covers the goroutine leak: writeLoop used to range
 // over WorkQueue, which is never closed, so every disconnect leaked it.
 func TestCloseUnblocksWriteLoop(t *testing.T) {
-	client, _ := dialTestPeer(t, func(uint32) bool { return false }, nil)
+	client, _ := dialTestPeer(t, Callbacks{HasPiece: func(uint32) bool { return false }})
 
 	stopped := make(chan struct{})
 	go func() { client.writeLoop(); close(stopped) }()
@@ -430,7 +611,7 @@ func TestCloseUnblocksWriteLoop(t *testing.T) {
 }
 
 func TestSendAfterCloseFails(t *testing.T) {
-	client, _ := dialTestPeer(t, func(uint32) bool { return false }, nil)
+	client, _ := dialTestPeer(t, Callbacks{HasPiece: func(uint32) bool { return false }})
 	client.Close()
 	if err := client.SendHave(0); err == nil {
 		t.Fatal("SendHave on a closed client returned nil")
@@ -441,7 +622,7 @@ func TestSendAfterCloseFails(t *testing.T) {
 // Have while holding its mutex, so a peer that has stopped reading must not be
 // able to block the caller.
 func TestSendNeverBlocks(t *testing.T) {
-	client, _ := dialTestPeer(t, func(uint32) bool { return false }, nil)
+	client, _ := dialTestPeer(t, Callbacks{HasPiece: func(uint32) bool { return false }})
 	// No sendLoop is running, so outbound fills up and stays full.
 
 	done := make(chan struct{})
@@ -463,7 +644,7 @@ func TestSendNeverBlocks(t *testing.T) {
 // Have, Bitfield, and choke/interest changes must surface as Events, not just
 // as accessor state a poller would have to notice on its own.
 func TestEventsFireOnStateChanges(t *testing.T) {
-	client, server := dialTestPeer(t, func(uint32) bool { return false }, nil)
+	client, server := dialTestPeer(t, Callbacks{HasPiece: func(uint32) bool { return false }})
 	go client.Run()
 
 	// Consume the Interested the client sends on startup.
@@ -507,7 +688,7 @@ func TestEventsFireOnStateChanges(t *testing.T) {
 // both channels must reach a terminal state together so a select over both
 // cannot leak.
 func TestEventsCloseWithResults(t *testing.T) {
-	client, server := dialTestPeer(t, func(uint32) bool { return false }, nil)
+	client, server := dialTestPeer(t, Callbacks{HasPiece: func(uint32) bool { return false }})
 	runDone := make(chan struct{})
 	go func() { client.Run(); close(runDone) }()
 
@@ -519,6 +700,9 @@ func TestEventsCloseWithResults(t *testing.T) {
 	}
 	if _, ok := <-client.Results; ok {
 		t.Fatal("Results was not closed after Run returned")
+	}
+	if _, ok := <-client.MetadataPieces; ok {
+		t.Fatal("MetadataPieces was not closed after Run returned")
 	}
 }
 

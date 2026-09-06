@@ -105,8 +105,36 @@ type fakeSeeder struct {
 	content []byte
 	delay   time.Duration // artificial per-block latency, for pause/resume tests
 
+	// serveMetadata makes handle answer BEP 9 ut_metadata requests too, for
+	// tests that connect a metadata-less (magnet-shaped) Torrent to a real
+	// peer and expect it to actually fetch metadata rather than being handed
+	// it directly.
+	serveMetadata bool
+
 	mu     sync.Mutex
 	served int
+}
+
+// fakeSeederUtMetadataID is the extension id this fixture advertises for
+// itself in its own extended handshake — deliberately not
+// localUtMetadataID (peer package's own constant for the real client's
+// advertised id), to prove the client addresses requests by whatever id the
+// peer chose, not by assuming symmetry.
+const fakeSeederUtMetadataID = 9
+
+// fakeExtHandshake and fakeUtMetadataMsg mirror peer package's unexported
+// wire types (extHandshakeWire, utMetadataWire) closely enough to
+// interoperate — this fixture plays a real peer on the wire, so it needs its
+// own encoding of the same BEP 10/9 messages, not access to peer's internals.
+type fakeExtHandshake struct {
+	M            map[string]int `bencode:"m"`
+	MetadataSize int            `bencode:"metadata_size,omitempty"`
+}
+
+type fakeUtMetadataMsg struct {
+	MsgType   int `bencode:"msg_type"`
+	Piece     int `bencode:"piece"`
+	TotalSize int `bencode:"total_size,omitempty"`
 }
 
 func newFakeSeeder(t *testing.T, mi *metainfo.MetaInfo, content []byte) *fakeSeeder {
@@ -128,6 +156,16 @@ func newThrottledFakeSeeder(t *testing.T, mi *metainfo.MetaInfo, content []byte,
 	t.Helper()
 	f := newFakeSeeder(t, mi, content)
 	f.delay = delay
+	return f
+}
+
+// newFakeSeederServingMetadata is for tests that connect a metadata-less
+// Torrent to a real peer and expect it to fetch metadata over BEP 9, not
+// just data blocks.
+func newFakeSeederServingMetadata(t *testing.T, mi *metainfo.MetaInfo, content []byte) *fakeSeeder {
+	t.Helper()
+	f := newFakeSeeder(t, mi, content)
+	f.serveMetadata = true
 	return f
 }
 
@@ -171,38 +209,111 @@ func (f *fakeSeeder) handle(conn net.Conn) {
 	if err := writeMsg(conn, peer.MsgUnchoke, nil); err != nil {
 		return
 	}
+	if f.serveMetadata {
+		hs := fakeExtHandshake{M: map[string]int{"ut_metadata": fakeSeederUtMetadataID}, MetadataSize: len(f.mi.InfoBytes)}
+		body, err := bencode.Marshal(hs)
+		if err != nil {
+			f.t.Errorf("marshal fake extended handshake: %v", err)
+			return
+		}
+		if err := writeMsg(conn, peer.MsgExtended, append([]byte{0}, body...)); err != nil {
+			return
+		}
+	}
+
+	clientUtMetadataID := 0 // learned from the client's own extended handshake
 
 	for {
 		id, payload, err := readMsg(conn)
 		if err != nil {
 			return
 		}
-		if id != peer.MsgRequest {
-			continue
-		}
-		var req peer.MsgRequestPayload
-		if err := req.Parse(payload); err != nil {
-			return
-		}
+		switch id {
+		case peer.MsgRequest:
+			var req peer.MsgRequestPayload
+			if err := req.Parse(payload); err != nil {
+				return
+			}
 
-		start := int64(req.Index)*f.mi.Info.PieceLength + int64(req.Begin)
-		end := start + int64(req.Length)
-		if start < 0 || end > int64(len(f.content)) {
-			f.t.Errorf("seeder got an out-of-range request: piece %d begin %d length %d", req.Index, req.Begin, req.Length)
-			return
-		}
+			start := int64(req.Index)*f.mi.Info.PieceLength + int64(req.Begin)
+			end := start + int64(req.Length)
+			if start < 0 || end > int64(len(f.content)) {
+				f.t.Errorf("seeder got an out-of-range request: piece %d begin %d length %d", req.Index, req.Begin, req.Length)
+				return
+			}
 
-		if f.delay > 0 {
-			time.Sleep(f.delay)
+			if f.delay > 0 {
+				time.Sleep(f.delay)
+			}
+			block := peer.MsgPiecePayload{Index: req.Index, Begin: req.Begin, Block: f.content[start:end]}
+			if err := writeMsg(conn, peer.MsgPiece, block.Serialize()); err != nil {
+				return
+			}
+			f.mu.Lock()
+			f.served++
+			f.mu.Unlock()
+
+		case peer.MsgExtended:
+			if err := f.handleExtended(conn, payload, &clientUtMetadataID); err != nil {
+				return
+			}
 		}
-		block := peer.MsgPiecePayload{Index: req.Index, Begin: req.Begin, Block: f.content[start:end]}
-		if err := writeMsg(conn, peer.MsgPiece, block.Serialize()); err != nil {
-			return
-		}
-		f.mu.Lock()
-		f.served++
-		f.mu.Unlock()
 	}
+}
+
+// handleExtended plays the server side of BEP 10/9 well enough for tests: it
+// learns the client's advertised ut_metadata id from their handshake, and
+// answers a request for any piece with the matching slice of the real
+// info-dict bytes.
+func (f *fakeSeeder) handleExtended(conn net.Conn, payload []byte, clientUtMetadataID *int) error {
+	if len(payload) < 1 {
+		return io.ErrUnexpectedEOF
+	}
+	extID, body := payload[0], payload[1:]
+
+	if extID == 0 {
+		var hs fakeExtHandshake
+		if err := bencode.Unmarshal(body, &hs); err != nil {
+			return err
+		}
+		if id, ok := hs.M["ut_metadata"]; ok {
+			*clientUtMetadataID = id
+		}
+		return nil
+	}
+	if !f.serveMetadata || int(extID) != fakeSeederUtMetadataID {
+		return nil // not addressed to the extension we're playing
+	}
+
+	var raw bencode.RawMessage
+	if err := bencode.Unmarshal(body, &raw); err != nil {
+		return err
+	}
+	var m fakeUtMetadataMsg
+	if err := bencode.Unmarshal(raw, &m); err != nil {
+		return err
+	}
+	if m.MsgType != 0 || *clientUtMetadataID == 0 {
+		return nil // only "request" (msg_type 0) needs a reply
+	}
+
+	const pieceSize = 16384
+	start := m.Piece * pieceSize
+	if start < 0 || start >= len(f.mi.InfoBytes) {
+		return nil
+	}
+	end := start + pieceSize
+	if end > len(f.mi.InfoBytes) {
+		end = len(f.mi.InfoBytes)
+	}
+
+	header, err := bencode.Marshal(fakeUtMetadataMsg{MsgType: 1, Piece: m.Piece, TotalSize: len(f.mi.InfoBytes)})
+	if err != nil {
+		return err
+	}
+	reply := append([]byte{byte(*clientUtMetadataID)}, header...)
+	reply = append(reply, f.mi.InfoBytes[start:end]...)
+	return writeMsg(conn, peer.MsgExtended, reply)
 }
 
 func writeMsg(conn net.Conn, id peer.MessageID, payload []byte) error {
@@ -680,6 +791,41 @@ func TestMagnetTorrentAnnouncesToConfiguredTrackers(t *testing.T) {
 	}
 	if tr.Stats().PeerCount == 0 {
 		t.Fatal("torrent never connected to the peer discovered via its magnet-configured tracker")
+	}
+}
+
+// TestMagnetTorrentFetchesMetadataViaBEP9 is the end-to-end proof of 2.3: a
+// torrent built from nothing but an infohash connects to a real peer,
+// negotiates the extension protocol, fetches and verifies the info
+// dictionary over BEP 9, transitions itself out of FetchingMetadata with no
+// external call to SetMetadata, and then downloads the actual content —
+// using metadata it never had until a peer gave it.
+func TestMagnetTorrentFetchesMetadataViaBEP9(t *testing.T) {
+	const pieceLength = 16384
+	mi, content := buildTorrent(t, "viaBEP9.bin", pieceLength, []fileSpec{{length: pieceLength * 3}})
+	seeder := newFakeSeederServingMetadata(t, mi, content)
+
+	tr, err := NewFromInfoHash(mi.InfoHash, newTestConfig(t))
+	if err != nil {
+		t.Fatalf("NewFromInfoHash: %v", err)
+	}
+	runInBackground(t, tr)
+	waitForState(t, tr, StateFetchingMetadata, 2*time.Second)
+
+	tr.DialPeer(seeder.peerInfo())
+
+	waitForState(t, tr, StateSeeding, 15*time.Second)
+
+	if tr.Metadata() == nil || tr.Metadata().InfoHash != mi.InfoHash {
+		t.Fatal("torrent's metadata is missing or does not match what the fake seeder served")
+	}
+
+	got, err := os.ReadFile(filepath.Join(tr.cfg.DownloadDir, "viaBEP9.bin"))
+	if err != nil {
+		t.Fatalf("read downloaded file: %v", err)
+	}
+	if !bytes.Equal(got, content) {
+		t.Fatal("downloaded content differs from source, after fetching metadata via BEP 9")
 	}
 }
 

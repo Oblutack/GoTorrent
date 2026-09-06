@@ -18,6 +18,11 @@ const (
 	MsgPiece         MessageID = 7
 	MsgCancel        MessageID = 8
 	MsgPort          MessageID = 9
+	// MsgExtended is BEP 10's extension-protocol envelope: payload is
+	// [1-byte extended-message-id][bencoded body]. Extended-message-id 0 is
+	// always the extended handshake itself; any other id names one of the
+	// extensions negotiated in that handshake's "m" dict (see extension.go).
+	MsgExtended MessageID = 20
 )
 
 type Message struct {
@@ -60,6 +65,8 @@ func (id MessageID) String() string {
 		return "Cancel"
 	case MsgPort:
 		return "Port"
+	case MsgExtended:
+		return "Extended"
 	default:
 		return fmt.Sprintf("UnknownMsg(%d)", id)
 	}

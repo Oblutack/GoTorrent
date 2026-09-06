@@ -145,6 +145,10 @@ type Torrent struct {
 	peers   map[string]*peerConn
 	dialing map[string]bool
 
+	// metadataFetch tracks an in-progress BEP 9 metadata download. Non-nil
+	// only while mi is nil; see maybeStartMetadataFetch.
+	metadataFetch *metadataAssembly
+
 	piecesVerifiedSinceCheckpoint int
 	lastCheckpoint                time.Time
 

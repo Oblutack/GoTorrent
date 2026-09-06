@@ -61,10 +61,17 @@ type eventPeerBlock struct {
 	block *peer.PieceBlock
 }
 
-// eventPeerControl wraps a peer.Event (Have/Bitfield/choke/interest).
+// eventPeerControl wraps a peer.Event (Have/Bitfield/choke/interest,
+// extended handshake, metadata reject).
 type eventPeerControl struct {
 	pc *peerConn
 	ev peer.Event
+}
+
+// eventMetadataPiece is one arrived BEP 9 metadata chunk.
+type eventMetadataPiece struct {
+	pc    *peerConn
+	piece peer.MetadataPiece
 }
 
 // eventPeerGone reports that a peer's connection ended, for any reason.
