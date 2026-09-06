@@ -19,6 +19,7 @@ import (
 	"github.com/Oblutack/GoTorrent/internal/logger"
 	"github.com/Oblutack/GoTorrent/internal/metainfo"
 	"github.com/Oblutack/GoTorrent/internal/peer"
+	"github.com/Oblutack/GoTorrent/internal/ratelimit"
 	"github.com/Oblutack/GoTorrent/internal/tracker"
 )
 
@@ -312,6 +313,39 @@ func TestFullDownload(t *testing.T) {
 	}
 	if seeder.blocksServed() == 0 {
 		t.Fatal("the seeder never served a block")
+	}
+}
+
+// TestDownloadRespectsRateLimit proves Config.DownLimit actually throttles a
+// real transfer end to end, not just the ratelimit package in isolation.
+func TestDownloadRespectsRateLimit(t *testing.T) {
+	const pieceLength = 16384
+	mi, content := buildTorrent(t, "throttled.bin", pieceLength, []fileSpec{
+		{length: pieceLength * 3},
+	})
+
+	const rate = pieceLength // 16 KiB/s: one piece's worth per second
+	cfg := newTestConfig(t)
+	cfg.DownLimit = ratelimit.New(rate)
+
+	tr, err := New(mi, cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_, _ = runInBackground(t, tr)
+
+	seeder := newFakeSeeder(t, mi, content)
+	start := time.Now()
+	tr.DialPeer(seeder.peerInfo())
+
+	waitForState(t, tr, StateSeeding, 30*time.Second)
+	elapsed := time.Since(start)
+
+	// The burst allowance covers the first piece for free, so only the
+	// remaining two are actually rate-limited: floor is ~2s, not ~3s.
+	want := time.Duration(float64(len(content)-pieceLength) / float64(rate) * float64(time.Second))
+	if elapsed < want/2 {
+		t.Fatalf("download finished in %s, want at least ~%s at a %d B/s cap", elapsed, want, rate)
 	}
 }
 

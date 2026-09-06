@@ -14,6 +14,7 @@ import (
 
 	"github.com/Oblutack/GoTorrent/internal/bitfield"
 	"github.com/Oblutack/GoTorrent/internal/logger"
+	"github.com/Oblutack/GoTorrent/internal/ratelimit"
 	"github.com/Oblutack/GoTorrent/internal/tracker"
 )
 
@@ -23,7 +24,11 @@ const (
 	handshakeTimeout  = 10 * time.Second
 	readTimeout       = 3 * time.Minute
 	writeTimeout      = 30 * time.Second
-	PipelineSize      = 50
+	// MaxPipelineSize is the hard ceiling on outstanding requests queued to
+	// one peer, regardless of what the torrent actor's adaptive pipelining
+	// computes as a target. It exists so a runaway target (or a bug in the
+	// adaptation) can never grow the channel's memory footprint unboundedly.
+	MaxPipelineSize = 500
 
 	// MaxBlockLength is the largest block a peer may ask us for. BEP 3 fixes
 	// the request size at 16 KiB; a peer asking for more is either broken or
@@ -187,6 +192,16 @@ type Event struct {
 // is generous headroom rather than a tight budget.
 const eventQueueSize = 256
 
+// Limits bounds how fast one connection may exchange data, drawing from a
+// shared budget its owner hands out. A nil field means unlimited on that
+// direction. The same *ratelimit.Limiter passed to every Client in a swarm
+// (or every Client the process holds, for a global cap) is what makes the
+// limit apply in aggregate rather than per-peer.
+type Limits struct {
+	Down *ratelimit.Limiter
+	Up   *ratelimit.Limiter
+}
+
 // Client represents a connection to a single BitTorrent peer.
 //
 // Concurrency contract: exactly one goroutine ever writes to Conn (sendLoop),
@@ -226,19 +241,32 @@ type Client struct {
 
 	lastPieceReceived atomic.Int64 // unix seconds
 
+	// limits bounds our transfer rate on this connection; see Limits. Set
+	// once at construction, read by the read loop (download) and sendLoop
+	// (upload), so it needs no synchronization of its own.
+	limits Limits
+
 	// Dependencies injected from the session for seeding.
 	hasPiece          func(index uint32) bool
 	readBlockFromDisk func(index, begin, length uint32) ([]byte, error)
 }
 
-// NewClient attempts to connect to a peer and perform a handshake.
+// NewClient attempts to connect to a peer and perform a handshake. A zero
+// Limits leaves both directions unlimited.
 func NewClient(
 	peerInfo tracker.PeerInfo,
 	torrent TorrentInfo,
 	ourID [20]byte,
 	hasPiece func(index uint32) bool,
 	readBlockFunc func(index, begin, length uint32) ([]byte, error),
+	limits Limits,
 ) (*Client, error) {
+	if limits.Down == nil {
+		limits.Down = ratelimit.Unlimited()
+	}
+	if limits.Up == nil {
+		limits.Up = ratelimit.Unlimited()
+	}
 	address := net.JoinHostPort(peerInfo.IP.String(), strconv.Itoa(int(peerInfo.Port)))
 	logger.Logf("peer: attempting to connect to %s\n", address)
 	conn, err := net.DialTimeout("tcp", address, handshakeTimeout)
@@ -274,11 +302,12 @@ func NewClient(
 		OurID:             ourID,
 		RemoteID:          peerHandshake.PeerID,
 		bitfield:          bitfield.New(torrent.NumPieces),
-		WorkQueue:         make(chan *BlockRequest, PipelineSize),
+		WorkQueue:         make(chan *BlockRequest, MaxPipelineSize),
 		Results:           make(chan *PieceBlock),
 		Events:            make(chan Event, eventQueueSize),
 		outbound:          make(chan []byte, outboundQueueSize),
 		done:              make(chan struct{}),
+		limits:            limits,
 		hasPiece:          hasPiece,
 		readBlockFromDisk: readBlockFunc,
 	}
@@ -474,6 +503,13 @@ func (c *Client) handleMessage(msg *Message) bool {
 			logger.Warning.Printf("Peer %s: rejected Piece: %v\n", c.Conn.RemoteAddr(), err)
 			return false
 		}
+		// Throttling here, before the block is handed off, delays this
+		// connection's next ReadMessage call — the natural way to cap
+		// download rate without a separate reader goroutine or buffering
+		// scheme, since nothing else reads from this peer meanwhile.
+		if !c.limits.Down.Wait(c.done, len(piecePayload.Block)) {
+			return false
+		}
 		c.lastPieceReceived.Store(time.Now().Unix())
 		select {
 		case c.Results <- &PieceBlock{
@@ -582,6 +618,9 @@ func (c *Client) sendLoop() {
 		case <-c.done:
 			return
 		case frame := <-c.outbound:
+			if !c.limits.Up.Wait(c.done, len(frame)) {
+				return
+			}
 			if err := c.Conn.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
 				c.Close()
 				return

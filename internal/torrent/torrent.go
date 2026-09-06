@@ -14,6 +14,7 @@ import (
 	"github.com/Oblutack/GoTorrent/internal/metainfo"
 	"github.com/Oblutack/GoTorrent/internal/peer"
 	"github.com/Oblutack/GoTorrent/internal/picker"
+	"github.com/Oblutack/GoTorrent/internal/ratelimit"
 	"github.com/Oblutack/GoTorrent/internal/storage"
 	"github.com/Oblutack/GoTorrent/internal/tracker"
 )
@@ -60,14 +61,29 @@ type Config struct {
 	Allocation storage.Allocation
 	// PickerStrategy selects piece ordering. Defaults to rarest-first.
 	PickerStrategy picker.Strategy
+	// DownLimit and UpLimit cap this torrent's aggregate transfer rate,
+	// shared across every peer connection it opens. Nil means unlimited. An
+	// engine managing several torrents typically hands every one of them the
+	// same *ratelimit.Limiter, so the cap bounds the whole process rather
+	// than each torrent independently.
+	DownLimit *ratelimit.Limiter
+	UpLimit   *ratelimit.Limiter
 }
 
 // peerConn is one connected peer plus the bookkeeping the actor needs that
 // peer.Client does not itself track. It implements choker.Peer.
+//
+// pipelineTarget, outstanding, and the lastAdapt* fields are touched only
+// from run() (tick and onBlock), like t.peers itself — see adaptPipeline.
 type peerConn struct {
 	addr       string
 	client     *peer.Client
 	downloaded atomic.Int64 // cumulative bytes received, for the choker
+
+	pipelineTarget int       // current desired outstanding-request count
+	outstanding    int       // requests sent to this peer, awaiting a Piece
+	lastAdaptBytes int64     // pc.downloaded at the last adaptation
+	lastAdaptTime  time.Time // when pipelineTarget was last recomputed
 }
 
 func (p *peerConn) ID() string             { return p.addr }

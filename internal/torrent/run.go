@@ -196,7 +196,8 @@ func (t *Torrent) dial(pi tracker.PeerInfo) {
 func (t *Torrent) connectAndPump(ctx context.Context, pi tracker.PeerInfo) {
 	defer t.wg.Done()
 
-	client, err := peer.NewClient(pi, t.peerTorrentInfo(), t.cfg.OurID, t.hasPieceSafe, t.readBlockSafe)
+	client, err := peer.NewClient(pi, t.peerTorrentInfo(), t.cfg.OurID, t.hasPieceSafe, t.readBlockSafe,
+		peer.Limits{Down: t.cfg.DownLimit, Up: t.cfg.UpLimit})
 	if err != nil {
 		t.sendEvent(ctx, eventDialFailed{addr: pi.Addr()})
 		return
@@ -316,6 +317,13 @@ func (t *Torrent) onBlock(pc *peerConn, block *peer.PieceBlock) {
 
 	length := len(block.Block)
 	pc.downloaded.Add(int64(length))
+	// This block fills one of the slots adaptPipeline budgeted for pc,
+	// whether or not the picker still wants the data (endgame can satisfy a
+	// block from another peer first, in which case this is a harmless
+	// no-op read of already-verified data below).
+	if pc.outstanding > 0 {
+		pc.outstanding--
+	}
 
 	offset := int64(block.Index)*mi.Info.PieceLength + int64(block.Begin)
 	if _, err := t.storage.WriteAt(block.Block, offset); err != nil {
@@ -409,6 +417,25 @@ func (t *Torrent) onPieceVerified(index int, ok bool, err error) {
 
 // --- ticks ---------------------------------------------------------------
 
+const (
+	// minPipeline is the floor adaptPipeline ever sets: enough that one lost
+	// or slow block does not stall a peer's whole queue, even fresh off a
+	// connection with no throughput history yet.
+	minPipeline = 4
+	// pipelineWindow is the target amount of data adaptPipeline tries to
+	// keep in flight to one peer, expressed as seconds of that peer's
+	// measured download rate. This is the standard bandwidth-delay-product
+	// heuristic (see e.g. libtorrent's request_queue_time): too small and a
+	// fast peer sits idle between ticks waiting on a fresh Pick; too large
+	// and a slow peer accumulates requests other peers could have served
+	// faster, plus a bigger loss if it disconnects mid-piece.
+	pipelineWindow = 2 * time.Second
+	// pipelineAdaptInterval bounds how often a peer's target is recomputed.
+	// Recomputing every 100ms tick would react to noise in a single block's
+	// arrival time rather than sustained throughput.
+	pipelineAdaptInterval = 1 * time.Second
+)
+
 // tick assigns work to every unchoked, capable peer and expires timed-out
 // requests. Picker.Pick is a handful of map/slice operations against an
 // index that is maintained incrementally, not a scan of the whole swarm, so
@@ -424,7 +451,12 @@ func (t *Torrent) tick(now time.Time) {
 		if pc.client.PeerChoking() {
 			continue
 		}
-		room := cap(pc.client.WorkQueue) - len(pc.client.WorkQueue)
+		adaptPipeline(pc, now)
+
+		room := pc.pipelineTarget - pc.outstanding
+		if queueRoom := cap(pc.client.WorkQueue) - len(pc.client.WorkQueue); queueRoom < room {
+			room = queueRoom
+		}
 		if room <= 0 {
 			continue
 		}
@@ -433,6 +465,7 @@ func (t *Torrent) tick(now time.Time) {
 		for _, r := range reqs {
 			select {
 			case pc.client.WorkQueue <- &peer.BlockRequest{Index: uint32(r.Index), Begin: uint32(r.Begin), Length: uint32(r.Length)}:
+				pc.outstanding++
 			default:
 				// The queue filled between the room check and now (another
 				// tick's leftover); the picker already marked it pending, so
@@ -445,6 +478,41 @@ func (t *Torrent) tick(now time.Time) {
 		t.setState(StateSeeding)
 		t.checkpoint()
 	}
+}
+
+// adaptPipeline recomputes how many outstanding requests pc should be
+// allowed, from its measured download rate since the last adaptation. This
+// replaces a fixed pipeline depth (the old PipelineSize=50 for every peer
+// regardless of speed) with one sized to each peer: a peer on a slow link
+// gets few requests in flight so a disconnect loses little queued work, and
+// a fast one gets enough that it is never left idle waiting on the next
+// 100ms tick.
+func adaptPipeline(pc *peerConn, now time.Time) {
+	if pc.lastAdaptTime.IsZero() {
+		pc.lastAdaptTime = now
+		pc.lastAdaptBytes = pc.downloaded.Load()
+		pc.pipelineTarget = minPipeline
+		return
+	}
+
+	elapsed := now.Sub(pc.lastAdaptTime)
+	if elapsed < pipelineAdaptInterval {
+		return
+	}
+
+	current := pc.downloaded.Load()
+	rate := float64(current-pc.lastAdaptBytes) / elapsed.Seconds()
+	pc.lastAdaptBytes = current
+	pc.lastAdaptTime = now
+
+	target := int(rate * pipelineWindow.Seconds() / picker.BlockLength)
+	if target < minPipeline {
+		target = minPipeline
+	}
+	if target > peer.MaxPipelineSize {
+		target = peer.MaxPipelineSize
+	}
+	pc.pipelineTarget = target
 }
 
 func (t *Torrent) runChoker(now time.Time) {

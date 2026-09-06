@@ -71,6 +71,7 @@ func dialTestPeer(t *testing.T, hasPiece func(uint32) bool, readBlock func(index
 		[20]byte{},
 		hasPiece,
 		readBlock,
+		Limits{},
 	)
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
