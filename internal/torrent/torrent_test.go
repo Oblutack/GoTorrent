@@ -725,3 +725,33 @@ func TestConcurrentTorrents(t *testing.T) {
 func fileNameFor(i int) string {
 	return string(rune('a'+i)) + ".bin"
 }
+
+// TestStopImmediatelyAfterRunDoesNotDeadlock is a regression test for a race
+// where Stop, called before the goroutine running Run had actually been
+// scheduled, silently dropped the cancellation: t.cancel used to be created
+// inside Run itself, so a Stop that won the race saw a nil t.cancel, skipped
+// calling it, and then blocked forever on <-t.done waiting for a Run that
+// nothing would ever tell to stop. A caller that fires off "go tr.Run(ctx)"
+// and immediately calls Stop — exactly what internal/engine does — used to
+// hang indefinitely; this is what caught it.
+func TestStopImmediatelyAfterRunDoesNotDeadlock(t *testing.T) {
+	mi, _ := buildTorrent(t, "race.bin", 16384, []fileSpec{{length: 16384}})
+	tr, err := New(mi, newTestConfig(t))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	go tr.Run(context.Background())
+
+	stopped := make(chan struct{})
+	go func() {
+		tr.Stop()
+		close(stopped)
+	}()
+
+	select {
+	case <-stopped:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Stop did not return within 10s of racing a freshly-spawned Run")
+	}
+}

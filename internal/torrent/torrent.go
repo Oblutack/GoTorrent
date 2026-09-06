@@ -145,6 +145,11 @@ type Torrent struct {
 	events  chan any
 	control chan controlMsg
 
+	// ctx/cancel are created at construction time, not inside Run, so Stop
+	// can call cancel the instant it is invoked even if the goroutine running
+	// Run has not been scheduled yet — see Stop's comment. Run folds
+	// whatever context it is given into this one via a watcher goroutine
+	// rather than deriving a fresh child from it.
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup // peer + tracker goroutines
@@ -216,6 +221,7 @@ func newTorrent(hash metainfo.Hash, cfg Config) (*Torrent, error) {
 		control:       make(chan controlMsg),
 		done:          make(chan struct{}),
 	}
+	t.ctx, t.cancel = context.WithCancel(context.Background())
 	t.haveSnapshot.Store(bitfield.New(0))
 	return t, nil
 }
@@ -293,10 +299,23 @@ func (t *Torrent) Stats() Stats {
 // StateError instead of propagating, since one torrent's disk failure must
 // not take down whatever is running several of these side by side.
 func (t *Torrent) Run(ctx context.Context) error {
-	ctx, cancel := context.WithCancel(ctx)
-	t.ctx = ctx
-	t.cancel = cancel
 	defer close(t.done)
+
+	// t.ctx/t.cancel already exist (set at construction, in newTorrent) so
+	// that Stop can cancel this torrent even if called before this goroutine
+	// gets scheduled — a real race Stop's own doc comment used to gloss
+	// over, caught by an engine test that called Stop immediately after
+	// spawning Run. Fold the caller's ctx into that same cancel scope
+	// instead of deriving a fresh child from it.
+	watcherDone := make(chan struct{})
+	defer close(watcherDone)
+	go func() {
+		select {
+		case <-ctx.Done():
+			t.cancel()
+		case <-watcherDone:
+		}
+	}()
 
 	if mi := t.mi.Load(); mi != nil {
 		if err := t.openMetadata(mi); err != nil {
@@ -305,12 +324,12 @@ func (t *Torrent) Run(ctx context.Context) error {
 			return nil
 		}
 		t.wg.Add(1)
-		go t.announceLoop(ctx, tracker.EventStarted)
+		go t.announceLoop(t.ctx, tracker.EventStarted)
 	} else {
 		t.setState(StateFetchingMetadata)
 	}
 
-	t.run(ctx)
+	t.run(t.ctx)
 
 	t.shutdownPeers()
 	if mi := t.mi.Load(); mi != nil {
@@ -456,12 +475,12 @@ func (t *Torrent) Resume() error { return t.sendControl(ctrlResume) }
 func (t *Torrent) Recheck() error { return t.sendControl(ctrlRecheck) }
 
 // Stop shuts the torrent down for good: peers are disconnected, a final
-// checkpoint is written, and Run returns. It is safe to call more than once
-// and from any goroutine.
+// checkpoint is written, and Run returns. It is safe to call more than once,
+// from any goroutine, and even before Run has been given a chance to start —
+// t.cancel exists from construction for exactly that reason, so there is no
+// window where a Stop racing a freshly-spawned "go tr.Run(ctx)" gets lost.
 func (t *Torrent) Stop() {
-	if t.cancel != nil {
-		t.cancel()
-	}
+	t.cancel()
 	<-t.done
 }
 
