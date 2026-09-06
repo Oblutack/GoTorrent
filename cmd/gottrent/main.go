@@ -1,129 +1,159 @@
-// Command gottrent is a one-shot CLI: point it at a .torrent file and it
-// downloads (or seeds, if the data is already complete) until Ctrl-C.
+// Command gottrent is a CLI fleet manager: point it at one or more .torrent
+// files and it downloads (or seeds, if the data is already complete) all of
+// them until Ctrl-C. Torrents added in a previous run are picked back up
+// automatically from the engine's manifest.
 package main
 
 import (
-	"context"
 	"flag"
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/Oblutack/GoTorrent/internal/engine"
 	"github.com/Oblutack/GoTorrent/internal/logger"
 	"github.com/Oblutack/GoTorrent/internal/metainfo"
-	"github.com/Oblutack/GoTorrent/internal/torrent"
+	"github.com/Oblutack/GoTorrent/internal/ratelimit"
 )
 
+// torrentPaths collects a flag that may be repeated, one -torrent per file.
+type torrentPaths []string
+
+func (p *torrentPaths) String() string     { return strings.Join(*p, ",") }
+func (p *torrentPaths) Set(v string) error { *p = append(*p, v); return nil }
+
 func main() {
-	torrentFilePath := flag.String("torrent", "", "Path to the .torrent file")
+	var torrentFiles torrentPaths
+	flag.Var(&torrentFiles, "torrent", "Path to a .torrent file (repeat for multiple torrents)")
+	downloadDir := flag.String("dir", ".", "Default directory to save downloaded files")
+	stateDir := flag.String("state-dir", "", "Directory for the fleet manifest (default: a directory under the OS config dir)")
 	listenPort := flag.Uint("port", 6881, "Port advertised to trackers (no inbound listener yet)")
-	downloadDir := flag.String("dir", ".", "Directory to save downloaded files")
+	downLimitKB := flag.Uint("down-limit", 0, "Download rate cap in KiB/s across the whole fleet (0 = unlimited)")
+	upLimitKB := flag.Uint("up-limit", 0, "Upload rate cap in KiB/s across the whole fleet (0 = unlimited)")
 	verbose := flag.Bool("verbose", false, "Enable verbose logging")
 	flag.Parse()
 
 	logger.Init(*verbose)
 
-	if *torrentFilePath == "" {
-		fmt.Println("Usage: gottrent -torrent <path_to_torrent_file> [-port <listen_port>] [-dir <download_directory>]")
+	dir := *stateDir
+	if dir == "" {
+		d, err := engine.DefaultStateDir()
+		if err != nil {
+			logger.Error.Fatalf("Error resolving state directory: %v\n", err)
+		}
+		dir = d
+	}
+
+	defaults := engine.Defaults{DownloadDir: *downloadDir, ListenPort: uint16(*listenPort)}
+	if *downLimitKB > 0 {
+		defaults.DownLimit = ratelimit.New(int64(*downLimitKB) * 1024)
+	}
+	if *upLimitKB > 0 {
+		defaults.UpLimit = ratelimit.New(int64(*upLimitKB) * 1024)
+	}
+
+	e, err := engine.New(dir, defaults)
+	if err != nil {
+		logger.Error.Fatalf("Error creating engine: %v\n", err)
+	}
+	if err := e.Load(); err != nil {
+		logger.Error.Fatalf("Error loading fleet manifest: %v\n", err)
+	}
+
+	for _, path := range torrentFiles {
+		if _, err := e.Add(path, ""); err != nil {
+			logger.Warning.Printf("Could not add %s: %v\n", path, err)
+		}
+	}
+
+	if len(e.List()) == 0 {
+		fmt.Println("Usage: gottrent -torrent <path_to_torrent_file> [-torrent <path2> ...] [-dir <download_directory>] [-port <listen_port>]")
 		flag.PrintDefaults()
 		return
 	}
 
-	logger.Logf("Loading torrent file: %s\n", *torrentFilePath)
-	mi, err := metainfo.Load(*torrentFilePath)
-	if err != nil {
-		logger.Error.Fatalf("Error loading torrent file: %v\n", err)
-	}
-
-	tr, err := torrent.New(mi, torrent.Config{
-		DownloadDir: *downloadDir,
-		ListenPort:  uint16(*listenPort),
-	})
-	if err != nil {
-		logger.Error.Fatalf("Error creating torrent: %v\n", err)
-	}
-
-	// Ctrl-C (and SIGTERM) triggers a graceful shutdown: cancelling this
-	// context makes Run save a final checkpoint, tell the tracker we're
-	// stopping, and disconnect every peer before returning. No os.Exit here —
-	// main just falls off the end once everything has actually stopped.
-	ctx, cancel := context.WithCancel(context.Background())
+	// Ctrl-C (and SIGTERM) triggers a graceful shutdown of the whole fleet:
+	// every torrent saves a final checkpoint, tells its tracker it is
+	// stopping, and disconnects its peers before Shutdown returns. No
+	// os.Exit here — main just falls off the end once everything has
+	// actually stopped.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	shutdownDone := make(chan struct{})
 	go func() {
 		<-sigCh
 		fmt.Println("\nShutdown signal received, saving state and disconnecting...")
-		cancel()
+		e.Shutdown()
+		close(shutdownDone)
 	}()
 
-	runDone := make(chan struct{})
-	go func() {
-		defer close(runDone)
-		if err := tr.Run(ctx); err != nil {
-			logger.Error.Printf("Torrent run failed: %v\n", err)
-		}
-	}()
-
-	displayProgress(tr, runDone)
+	displayFleet(e, shutdownDone)
 
 	logger.Logf("GoTorrent finished.\n")
 }
 
-// displayProgress prints a single self-overwriting status line, matching the
-// old session's displayLoop, until the torrent finishes or Run returns.
-func displayProgress(tr *torrent.Torrent, runDone <-chan struct{}) {
+// displayFleet prints one self-overwriting status line per managed torrent
+// until shutdownDone closes.
+func displayFleet(e *engine.Engine, shutdownDone <-chan struct{}) {
 	fmt.Print("\033[?25l")       // hide cursor
 	defer fmt.Print("\033[?25h") // restore it on the way out
 
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
-	var lastBytes int64
+	lastBytes := make(map[metainfo.Hash]int64)
 	lastTime := time.Now()
-	announcedDone := false
+	linesDrawn := 0
+
+	render := func() {
+		list := e.List()
+		now := time.Now()
+		elapsed := now.Sub(lastTime).Seconds()
+
+		if linesDrawn > 0 {
+			fmt.Printf("\033[%dA", linesDrawn)
+		}
+		for _, s := range list {
+			var speed float64
+			if elapsed > 0.1 {
+				speed = float64(s.Stats.Downloaded-lastBytes[s.InfoHash]) / elapsed
+			}
+			lastBytes[s.InfoHash] = s.Stats.Downloaded
+
+			percent := 0.0
+			if s.Stats.TotalLength > 0 {
+				percent = float64(s.Stats.Downloaded) / float64(s.Stats.TotalLength) * 100
+			}
+
+			name := strings.TrimSuffix(filepath.Base(s.TorrentPath), ".torrent")
+			if len(name) > 24 {
+				name = name[:21] + "..."
+			}
+
+			fmt.Printf("%-24s %-16s %6.2f%% %6.2f/%6.2f MB %s peers:%-3d\033[K\n",
+				name,
+				s.Stats.State,
+				percent,
+				float64(s.Stats.Downloaded)/(1024*1024),
+				float64(s.Stats.TotalLength)/(1024*1024),
+				formatSpeed(speed),
+				s.Stats.PeerCount,
+			)
+		}
+		lastTime = now
+		linesDrawn = len(list)
+	}
 
 	for {
 		select {
-		case <-runDone:
-			fmt.Println()
+		case <-shutdownDone:
 			return
-		case now := <-ticker.C:
-			stats := tr.Stats()
-
-			elapsed := now.Sub(lastTime).Seconds()
-			var speed float64
-			if elapsed > 0.1 {
-				speed = float64(stats.Downloaded-lastBytes) / elapsed
-			}
-			lastBytes = stats.Downloaded
-			lastTime = now
-
-			percent := 0.0
-			if stats.TotalLength > 0 {
-				percent = float64(stats.Downloaded) / float64(stats.TotalLength) * 100
-			}
-
-			fmt.Printf("\rState: %-16s | Progress: %6.2f%% | %.2f/%.2f MB | %s | Peers: %d \033[K",
-				stats.State,
-				percent,
-				float64(stats.Downloaded)/(1024*1024),
-				float64(stats.TotalLength)/(1024*1024),
-				formatSpeed(speed),
-				stats.PeerCount,
-			)
-
-			if stats.State == torrent.StateSeeding && !announcedDone {
-				fmt.Println()
-				fmt.Println("Download complete. Seeding — press Ctrl-C to stop.")
-				announcedDone = true
-			}
-			if stats.State == torrent.StateError {
-				fmt.Println()
-				fmt.Println("Torrent stopped due to an unrecoverable error; see -verbose output.")
-				return
-			}
+		case <-ticker.C:
+			render()
 		}
 	}
 }
