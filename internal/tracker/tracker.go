@@ -1,7 +1,6 @@
-// Package tracker talks to BitTorrent trackers.
-//
-// Only HTTP(S) announces are implemented so far. UDP trackers (BEP 15) will
-// live alongside this behind the same Announcer interface.
+// Package tracker talks to BitTorrent trackers, HTTP(S) and UDP (BEP 15)
+// alike, behind one Client.Announce entry point that dispatches on the
+// announce URL's scheme.
 package tracker
 
 import (
@@ -14,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/Oblutack/GoTorrent/internal/bencode"
@@ -169,9 +169,16 @@ func GeneratePeerID() ([20]byte, error) {
 	return id, nil
 }
 
-// Client announces to HTTP(S) trackers.
+// Client announces to HTTP(S) and UDP trackers.
 type Client struct {
 	http *http.Client
+
+	// udpMu guards udpConns, BEP 15's per-tracker connection-id cache. UDP
+	// announces are infrequent enough (one per tracker per interval) that a
+	// single mutex across every tracker this Client ever talks to is not a
+	// contention concern.
+	udpMu    sync.Mutex
+	udpConns map[string]*udpConn
 }
 
 // NewClient returns a tracker client. Passing nil uses a default HTTP client
@@ -183,8 +190,25 @@ func NewClient(httpClient *http.Client) *Client {
 	return &Client{http: httpClient}
 }
 
-// Announce sends one announce and parses the reply.
+// Announce sends one announce and parses the reply, dispatching to the UDP
+// (BEP 15) or HTTP(S) implementation by the announce URL's scheme.
 func (c *Client) Announce(ctx context.Context, announceURL string, req AnnounceRequest) (*AnnounceResponse, error) {
+	u, err := url.Parse(announceURL)
+	if err != nil {
+		return nil, fmt.Errorf("tracker: invalid announce URL %q: %w", announceURL, err)
+	}
+	switch u.Scheme {
+	case "udp":
+		return c.announceUDP(ctx, u, req)
+	case "http", "https":
+		return c.announceHTTP(ctx, announceURL, req)
+	default:
+		return nil, fmt.Errorf("tracker: unsupported announce scheme %q", u.Scheme)
+	}
+}
+
+// announceHTTP is the original HTTP(S) announce path.
+func (c *Client) announceHTTP(ctx context.Context, announceURL string, req AnnounceRequest) (*AnnounceResponse, error) {
 	target, err := req.BuildURL(announceURL)
 	if err != nil {
 		return nil, err

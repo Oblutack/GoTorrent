@@ -96,9 +96,9 @@ func (t *Torrent) announceOnce(event tracker.Event, timeout time.Duration) {
 // trackers supplied at construction before that.
 func (t *Torrent) announceURLs() []string {
 	if mi := t.mi.Load(); mi != nil {
-		return httpAnnounceURLs(mi.AnnounceURLs())
+		return supportedAnnounceURLs(mi.AnnounceURLs())
 	}
-	return httpAnnounceURLs(t.cfg.Trackers)
+	return supportedAnnounceURLs(t.cfg.Trackers)
 }
 
 func (t *Torrent) announce(ctx context.Context, urls []string, event tracker.Event) (*tracker.AnnounceResponse, error) {
@@ -134,10 +134,14 @@ func (t *Torrent) announce(ctx context.Context, urls []string, event tracker.Eve
 	return nil, lastErr
 }
 
-func httpAnnounceURLs(all []string) []string {
+// supportedAnnounceURLs keeps only the schemes tracker.Client.Announce
+// actually implements (http, https, udp — BEP 15), so an unsupported scheme
+// in a torrent's announce list (or a magnet's tr=) is silently skipped
+// rather than tried and failing every interval.
+func supportedAnnounceURLs(all []string) []string {
 	var out []string
 	for _, u := range all {
-		if strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://") {
+		if strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://") || strings.HasPrefix(u, "udp://") {
 			out = append(out, u)
 		}
 	}
