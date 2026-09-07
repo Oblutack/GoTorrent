@@ -1,6 +1,8 @@
 package torrent
 
 import (
+	"net"
+
 	"github.com/Oblutack/GoTorrent/internal/metainfo"
 	"github.com/Oblutack/GoTorrent/internal/peer"
 	"github.com/Oblutack/GoTorrent/internal/tracker"
@@ -50,9 +52,20 @@ type eventPeerConnected struct {
 }
 
 // eventDialFailed clears a dialing reservation after a failed connection
-// attempt.
+// attempt or a rejected inbound one.
 type eventDialFailed struct {
 	addr string
+}
+
+// eventIncomingPeer hands the actor a connection accepted by the engine's
+// shared listener. The engine has already read hs — it had to, to learn the
+// infohash and route the connection to this torrent in the first place — so
+// only the dedup/cap check and the reply handshake remain, both of which
+// must happen from the actor (dedup) or a spawned goroutine (the reply, to
+// avoid blocking run() on network I/O).
+type eventIncomingPeer struct {
+	conn net.Conn
+	hs   *peer.Handshake
 }
 
 // eventPeerBlock is a received data block.

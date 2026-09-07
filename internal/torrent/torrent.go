@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -530,5 +531,18 @@ func (t *Torrent) DialPeer(pi tracker.PeerInfo) {
 	select {
 	case t.events <- eventDialRequest{addr: pi}:
 	case <-t.done:
+	}
+}
+
+// AcceptPeer hands off an inbound connection whose handshake the caller has
+// already read (the engine's shared listener, which must read it to learn
+// the infohash and route the connection to this torrent in the first
+// place). It does not block; if the torrent has already stopped, conn is
+// closed instead of leaking.
+func (t *Torrent) AcceptPeer(conn net.Conn, hs *peer.Handshake) {
+	select {
+	case t.events <- eventIncomingPeer{conn: conn, hs: hs}:
+	case <-t.done:
+		conn.Close()
 	}
 }

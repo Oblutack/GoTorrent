@@ -3,6 +3,7 @@ package torrent
 import (
 	"context"
 	"errors"
+	"net"
 	"time"
 
 	"github.com/Oblutack/GoTorrent/internal/choker"
@@ -169,6 +170,8 @@ func (t *Torrent) handleEvent(ev any) {
 		t.dial(e.addr)
 	case eventDialFailed:
 		delete(t.dialing, e.addr)
+	case eventIncomingPeer:
+		t.acceptIncoming(e.conn, e.hs)
 	case eventPeerConnected:
 		t.registerPeer(e.pc)
 	case eventPeerBlock:
@@ -208,6 +211,27 @@ func (t *Torrent) dial(pi tracker.PeerInfo) {
 	go t.connectAndPump(t.ctx, pi)
 }
 
+// acceptIncoming applies the same dedup-by-address and peer-cap rules dial
+// does, keyed by the connection's remote address, before handing the reply
+// handshake off to a spawned goroutine. Unlike dial, there is no outcome to
+// wait for here beyond that check: the connection already exists, so a
+// rejection just means closing it instead of never opening it.
+func (t *Torrent) acceptIncoming(conn net.Conn, hs *peer.Handshake) {
+	addr := conn.RemoteAddr().String()
+	if t.peers[addr] != nil || t.dialing[addr] {
+		conn.Close()
+		return
+	}
+	if len(t.peers)+len(t.dialing) >= maxPeers {
+		conn.Close()
+		return
+	}
+	t.dialing[addr] = true
+
+	t.wg.Add(1)
+	go t.acceptAndPump(t.ctx, conn, hs)
+}
+
 // connectAndPump dials, handshakes, registers on success, and then pumps the
 // connection's events back to the actor until it disconnects. It runs
 // entirely off the actor goroutine; the only actor state it touches is via
@@ -223,16 +247,43 @@ func (t *Torrent) connectAndPump(ctx context.Context, pi tracker.PeerInfo) {
 		return
 	}
 
-	pc := &peerConn{addr: pi.Addr(), client: client}
-	select {
-	case t.events <- eventPeerConnected{pc: pc}:
-	case <-ctx.Done():
-		client.Close()
+	t.registerAndPump(ctx, &peerConn{addr: pi.Addr(), client: client})
+}
+
+// acceptAndPump completes the reply half of an inbound handshake and then
+// pumps the connection exactly like connectAndPump — the two differ only in
+// how the *peer.Client comes to exist.
+func (t *Torrent) acceptAndPump(ctx context.Context, conn net.Conn, hs *peer.Handshake) {
+	defer t.wg.Done()
+
+	addr := conn.RemoteAddr().String()
+	client, err := peer.AcceptClient(conn, hs, t.peerTorrentInfo(), t.cfg.OurID,
+		peer.Callbacks{HasPiece: t.hasPieceSafe, ReadBlock: t.readBlockSafe, MetadataBytes: t.metadataBytesSafe},
+		peer.Limits{Down: t.cfg.DownLimit, Up: t.cfg.UpLimit})
+	if err != nil {
+		t.sendEvent(ctx, eventDialFailed{addr: addr})
 		return
 	}
 
-	go client.Run()
+	t.registerAndPump(ctx, &peerConn{addr: addr, client: client})
+}
 
+// registerAndPump reports a newly-constructed connection to the actor and
+// then relays its Results/Events/MetadataPieces to the actor until it closes,
+// finally reporting eventPeerGone. Shared by connectAndPump and
+// acceptAndPump once each has its own *peer.Client, regardless of which side
+// initiated the connection.
+func (t *Torrent) registerAndPump(ctx context.Context, pc *peerConn) {
+	select {
+	case t.events <- eventPeerConnected{pc: pc}:
+	case <-ctx.Done():
+		pc.client.Close()
+		return
+	}
+
+	go pc.client.Run()
+
+	client := pc.client
 	resultsOpen, eventsOpen, metadataOpen := true, true, true
 	for resultsOpen || eventsOpen || metadataOpen {
 		select {

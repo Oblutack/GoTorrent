@@ -327,12 +327,6 @@ func NewClient(
 	callbacks Callbacks,
 	limits Limits,
 ) (*Client, error) {
-	if limits.Down == nil {
-		limits.Down = ratelimit.Unlimited()
-	}
-	if limits.Up == nil {
-		limits.Up = ratelimit.Unlimited()
-	}
 	address := net.JoinHostPort(peerInfo.IP.String(), strconv.Itoa(int(peerInfo.Port)))
 	logger.Logf("peer: attempting to connect to %s\n", address)
 	conn, err := net.DialTimeout("tcp", address, handshakeTimeout)
@@ -362,6 +356,45 @@ func NewClient(
 	}
 	logger.Logf("peer: handshake successful with %s (PeerID: %x)\n", address, peerHandshake.PeerID)
 
+	return newClient(conn, torrent, ourID, peerHandshake, callbacks, limits), nil
+}
+
+// AcceptClient completes a connection we accepted (as opposed to dialed): the
+// caller has already read theirHandshake — it had to, in order to learn the
+// infohash and route the connection to the right owner in the first place —
+// so this only needs to send our own reply handshake before constructing a
+// Client exactly like NewClient does for an outbound connection.
+func AcceptClient(
+	conn net.Conn,
+	theirHandshake *Handshake,
+	torrent TorrentInfo,
+	ourID [20]byte,
+	callbacks Callbacks,
+	limits Limits,
+) (*Client, error) {
+	ourHandshake := NewHandshake(torrent.InfoHash, ourID)
+	conn.SetWriteDeadline(time.Now().Add(handshakeTimeout))
+	_, err := conn.Write(ourHandshake.Serialize())
+	conn.SetWriteDeadline(time.Time{})
+	if err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("peer: failed to send handshake reply to %s: %w", conn.RemoteAddr(), err)
+	}
+	logger.Logf("peer: accepted connection from %s (PeerID: %x)\n", conn.RemoteAddr(), theirHandshake.PeerID)
+
+	return newClient(conn, torrent, ourID, theirHandshake, callbacks, limits), nil
+}
+
+// newClient builds a Client once a handshake has been exchanged in either
+// direction, shared by NewClient and AcceptClient.
+func newClient(conn net.Conn, torrent TorrentInfo, ourID [20]byte, peerHandshake *Handshake, callbacks Callbacks, limits Limits) *Client {
+	if limits.Down == nil {
+		limits.Down = ratelimit.Unlimited()
+	}
+	if limits.Up == nil {
+		limits.Up = ratelimit.Unlimited()
+	}
+
 	c := &Client{
 		Conn:              conn,
 		OurID:             ourID,
@@ -384,7 +417,7 @@ func NewClient(
 	c.peerChoking.Store(true) // assume the peer is choking us initially
 	c.lastPieceReceived.Store(time.Now().Unix())
 
-	return c, nil
+	return c
 }
 
 // --- state accessors -------------------------------------------------------
