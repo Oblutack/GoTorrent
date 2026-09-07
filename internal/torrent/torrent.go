@@ -53,8 +53,8 @@ type Config struct {
 	DownloadDir string
 	// ResumeDir overrides where resume data is kept. Defaults to ResumeDir().
 	ResumeDir string
-	// ListenPort is what we advertise to trackers. There is no inbound
-	// listener yet (Phase 2), so this is informational only.
+	// ListenPort is what we advertise to trackers and DHT peers, and (via
+	// Engine.Listen) actually accept inbound connections on.
 	ListenPort uint16
 	// OurID is this client's peer ID. GeneratePeerID() if left zero.
 	OurID [20]byte
@@ -74,6 +74,12 @@ type Config struct {
 	// announceURLs reads mi.AnnounceURLs() instead. Meaningless for a
 	// Config passed to New, which always has metadata from the start.
 	Trackers []string
+	// DHT is this torrent's peer-discovery route into the mainline DHT
+	// (BEP 5), typically one node shared by every torrent an engine.Engine
+	// manages — see dht.go. Nil disables DHT for this torrent entirely,
+	// which is also what happens automatically, mid-flight, if metadata
+	// later reveals the torrent is private (BEP 27).
+	DHT DHTClient
 }
 
 // peerConn is one connected peer plus the bookkeeping the actor needs that
@@ -157,6 +163,9 @@ type Torrent struct {
 	// exists so Pause/Resume/Recheck can restart the loop cleanly instead of
 	// accumulating a duplicate every cycle — see restartAnnounceLoop.
 	announceCancel context.CancelFunc
+	// dhtCancel is announceCancel's DHT-loop counterpart — see
+	// restartDHTLoop in dht.go.
+	dhtCancel context.CancelFunc
 	// --- end actor-owned ---
 
 	downloaded atomic.Int64
@@ -353,6 +362,7 @@ func (t *Torrent) Run(ctx context.Context) error {
 	// and the same loop picks up mi.AnnounceURLs() once metadata arrives —
 	// see announceLoop's comment.
 	t.restartAnnounceLoop(tracker.EventStarted)
+	t.restartDHTLoop()
 
 	t.run(t.ctx)
 

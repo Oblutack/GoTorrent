@@ -79,6 +79,7 @@ func (t *Torrent) doPause() error {
 		return nil
 	}
 	t.stopAnnounceLoop()
+	t.stopDHTLoop()
 	t.shutdownPeers()
 	t.checkpoint()
 	t.announceOnce(tracker.EventStopped, announceTimeout)
@@ -100,6 +101,7 @@ func (t *Torrent) doResume() error {
 		t.setState(StateDownloading)
 	}
 	t.restartAnnounceLoop(tracker.EventStarted)
+	t.restartDHTLoop()
 	return nil
 }
 
@@ -124,6 +126,7 @@ func (t *Torrent) doRecheck() error {
 	t.downloaded.Store(bytesForBitfield(mi, have))
 	t.afterVerify()
 	t.restartAnnounceLoop(tracker.EventNone)
+	t.restartDHTLoop()
 	return nil
 }
 
