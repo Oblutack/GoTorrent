@@ -5,6 +5,7 @@ import (
 
 	"github.com/Oblutack/GoTorrent/internal/metainfo"
 	"github.com/Oblutack/GoTorrent/internal/peer"
+	"github.com/Oblutack/GoTorrent/internal/picker"
 	"github.com/Oblutack/GoTorrent/internal/tracker"
 )
 
@@ -20,6 +21,7 @@ const (
 	ctrlResume
 	ctrlRecheck
 	ctrlSetMetadata
+	ctrlSetFilePriority
 	ctrlStats
 )
 
@@ -28,8 +30,12 @@ type controlMsg struct {
 
 	// metadata is set for ctrlSetMetadata.
 	metadata *metainfo.MetaInfo
+	// fileIndex and priority are set for ctrlSetFilePriority.
+	fileIndex int
+	priority  picker.Priority
 
-	// errReply receives the result of Pause/Resume/Recheck/SetMetadata.
+	// errReply receives the result of Pause/Resume/Recheck/SetMetadata/
+	// SetFilePriority.
 	errReply chan error
 	// statsReply receives the actor-owned half of a Stats snapshot.
 	statsReply chan Stats

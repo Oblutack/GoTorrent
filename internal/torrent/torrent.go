@@ -45,6 +45,9 @@ type Stats struct {
 	HavePieces  int
 	PeerCount   int
 	InEndgame   bool
+	// FilePriorities is one entry per file, in file order — nil until
+	// metadata is known (see Torrent.SetFilePriority).
+	FilePriorities []picker.Priority
 }
 
 // Config configures a Torrent.
@@ -80,6 +83,17 @@ type Config struct {
 	// which is also what happens automatically, mid-flight, if metadata
 	// later reveals the torrent is private (BEP 27).
 	DHT DHTClient
+	// FilePriorities sets each file's initial download priority, in the
+	// same order as the torrent's own file list (one entry for a
+	// single-file torrent). Empty (the default) starts every file at
+	// picker.PriorityNormal. A file starting at picker.PrioritySkip is
+	// never allocated on disk at all — see storage.WithSkipFiles — which is
+	// the only time "never allocated" is fully achievable; changing a
+	// file's priority later, via SetFilePriority, only ever changes what
+	// gets requested from peers from that point on, not what already
+	// exists on disk. Meaningless before metadata is known: applied once,
+	// in openMetadata.
+	FilePriorities []picker.Priority
 }
 
 // peerConn is one connected peer plus the bookkeeping the actor needs that
@@ -165,6 +179,14 @@ type Torrent struct {
 	// metadataFetch tracks an in-progress BEP 9 metadata download. Non-nil
 	// only while mi is nil; see maybeStartMetadataFetch.
 	metadataFetch *metadataAssembly
+
+	// filePriorities is one entry per file, set from Config.FilePriorities
+	// once metadata is known (openMetadata) and updated by SetFilePriority
+	// after that. piecePriorities(mi, filePriorities) is what actually
+	// drives the picker; this slice is the source of truth it's derived
+	// from, since a single file's priority change needs the whole thing
+	// recomputed (a piece can span several files).
+	filePriorities []picker.Priority
 
 	// pexKnownPeers is the addr-keyed snapshot of dialable peers (see
 	// peerConn.peerInfo) as of the last PEX broadcast — broadcastPEX (pex.go)
@@ -334,6 +356,7 @@ func (t *Torrent) Stats() Stats {
 		s.HavePieces = fromActor.HavePieces
 		s.PeerCount = fromActor.PeerCount
 		s.InEndgame = fromActor.InEndgame
+		s.FilePriorities = fromActor.FilePriorities
 	case <-t.done:
 	}
 	return s
@@ -403,7 +426,13 @@ func (t *Torrent) Run(ctx context.Context) error {
 // data if it is trustworthy, and otherwise runs a full verify. This is the
 // CheckingFiles state, whichever way the torrent got here.
 func (t *Torrent) openMetadata(mi *metainfo.MetaInfo) error {
-	st, err := storage.New(t.cfg.DownloadDir, mi, storage.WithAllocation(t.cfg.Allocation))
+	t.filePriorities = normalizedFilePriorities(mi, t.cfg.FilePriorities)
+	skip := make([]bool, len(t.filePriorities))
+	for i, pr := range t.filePriorities {
+		skip[i] = pr == picker.PrioritySkip
+	}
+
+	st, err := storage.New(t.cfg.DownloadDir, mi, storage.WithAllocation(t.cfg.Allocation), storage.WithSkipFiles(skip))
 	if err != nil {
 		return fmt.Errorf("opening storage: %w", err)
 	}
@@ -419,6 +448,9 @@ func (t *Torrent) openMetadata(mi *metainfo.MetaInfo) error {
 	})
 	if err != nil {
 		return fmt.Errorf("creating picker: %w", err)
+	}
+	if err := pk.SetPriorities(piecePriorities(mi, t.filePriorities)); err != nil {
+		return fmt.Errorf("applying file priorities: %w", err)
 	}
 	t.pick = pk
 
@@ -504,6 +536,28 @@ func (t *Torrent) SetMetadata(mi *metainfo.MetaInfo) error {
 	resp := make(chan error, 1)
 	select {
 	case t.control <- controlMsg{kind: ctrlSetMetadata, metadata: mi, errReply: resp}:
+	case <-t.done:
+		return ErrClosed
+	}
+	select {
+	case err := <-resp:
+		return err
+	case <-t.done:
+		return ErrClosed
+	}
+}
+
+// SetFilePriority changes one file's download priority, identified by its
+// index into the torrent's own file list (a single-file torrent has
+// exactly one, index 0). It blocks until the change has taken effect: every
+// piece's effective priority recomputed, and — for a file newly moved off
+// PrioritySkip that was never allocated — that allocation actually done, so
+// a caller that gets a nil error back knows requests for that file's pieces
+// can start immediately. Requires metadata to already be known.
+func (t *Torrent) SetFilePriority(fileIndex int, priority picker.Priority) error {
+	resp := make(chan error, 1)
+	select {
+	case t.control <- controlMsg{kind: ctrlSetFilePriority, fileIndex: fileIndex, priority: priority, errReply: resp}:
 	case <-t.done:
 		return ErrClosed
 	}

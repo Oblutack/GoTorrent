@@ -3,6 +3,7 @@ package torrent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"time"
 
@@ -63,6 +64,9 @@ func (t *Torrent) handleControl(msg controlMsg) {
 			s.HavePieces = t.pick.Have().Count()
 			s.InEndgame = t.pick.InEndgame()
 		}
+		if t.filePriorities != nil {
+			s.FilePriorities = append([]picker.Priority(nil), t.filePriorities...)
+		}
 		msg.statsReply <- s
 
 	case ctrlPause:
@@ -76,6 +80,9 @@ func (t *Torrent) handleControl(msg controlMsg) {
 
 	case ctrlSetMetadata:
 		msg.errReply <- t.doSetMetadata(msg.metadata)
+
+	case ctrlSetFilePriority:
+		msg.errReply <- t.doSetFilePriority(msg.fileIndex, msg.priority)
 	}
 }
 
@@ -166,6 +173,58 @@ func (t *Torrent) doSetMetadata(mi *metainfo.MetaInfo) error {
 			continue
 		}
 		t.pick.Availability().AddPeer(pc.client.BitfieldSnapshot())
+	}
+	return nil
+}
+
+// doSetFilePriority changes one file's priority and recomputes every
+// piece's effective priority from scratch — piecePriorities has to run
+// again in full because a single piece can span several files, so one
+// file's change can shift what a piece straddling it is entitled to.
+//
+// A file moving out of PrioritySkip that was never allocated (it started
+// skipped, or was skipped before ever being allocated) is allocated here,
+// on demand — see storage.EnsureFileAllocated. A file moving into
+// PrioritySkip is never retroactively deleted; this only ever changes what
+// gets requested from peers from this point on.
+func (t *Torrent) doSetFilePriority(fileIndex int, priority picker.Priority) error {
+	mi := t.mi.Load()
+	if mi == nil {
+		return errors.New("torrent: no metadata yet")
+	}
+	n := numFiles(mi)
+	if fileIndex < 0 || fileIndex >= n {
+		return fmt.Errorf("torrent: file index %d out of range (%d files)", fileIndex, n)
+	}
+
+	wasSkip := t.filePriorities[fileIndex] == picker.PrioritySkip
+	t.filePriorities[fileIndex] = priority
+
+	if wasSkip && priority != picker.PrioritySkip {
+		if err := t.storage.EnsureFileAllocated(t.ctx, fileIndex); err != nil {
+			t.filePriorities[fileIndex] = picker.PrioritySkip // still isn't there; don't pretend it is
+			return fmt.Errorf("torrent: allocating file %d: %w", fileIndex, err)
+		}
+	}
+
+	if err := t.pick.SetPriorities(piecePriorities(mi, t.filePriorities)); err != nil {
+		return fmt.Errorf("torrent: applying file priorities: %w", err)
+	}
+
+	// A priority change can flip completeness in either direction: skipping
+	// the only remaining wanted files finishes the torrent; un-skipping a
+	// file that isn't fully downloaded un-finishes it. Seeding has no
+	// direct edge back to Downloading in the state table (by design — see
+	// state.go), so that direction goes through CheckingFiles, same as a
+	// Recheck, except there is no actual re-verify to do: every piece this
+	// torrent has is already known to be have or not-have.
+	switch {
+	case t.pick.Complete() && t.State() == StateDownloading:
+		t.setState(StateSeeding)
+		t.checkpoint()
+	case !t.pick.Complete() && t.State() == StateSeeding:
+		t.setState(StateCheckingFiles)
+		t.setState(StateDownloading)
 	}
 	return nil
 }
