@@ -48,7 +48,12 @@ var ErrShortWrite = errors.New("storage: short write")
 type Storage struct {
 	layout *Layout
 	files  []FileRegion
-	total  int64
+	// skip marks a file as never-allocated: index-aligned with files, nil
+	// (the common case) means nothing is skipped. Set via WithSkipFiles at
+	// construction; cleared per-file by EnsureFileAllocated once a
+	// previously-skipped file needs to actually exist on disk.
+	skip  []bool
+	total int64
 
 	cache      *handleCache
 	allocation Allocation
@@ -89,6 +94,18 @@ func WithFileMode(file, dir os.FileMode) Option {
 		s.fileMode = file
 		s.dirMode = dir
 	}
+}
+
+// WithSkipFiles marks files that Allocate should never create, index-aligned
+// with the torrent's own file list (a single entry for a single-file
+// torrent). This is how "skipped files are never allocated" is actually
+// achieved — a file's region is simply left out of the Allocate loop
+// entirely, not created and then ignored. New rejects a skip slice whose
+// length does not match the file count. A file skipped this way can still
+// be brought into existence later via EnsureFileAllocated, for a priority
+// change after the torrent has already started.
+func WithSkipFiles(skip []bool) Option {
+	return func(s *Storage) { s.skip = append([]bool(nil), skip...) }
 }
 
 // New builds the storage for one torrent under downloadDir.
@@ -132,7 +149,16 @@ func New(downloadDir string, mi *metainfo.MetaInfo, opts ...Option) (*Storage, e
 		s.files = append(s.files, FileRegion{Path: path, Offset: 0, Length: mi.Info.Length})
 	}
 
+	if s.skip != nil && len(s.skip) != len(s.files) {
+		return nil, fmt.Errorf("storage: got %d skip flags, torrent has %d files", len(s.skip), len(s.files))
+	}
+
 	return s, nil
+}
+
+// isSkipped reports whether file index is currently marked never-allocate.
+func (s *Storage) isSkipped(index int) bool {
+	return index < len(s.skip) && s.skip[index]
 }
 
 // Files returns the torrent's file layout.
@@ -161,9 +187,12 @@ func (s *Storage) Allocate(ctx context.Context) error {
 		return err
 	}
 
-	for _, region := range s.files {
+	for i, region := range s.files {
 		if err := ctx.Err(); err != nil {
 			return err
+		}
+		if s.isSkipped(i) {
+			continue // never allocated — see WithSkipFiles
 		}
 		if err := s.allocateFile(ctx, region); err != nil {
 			return err
@@ -171,6 +200,28 @@ func (s *Storage) Allocate(ctx context.Context) error {
 	}
 
 	s.allocated = true
+	return nil
+}
+
+// EnsureFileAllocated allocates a single file on demand: for one that
+// started at skip priority (Allocate never created it) and was later given
+// a real priority. Without this, the first WriteAt into its region would
+// fail outright — the handle cache opens files without O_CREATE, on the
+// assumption Allocate already created everything it will ever need to
+// write to.
+func (s *Storage) EnsureFileAllocated(ctx context.Context, index int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if index < 0 || index >= len(s.files) {
+		return fmt.Errorf("storage: file index %d out of range (%d files)", index, len(s.files))
+	}
+	if !s.isSkipped(index) {
+		return nil // already allocated, or never skipped to begin with
+	}
+	if err := s.allocateFile(ctx, s.files[index]); err != nil {
+		return err
+	}
+	s.skip[index] = false
 	return nil
 }
 
@@ -232,11 +283,29 @@ func (s *Storage) checkFreeSpace() error {
 		// Not being able to ask is not a reason to refuse the download.
 		return nil
 	}
-	if available >= 0 && available < s.total {
+	needed := s.wantedTotal()
+	if available >= 0 && available < needed {
 		return fmt.Errorf("storage: %s has %d bytes free, torrent needs %d",
-			s.layout.Base(), available, s.total)
+			s.layout.Base(), available, needed)
 	}
 	return nil
+}
+
+// wantedTotal is the total size of files Allocate will actually create —
+// s.total minus whatever WithSkipFiles left out, since checking free space
+// against the full torrent size would refuse a download that doesn't
+// actually need that much room.
+func (s *Storage) wantedTotal() int64 {
+	if s.skip == nil {
+		return s.total
+	}
+	var total int64
+	for i, region := range s.files {
+		if !s.isSkipped(i) {
+			total += region.Length
+		}
+	}
+	return total
 }
 
 // regionAt returns the index of the file containing offset, or -1.
