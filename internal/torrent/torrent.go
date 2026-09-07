@@ -92,6 +92,16 @@ type peerConn struct {
 	client     *peer.Client
 	downloaded atomic.Int64 // cumulative bytes received, for the choker
 
+	// peerInfo is this peer's dial-back address — known for a peer we
+	// dialed ourselves (it's exactly what we dialed), zero-value for one
+	// that connected to us: the BitTorrent handshake carries no "my
+	// listening port" field, so an inbound connection's source port is
+	// almost always an ephemeral client port, not a real dial-back address.
+	// broadcastPEX (run.go) only ever advertises peers with a non-zero
+	// Port here, which is what keeps unreachable inbound-only addresses out
+	// of what this client tells others via BEP 11.
+	peerInfo tracker.PeerInfo
+
 	pipelineTarget int       // current desired outstanding-request count
 	outstanding    int       // requests sent to this peer, awaiting a Piece
 	lastAdaptBytes int64     // pc.downloaded at the last adaptation
@@ -155,6 +165,11 @@ type Torrent struct {
 	// metadataFetch tracks an in-progress BEP 9 metadata download. Non-nil
 	// only while mi is nil; see maybeStartMetadataFetch.
 	metadataFetch *metadataAssembly
+
+	// pexKnownPeers is the addr-keyed snapshot of dialable peers (see
+	// peerConn.peerInfo) as of the last PEX broadcast — broadcastPEX (pex.go)
+	// diffs it against t.peers to compute each cycle's added/dropped lists.
+	pexKnownPeers map[string]tracker.PeerInfo
 
 	piecesVerifiedSinceCheckpoint int
 	lastCheckpoint                time.Time
@@ -247,6 +262,7 @@ func newTorrent(hash metainfo.Hash, cfg Config) (*Torrent, error) {
 		trackerClient: tracker.NewClient(nil),
 		peers:         make(map[string]*peerConn),
 		dialing:       make(map[string]bool),
+		pexKnownPeers: make(map[string]tracker.PeerInfo),
 		choke:         choker.New(),
 		events:        make(chan any, 256),
 		control:       make(chan controlMsg),

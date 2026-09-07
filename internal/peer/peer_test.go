@@ -533,6 +533,9 @@ func TestExtendedHandshakeAdvertisesOurMetadata(t *testing.T) {
 	if hs.M["ut_metadata"] != localUtMetadataID {
 		t.Fatalf("m[ut_metadata] = %d, want %d", hs.M["ut_metadata"], localUtMetadataID)
 	}
+	if hs.M["ut_pex"] != localUtPexID {
+		t.Fatalf("m[ut_pex] = %d, want %d", hs.M["ut_pex"], localUtPexID)
+	}
 	if hs.MetadataSize != len(content) {
 		t.Fatalf("metadata_size = %d, want %d", hs.MetadataSize, len(content))
 	}
@@ -668,6 +671,141 @@ func TestServesMetadataRequestFromPeer(t *testing.T) {
 	}
 }
 
+// TestSendPEXAddressesThePeersOwnID drives the client side of BEP 11: a fake
+// peer advertises ut_pex under an id of its own choosing (not localUtPexID,
+// same reasoning as the ut_metadata tests above), and SendPEX addresses its
+// message using that id.
+func TestSendPEXAddressesThePeersOwnID(t *testing.T) {
+	client, server := dialTestPeer(t, Callbacks{HasPiece: func(uint32) bool { return false }})
+	go client.Run()
+
+	if body := readFrame(t, server); MessageID(body[0]) != MsgInterested {
+		t.Fatalf("expected Interested first, got %s", MessageID(body[0]))
+	}
+	if body := readFrame(t, server); MessageID(body[0]) != MsgExtended {
+		t.Fatalf("expected our extended handshake second, got %s", MessageID(body[0]))
+	}
+
+	const peerUtPexID = 5
+	hsPayload := append([]byte{0}, mustMarshal(t, extHandshakeWire{
+		M: map[string]int{"ut_pex": peerUtPexID},
+	})...)
+	writeFrame(t, server, MsgExtended, hsPayload)
+	waitEvent(t, client.Events) // ExtendedHandshake
+
+	if !client.SupportsUtPex() {
+		t.Fatal("SupportsUtPex() = false after a handshake advertising it")
+	}
+
+	added := []tracker.PeerInfo{{IP: net.IPv4(203, 0, 113, 5), Port: 6881}}
+	dropped := []tracker.PeerInfo{{IP: net.IPv4(203, 0, 113, 6), Port: 6882}}
+	if err := client.SendPEX(added, dropped); err != nil {
+		t.Fatalf("SendPEX: %v", err)
+	}
+
+	body := readFrame(t, server)
+	if MessageID(body[0]) != MsgExtended {
+		t.Fatalf("expected Extended, got %s", MessageID(body[0]))
+	}
+	if int(body[1]) != peerUtPexID {
+		t.Fatalf("extended-message-id = %d, want %d (the peer's own advertised id)", body[1], peerUtPexID)
+	}
+	var wire utPexWire
+	if err := bencode.Unmarshal(body[2:], &wire); err != nil {
+		t.Fatalf("parse ut_pex message: %v", err)
+	}
+	gotAdded := decodeCompactPeerList(wire.Added)
+	if len(gotAdded) != 1 || !gotAdded[0].IP.Equal(added[0].IP) || gotAdded[0].Port != added[0].Port {
+		t.Fatalf("got added=%+v, want %+v", gotAdded, added)
+	}
+	gotDropped := decodeCompactPeerList(wire.Dropped)
+	if len(gotDropped) != 1 || !gotDropped[0].IP.Equal(dropped[0].IP) || gotDropped[0].Port != dropped[0].Port {
+		t.Fatalf("got dropped=%+v, want %+v", gotDropped, dropped)
+	}
+}
+
+// TestSendPEXToAPeerWithoutSupportIsANoOp proves SendPEX never sends
+// anything (and never errors) to a peer that hasn't advertised ut_pex —
+// callers broadcast to every connected peer without checking
+// SupportsUtPex themselves first.
+func TestSendPEXToAPeerWithoutSupportIsANoOp(t *testing.T) {
+	client, server := dialTestPeer(t, Callbacks{HasPiece: func(uint32) bool { return false }})
+	go client.Run()
+
+	readFrame(t, server) // Interested
+	readFrame(t, server) // our extended handshake
+
+	if err := client.SendPEX([]tracker.PeerInfo{{IP: net.IPv4(1, 2, 3, 4), Port: 1}}, nil); err != nil {
+		t.Fatalf("SendPEX: %v", err)
+	}
+
+	server.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+	buf := make([]byte, 1)
+	if _, err := server.Read(buf); err == nil {
+		t.Fatal("SendPEX sent something to a peer that never advertised ut_pex support")
+	}
+}
+
+// TestReceivesPEXUpdateFromPeer drives the server side: a peer sends us a
+// ut_pex message addressed to our advertised id, and it arrives on
+// PEXUpdates decoded.
+func TestReceivesPEXUpdateFromPeer(t *testing.T) {
+	client, server := dialTestPeer(t, Callbacks{HasPiece: func(uint32) bool { return false }})
+	go client.Run()
+
+	readFrame(t, server) // Interested
+	readFrame(t, server) // our extended handshake
+
+	added := []tracker.PeerInfo{
+		{IP: net.IPv4(198, 51, 100, 1), Port: 6881},
+		{IP: net.IPv4(198, 51, 100, 2), Port: 6882},
+	}
+	payload := append([]byte{localUtPexID}, mustMarshal(t, utPexWire{Added: encodeCompactPeerList(added)})...)
+	writeFrame(t, server, MsgExtended, payload)
+
+	select {
+	case update := <-client.PEXUpdates:
+		if len(update.Added) != 2 {
+			t.Fatalf("got %d added peers, want 2: %+v", len(update.Added), update.Added)
+		}
+		if !update.Added[0].IP.Equal(added[0].IP) || update.Added[0].Port != added[0].Port {
+			t.Fatalf("got %+v, want %+v first", update.Added[0], added[0])
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("PEX update never arrived on PEXUpdates")
+	}
+}
+
+// TestEmptyPEXUpdateIsNotDelivered proves a ut_pex message with nothing new
+// (both fields empty — a real client can send this as a keepalive-ish
+// no-op) does not produce a spurious PEXUpdates delivery.
+func TestEmptyPEXUpdateIsNotDelivered(t *testing.T) {
+	client, server := dialTestPeer(t, Callbacks{HasPiece: func(uint32) bool { return false }})
+	go client.Run()
+
+	readFrame(t, server) // Interested
+	readFrame(t, server) // our extended handshake
+
+	payload := append([]byte{localUtPexID}, mustMarshal(t, utPexWire{})...)
+	writeFrame(t, server, MsgExtended, payload)
+
+	// Nothing to wait for arriving is the point; give it a moment, then make
+	// sure the connection is still alive and well by exercising a normal
+	// message on it (a delivered-but-empty update would not have broken
+	// anything either, but this at least proves handleUtPexMessage returned
+	// cleanly rather than tearing the connection down).
+	select {
+	case update, ok := <-client.PEXUpdates:
+		if ok {
+			t.Fatalf("got an unexpected PEX update: %+v", update)
+		}
+	case <-time.After(200 * time.Millisecond):
+	}
+	if err := client.SendHave(0); err != nil {
+		t.Fatalf("connection did not survive an empty PEX message: %v", err)
+	}
+}
+
 // TestCloseUnblocksWriteLoop covers the goroutine leak: writeLoop used to range
 // over WorkQueue, which is never closed, so every disconnect leaked it.
 func TestCloseUnblocksWriteLoop(t *testing.T) {
@@ -782,6 +920,9 @@ func TestEventsCloseWithResults(t *testing.T) {
 	}
 	if _, ok := <-client.MetadataPieces; ok {
 		t.Fatal("MetadataPieces was not closed after Run returned")
+	}
+	if _, ok := <-client.PEXUpdates; ok {
+		t.Fatal("PEXUpdates was not closed after Run returned")
 	}
 }
 

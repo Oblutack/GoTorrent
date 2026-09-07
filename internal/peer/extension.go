@@ -1,10 +1,13 @@
 package peer
 
 import (
+	"encoding/binary"
 	"fmt"
+	"net"
 
 	"github.com/Oblutack/GoTorrent/internal/bencode"
 	"github.com/Oblutack/GoTorrent/internal/logger"
+	"github.com/Oblutack/GoTorrent/internal/tracker"
 )
 
 // extensionReservedByte / extensionReservedBit mark support for the BEP 10
@@ -17,10 +20,13 @@ const (
 
 // localUtMetadataID is the id this client always advertises for ut_metadata
 // in its own extended handshake's "m" dict. A peer wanting to send us a
-// ut_metadata message uses this id as the wire byte; a fixed single-constant
-// id is enough as long as ut_metadata is the only extension we support — a
-// second one (ut_pex, Phase 2.7) needs a small name->id table instead.
+// ut_metadata message uses this id as the wire byte.
 const localUtMetadataID = 1
+
+// localUtPexID is ut_pex's counterpart to localUtMetadataID — the id this
+// client always advertises for BEP 11 peer exchange in its own extended
+// handshake's "m" dict.
+const localUtPexID = 2
 
 // MetadataPieceSize is BEP 9's fixed chunk size for info-dictionary
 // transfer, same as a regular block. Exported so a caller assembling a
@@ -73,7 +79,7 @@ type MetadataPiece struct {
 // reserved bit is a protocol violation most peers would simply ignore, but
 // there's no reason to find out.
 func (c *Client) sendExtendedHandshake() error {
-	hs := extHandshakeWire{M: map[string]int{"ut_metadata": localUtMetadataID}}
+	hs := extHandshakeWire{M: map[string]int{"ut_metadata": localUtMetadataID, "ut_pex": localUtPexID}}
 	if c.metadataBytes != nil {
 		if b := c.metadataBytes(); b != nil {
 			hs.MetadataSize = len(b)
@@ -129,6 +135,9 @@ func (c *Client) handleExtendedHandshake(body []byte) error {
 	}
 	if hs.MetadataSize > 0 && hs.MetadataSize <= maxMetadataSize {
 		c.peerMetadataSize.Store(int64(hs.MetadataSize))
+	}
+	if id, ok := hs.M["ut_pex"]; ok && id > 0 && id <= 255 {
+		c.peerUtPexID.Store(int32(id))
 	}
 	c.notify(Event{Kind: EventExtendedHandshake})
 	return nil
@@ -205,4 +214,94 @@ func (c *Client) sendUtMetadataReject(piece int) {
 	if err := c.sendExtendedMessage(id, utMetadataWire{MsgType: utMetadataReject, Piece: piece}, nil); err != nil {
 		logger.Logf("Peer %s: failed to send metadata reject for piece %d: %v\n", c.Conn.RemoteAddr(), piece, err)
 	}
+}
+
+// --- ut_pex (BEP 11) --------------------------------------------------
+
+// utPexWire is ut_pex's bencoded body. Only the IPv4 fields are supported —
+// "added6"/"added6.f"/"dropped6" (the IPv6 variants) are not, matching the
+// IPv6 gap already documented for the UDP tracker (2.4) and the DHT (2.5).
+// "added.f" (per-peer flag bytes — encryption/seed hints) is accepted on
+// receive for forward compatibility but never populated on send: this
+// client has nothing meaningful to put in it yet.
+type utPexWire struct {
+	Added   []byte `bencode:"added,omitempty"`
+	AddedF  []byte `bencode:"added.f,omitempty"`
+	Dropped []byte `bencode:"dropped,omitempty"`
+}
+
+// PEXUpdate is one BEP 11 message: peers the sender has connected to or
+// dropped since its last PEX message. Delivered on Client.PEXUpdates.
+type PEXUpdate struct {
+	Added   []tracker.PeerInfo
+	Dropped []tracker.PeerInfo
+}
+
+// SupportsUtPex reports whether the peer's extended handshake (already
+// received) advertised ut_pex support.
+func (c *Client) SupportsUtPex() bool { return c.peerUtPexID.Load() != 0 }
+
+// SendPEX sends one BEP 11 update. It is a no-op (not an error) if the peer
+// never advertised ut_pex support, so callers can broadcast to every
+// connected peer without checking SupportsUtPex themselves first.
+func (c *Client) SendPEX(added, dropped []tracker.PeerInfo) error {
+	id := int(c.peerUtPexID.Load())
+	if id == 0 {
+		return nil
+	}
+	wire := utPexWire{Added: encodeCompactPeerList(added), Dropped: encodeCompactPeerList(dropped)}
+	return c.sendExtendedMessage(id, wire, nil)
+}
+
+func (c *Client) handleUtPexMessage(body []byte) error {
+	var wire utPexWire
+	if err := bencode.Unmarshal(body, &wire); err != nil {
+		return fmt.Errorf("malformed ut_pex message: %w", err)
+	}
+	update := PEXUpdate{Added: decodeCompactPeerList(wire.Added), Dropped: decodeCompactPeerList(wire.Dropped)}
+	if len(update.Added) == 0 && len(update.Dropped) == 0 {
+		return nil
+	}
+	select {
+	case c.PEXUpdates <- update:
+	case <-c.done:
+	}
+	return nil
+}
+
+// decodeCompactPeerList and encodeCompactPeerList handle ut_pex's "added"/
+// "dropped" fields: the same packed 6-byte-per-peer (4-byte IPv4 + 2-byte
+// big-endian port) layout BEP 23 uses for a tracker's compact peer list.
+// Written locally rather than shared with internal/tracker or internal/dht,
+// which each have their own equally small copy — three near-identical
+// four-line loops across independent packages is cheaper than the coupling
+// a shared helper would add.
+func decodeCompactPeerList(raw []byte) []tracker.PeerInfo {
+	const entry = 6
+	out := make([]tracker.PeerInfo, 0, len(raw)/entry)
+	for off := 0; off+entry <= len(raw); off += entry {
+		ip := make(net.IP, 4)
+		copy(ip, raw[off:off+4])
+		port := binary.BigEndian.Uint16(raw[off+4 : off+6])
+		if port == 0 || ip.IsUnspecified() {
+			continue
+		}
+		out = append(out, tracker.PeerInfo{IP: ip, Port: port})
+	}
+	return out
+}
+
+func encodeCompactPeerList(peers []tracker.PeerInfo) []byte {
+	buf := make([]byte, 0, 6*len(peers))
+	for _, p := range peers {
+		ip4 := p.IP.To4()
+		if ip4 == nil {
+			continue // IPv6 not supported yet, see utPexWire's doc comment
+		}
+		entry := make([]byte, 6)
+		copy(entry[0:4], ip4)
+		binary.BigEndian.PutUint16(entry[4:6], p.Port)
+		buf = append(buf, entry...)
+	}
+	return buf
 }

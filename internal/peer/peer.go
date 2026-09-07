@@ -286,6 +286,11 @@ type Client struct {
 	// Results when Run returns.
 	MetadataPieces chan MetadataPiece
 
+	// PEXUpdates carries BEP 11 peer-exchange messages as they arrive —
+	// data-bearing like Results, not lightweight like Events. Closed
+	// alongside Results when Run returns.
+	PEXUpdates chan PEXUpdate
+
 	// outbound carries serialized frames to the single writer goroutine.
 	outbound  chan []byte
 	done      chan struct{}
@@ -308,6 +313,8 @@ type Client struct {
 	peerUtMetadataID atomic.Int32
 	// peerMetadataSize is their advertised metadata_size, once known.
 	peerMetadataSize atomic.Int64
+	// peerUtPexID mirrors peerUtMetadataID for BEP 11 ut_pex.
+	peerUtPexID atomic.Int32
 
 	// Dependencies injected from the owner for serving another peer's
 	// requests. See Callbacks.
@@ -404,6 +411,7 @@ func newClient(conn net.Conn, torrent TorrentInfo, ourID [20]byte, peerHandshake
 		Results:           make(chan *PieceBlock),
 		Events:            make(chan Event, eventQueueSize),
 		MetadataPieces:    make(chan MetadataPiece),
+		PEXUpdates:        make(chan PEXUpdate),
 		outbound:          make(chan []byte, outboundQueueSize),
 		done:              make(chan struct{}),
 		limits:            limits,
@@ -540,6 +548,7 @@ func (c *Client) Run() {
 	defer close(c.Events)
 	defer close(c.Results)
 	defer close(c.MetadataPieces)
+	defer close(c.PEXUpdates)
 	defer c.Close()
 
 	logger.Logf("Starting communication loop for peer %s\n", c.Conn.RemoteAddr())
@@ -697,6 +706,8 @@ func (c *Client) handleMessage(msg *Message) bool {
 			err = c.handleExtendedHandshake(body)
 		case int(extID) == localUtMetadataID:
 			err = c.handleUtMetadataMessage(body)
+		case int(extID) == localUtPexID:
+			err = c.handleUtPexMessage(body)
 		default:
 			// An extended id for something we didn't advertise support for —
 			// either a stale id from before a renegotiation, or the peer

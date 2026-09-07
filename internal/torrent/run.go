@@ -24,6 +24,8 @@ func (t *Torrent) run(ctx context.Context) {
 	defer chokeTicker.Stop()
 	checkpointTicker := time.NewTicker(checkpointEvery)
 	defer checkpointTicker.Stop()
+	pexTicker := time.NewTicker(pexInterval)
+	defer pexTicker.Stop()
 
 	for {
 		select {
@@ -44,6 +46,9 @@ func (t *Torrent) run(ctx context.Context) {
 
 		case <-checkpointTicker.C:
 			t.checkpoint()
+
+		case <-pexTicker.C:
+			t.broadcastPEX()
 		}
 	}
 }
@@ -183,6 +188,8 @@ func (t *Torrent) handleEvent(ev any) {
 		t.onPeerControl(e.pc, e.ev)
 	case eventMetadataPiece:
 		t.onMetadataPiece(e.pc, e.piece)
+	case eventPEXUpdate:
+		t.onPEXUpdate(e.pc, e.update)
 	case eventPeerGone:
 		t.removePeer(e.pc)
 	case eventPieceVerified:
@@ -250,7 +257,7 @@ func (t *Torrent) connectAndPump(ctx context.Context, pi tracker.PeerInfo) {
 		return
 	}
 
-	t.registerAndPump(ctx, &peerConn{addr: pi.Addr(), client: client})
+	t.registerAndPump(ctx, &peerConn{addr: pi.Addr(), client: client, peerInfo: pi})
 }
 
 // acceptAndPump completes the reply half of an inbound handshake and then
@@ -272,10 +279,10 @@ func (t *Torrent) acceptAndPump(ctx context.Context, conn net.Conn, hs *peer.Han
 }
 
 // registerAndPump reports a newly-constructed connection to the actor and
-// then relays its Results/Events/MetadataPieces to the actor until it closes,
-// finally reporting eventPeerGone. Shared by connectAndPump and
-// acceptAndPump once each has its own *peer.Client, regardless of which side
-// initiated the connection.
+// then relays its Results/Events/MetadataPieces/PEXUpdates to the actor
+// until it closes, finally reporting eventPeerGone. Shared by
+// connectAndPump and acceptAndPump once each has its own *peer.Client,
+// regardless of which side initiated the connection.
 func (t *Torrent) registerAndPump(ctx context.Context, pc *peerConn) {
 	select {
 	case t.events <- eventPeerConnected{pc: pc}:
@@ -287,8 +294,8 @@ func (t *Torrent) registerAndPump(ctx context.Context, pc *peerConn) {
 	go pc.client.Run()
 
 	client := pc.client
-	resultsOpen, eventsOpen, metadataOpen := true, true, true
-	for resultsOpen || eventsOpen || metadataOpen {
+	resultsOpen, eventsOpen, metadataOpen, pexOpen := true, true, true, true
+	for resultsOpen || eventsOpen || metadataOpen || pexOpen {
 		select {
 		case <-ctx.Done():
 			client.Close()
@@ -309,6 +316,11 @@ func (t *Torrent) registerAndPump(ctx context.Context, pc *peerConn) {
 					metadataOpen = false
 				}
 			}
+			for pexOpen {
+				if _, ok := <-client.PEXUpdates; !ok {
+					pexOpen = false
+				}
+			}
 		case block, ok := <-client.Results:
 			if !ok {
 				resultsOpen = false
@@ -327,6 +339,12 @@ func (t *Torrent) registerAndPump(ctx context.Context, pc *peerConn) {
 				continue
 			}
 			t.sendEvent(ctx, eventMetadataPiece{pc: pc, piece: mp})
+		case pu, ok := <-client.PEXUpdates:
+			if !ok {
+				pexOpen = false
+				continue
+			}
+			t.sendEvent(ctx, eventPEXUpdate{pc: pc, update: pu})
 		}
 	}
 

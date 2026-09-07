@@ -87,6 +87,12 @@ type eventMetadataPiece struct {
 	piece peer.MetadataPiece
 }
 
+// eventPEXUpdate is one arrived BEP 11 peer-exchange message.
+type eventPEXUpdate struct {
+	pc     *peerConn
+	update peer.PEXUpdate
+}
+
 // eventPeerGone reports that a peer's connection ended, for any reason.
 type eventPeerGone struct {
 	pc *peerConn
