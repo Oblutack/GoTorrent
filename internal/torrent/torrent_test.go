@@ -111,6 +111,12 @@ type fakeSeeder struct {
 	// it directly.
 	serveMetadata bool
 
+	// stayChoked skips the usual immediate Unchoke — for BEP 6 tests that
+	// need to prove a piece downloads despite remaining choked the whole
+	// time, via allowedFastPieces below.
+	stayChoked        bool
+	allowedFastPieces []int
+
 	mu     sync.Mutex
 	served int
 }
@@ -206,7 +212,14 @@ func (f *fakeSeeder) handle(conn net.Conn) {
 	if err := writeMsg(conn, peer.MsgBitfield, bitfield.Full(f.mi.NumPieces()).Bytes()); err != nil {
 		return
 	}
-	if err := writeMsg(conn, peer.MsgUnchoke, nil); err != nil {
+	if f.stayChoked {
+		for _, index := range f.allowedFastPieces {
+			payload := peer.MsgHavePayload{PieceIndex: uint32(index)}
+			if err := writeMsg(conn, peer.MsgAllowedFast, payload.Serialize()); err != nil {
+				return
+			}
+		}
+	} else if err := writeMsg(conn, peer.MsgUnchoke, nil); err != nil {
 		return
 	}
 	if f.serveMetadata {

@@ -18,6 +18,14 @@ const (
 	MsgPiece         MessageID = 7
 	MsgCancel        MessageID = 8
 	MsgPort          MessageID = 9
+	// The Fast extension (BEP 6): only meaningful once both handshakes set
+	// the Fast reserved bit (see fastReservedByte/fastReservedBit) — see
+	// fast.go for how each is used.
+	MsgSuggestPiece  MessageID = 13
+	MsgHaveAll       MessageID = 14
+	MsgHaveNone      MessageID = 15
+	MsgRejectRequest MessageID = 16
+	MsgAllowedFast   MessageID = 17
 	// MsgExtended is BEP 10's extension-protocol envelope: payload is
 	// [1-byte extended-message-id][bencoded body]. Extended-message-id 0 is
 	// always the extended handshake itself; any other id names one of the
@@ -65,6 +73,16 @@ func (id MessageID) String() string {
 		return "Cancel"
 	case MsgPort:
 		return "Port"
+	case MsgSuggestPiece:
+		return "SuggestPiece"
+	case MsgHaveAll:
+		return "HaveAll"
+	case MsgHaveNone:
+		return "HaveNone"
+	case MsgRejectRequest:
+		return "RejectRequest"
+	case MsgAllowedFast:
+		return "AllowedFast"
 	case MsgExtended:
 		return "Extended"
 	default:

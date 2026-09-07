@@ -198,6 +198,26 @@ func readFrame(t *testing.T, conn net.Conn) []byte {
 	return body
 }
 
+// readInitialStateFrame reads the one-time piece-state frame Run now always
+// sends right after Interested (see Client.sendInitialState): HaveAll,
+// HaveNone, or a plain Bitfield depending on the test's HasPiece callback
+// and whether both sides negotiated Fast extension support — dialTestPeer's
+// fixture always does, so every test here gets HaveAll or HaveNone, never a
+// literal Bitfield. Returns the frame's message ID for a caller that cares
+// which one arrived.
+func readInitialStateFrame(t *testing.T, conn net.Conn) MessageID {
+	t.Helper()
+	body := readFrame(t, conn)
+	id := MessageID(body[0])
+	switch id {
+	case MsgHaveAll, MsgHaveNone, MsgBitfield:
+		return id
+	default:
+		t.Fatalf("expected the initial piece-state frame (HaveAll/HaveNone/Bitfield), got %s", id)
+		return 0
+	}
+}
+
 func writeFrame(t *testing.T, conn net.Conn, id MessageID, payload []byte) {
 	t.Helper()
 	msg := &Message{ID: id, Payload: payload}
@@ -397,8 +417,9 @@ func TestUploadedBytesAreCounted(t *testing.T) {
 	if body := readFrame(t, server); MessageID(body[0]) != MsgInterested {
 		t.Fatalf("expected Interested second, got %s", MessageID(body[0]))
 	}
+	readInitialStateFrame(t, server)
 	if body := readFrame(t, server); MessageID(body[0]) != MsgExtended {
-		t.Fatalf("expected an extended handshake third, got %s", MessageID(body[0]))
+		t.Fatalf("expected an extended handshake fourth, got %s", MessageID(body[0]))
 	}
 
 	if got := client.Uploaded(); got != 0 {
@@ -455,8 +476,9 @@ func TestBlockRoundTrip(t *testing.T) {
 	if body := readFrame(t, server); MessageID(body[0]) != MsgInterested {
 		t.Fatalf("expected Interested first, got %s", MessageID(body[0]))
 	}
+	readInitialStateFrame(t, server)
 	if body := readFrame(t, server); MessageID(body[0]) != MsgExtended {
-		t.Fatalf("expected an extended handshake second, got %s", MessageID(body[0]))
+		t.Fatalf("expected an extended handshake third, got %s", MessageID(body[0]))
 	}
 
 	writeFrame(t, server, MsgBitfield, []byte{0xF0}) // we have all 4 pieces
@@ -519,9 +541,10 @@ func TestExtendedHandshakeAdvertisesOurMetadata(t *testing.T) {
 	if body := readFrame(t, server); MessageID(body[0]) != MsgInterested {
 		t.Fatalf("expected Interested first, got %s", MessageID(body[0]))
 	}
+	readInitialStateFrame(t, server)
 	body := readFrame(t, server)
 	if MessageID(body[0]) != MsgExtended {
-		t.Fatalf("expected an extended handshake second, got %s", MessageID(body[0]))
+		t.Fatalf("expected an extended handshake third, got %s", MessageID(body[0]))
 	}
 	if body[1] != 0 {
 		t.Fatalf("extended-message-id = %d, want 0 (the handshake itself)", body[1])
@@ -553,8 +576,9 @@ func TestMetadataRequestResponseRoundTrip(t *testing.T) {
 	if body := readFrame(t, server); MessageID(body[0]) != MsgInterested {
 		t.Fatalf("expected Interested first, got %s", MessageID(body[0]))
 	}
+	readInitialStateFrame(t, server)
 	if body := readFrame(t, server); MessageID(body[0]) != MsgExtended {
-		t.Fatalf("expected our extended handshake second, got %s", MessageID(body[0]))
+		t.Fatalf("expected our extended handshake third, got %s", MessageID(body[0]))
 	}
 
 	const peerUtMetadataID = 7
@@ -630,8 +654,9 @@ func TestServesMetadataRequestFromPeer(t *testing.T) {
 	if body := readFrame(t, server); MessageID(body[0]) != MsgInterested {
 		t.Fatalf("expected Interested first, got %s", MessageID(body[0]))
 	}
+	readInitialStateFrame(t, server)
 	if body := readFrame(t, server); MessageID(body[0]) != MsgExtended {
-		t.Fatalf("expected our extended handshake second, got %s", MessageID(body[0]))
+		t.Fatalf("expected our extended handshake third, got %s", MessageID(body[0]))
 	}
 
 	const peerUtMetadataID = 3
@@ -682,8 +707,9 @@ func TestSendPEXAddressesThePeersOwnID(t *testing.T) {
 	if body := readFrame(t, server); MessageID(body[0]) != MsgInterested {
 		t.Fatalf("expected Interested first, got %s", MessageID(body[0]))
 	}
+	readInitialStateFrame(t, server)
 	if body := readFrame(t, server); MessageID(body[0]) != MsgExtended {
-		t.Fatalf("expected our extended handshake second, got %s", MessageID(body[0]))
+		t.Fatalf("expected our extended handshake third, got %s", MessageID(body[0]))
 	}
 
 	const peerUtPexID = 5
@@ -733,6 +759,7 @@ func TestSendPEXToAPeerWithoutSupportIsANoOp(t *testing.T) {
 	go client.Run()
 
 	readFrame(t, server) // Interested
+	readInitialStateFrame(t, server)
 	readFrame(t, server) // our extended handshake
 
 	if err := client.SendPEX([]tracker.PeerInfo{{IP: net.IPv4(1, 2, 3, 4), Port: 1}}, nil); err != nil {
@@ -754,6 +781,7 @@ func TestReceivesPEXUpdateFromPeer(t *testing.T) {
 	go client.Run()
 
 	readFrame(t, server) // Interested
+	readInitialStateFrame(t, server)
 	readFrame(t, server) // our extended handshake
 
 	added := []tracker.PeerInfo{
@@ -784,6 +812,7 @@ func TestEmptyPEXUpdateIsNotDelivered(t *testing.T) {
 	go client.Run()
 
 	readFrame(t, server) // Interested
+	readInitialStateFrame(t, server)
 	readFrame(t, server) // our extended handshake
 
 	payload := append([]byte{localUtPexID}, mustMarshal(t, utPexWire{})...)

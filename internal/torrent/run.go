@@ -428,6 +428,17 @@ func (t *Torrent) onPeerControl(pc *peerConn, ev peer.Event) {
 		t.pick.Availability().AddPeer(pc.client.BitfieldSnapshot())
 	case peer.EventHave:
 		t.pick.Availability().Add(int(ev.PieceIndex))
+	case peer.EventRejectRequest:
+		// BEP 6: the peer has explicitly told us this block is not coming,
+		// rather than us finding out only once the picker's own
+		// RequestTimeout elapses. The picker's pending-request bookkeeping
+		// for that block still resolves itself via the normal Expire() path
+		// on the next tick — this just frees the pipeline slot immediately
+		// so tick doesn't keep this connection under-utilized in the
+		// meantime waiting on a block that will never arrive.
+		if pc.outstanding > 0 {
+			pc.outstanding--
+		}
 	}
 }
 
@@ -585,9 +596,12 @@ func (t *Torrent) tick(now time.Time) {
 		// regardless, and this is where that count reaches t.uploaded.
 		t.flushUploaded(pc)
 
-		if pc.client.PeerChoking() {
-			continue
-		}
+		// A choked peer isn't skipped outright: BEP 6's AllowedFast lets it
+		// grant specific pieces we may request despite the choke, which is
+		// exactly what hasPiece below enforces — Pick simply finds nothing
+		// for a choked peer that granted none, the common case, at the same
+		// "cheap, not a swarm scan" cost tick already assumes for everyone.
+		choked := pc.client.PeerChoking()
 		adaptPipeline(pc, now)
 
 		room := pc.pipelineTarget - pc.outstanding
@@ -597,7 +611,12 @@ func (t *Torrent) tick(now time.Time) {
 		if room <= 0 {
 			continue
 		}
-		hasPiece := func(i int) bool { return pc.client.HasPiece(uint32(i)) }
+		hasPiece := func(i int) bool {
+			if !pc.client.HasPiece(uint32(i)) {
+				return false
+			}
+			return !choked || pc.client.IsAllowedFast(uint32(i))
+		}
 		reqs := t.pick.Pick(hasPiece, room, now)
 		for _, r := range reqs {
 			select {

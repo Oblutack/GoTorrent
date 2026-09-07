@@ -97,6 +97,9 @@ func NewHandshake(infoHash, peerID [20]byte) *Handshake {
 	// client always understands the envelope, even before it supported any
 	// extension riding inside it.
 	hs.Reserved[extensionReservedByte] |= extensionReservedBit
+	// Advertise BEP 6 (Fast extension) support unconditionally too — see
+	// fast.go.
+	hs.Reserved[fastReservedByte] |= fastReservedBit
 	return hs
 }
 
@@ -180,6 +183,11 @@ const (
 	// EventMetadataReject fires when the peer refuses a requested metadata
 	// piece (BEP 9 msg_type 2). PieceIndex is the rejected piece.
 	EventMetadataReject
+	// EventRejectRequest fires when the peer explicitly declines a block we
+	// requested (BEP 6) — PieceIndex/Begin/Length identify it, so the owner
+	// can stop waiting on that exact block instead of only finding out via
+	// its own request timeout.
+	EventRejectRequest
 )
 
 func (k EventKind) String() string {
@@ -196,6 +204,8 @@ func (k EventKind) String() string {
 		return "ExtendedHandshake"
 	case EventMetadataReject:
 		return "MetadataReject"
+	case EventRejectRequest:
+		return "RejectRequest"
 	default:
 		return fmt.Sprintf("UnknownEvent(%d)", k)
 	}
@@ -206,7 +216,9 @@ func (k EventKind) String() string {
 // each Client's Events channel is private to it.
 type Event struct {
 	Kind       EventKind
-	PieceIndex uint32 // valid for EventHave and EventMetadataReject
+	PieceIndex uint32 // valid for EventHave, EventMetadataReject, EventRejectRequest
+	Begin      uint32 // valid for EventRejectRequest
+	Length     uint32 // valid for EventRejectRequest
 }
 
 // eventQueueSize bounds how many pending events a slow consumer may leave
@@ -263,15 +275,26 @@ type Client struct {
 	peerChoking    atomic.Bool // the peer is choking us
 	peerInterested atomic.Bool // the peer is interested in us
 
-	// bitfield is written by the read loop (Have/Bitfield) and read by the
-	// session's rarity scan. pendingBitfield holds a peer's raw Bitfield
-	// bytes received before torrentInfo had a nonzero NumPieces to validate
-	// them against; UpgradeMetadata applies it once that's known. BEP 3
-	// sends Bitfield at most once, so this is the only chance to ever learn
-	// what an early one said.
+	// bitfield is written by the read loop (Have/Bitfield/HaveAll/HaveNone)
+	// and read by the session's rarity scan. pendingBitfield holds a peer's
+	// raw Bitfield bytes received before torrentInfo had a nonzero
+	// NumPieces to validate them against; pendingHaveAll is the same idea
+	// for a BEP 6 HaveAll (HaveNone needs no such flag — an empty bitfield
+	// is already the default). UpgradeMetadata applies whichever is set
+	// once NumPieces is known. Only one of the two is ever set, since BEP
+	// 3/6 both say a peer sends exactly one of Bitfield/HaveAll/HaveNone,
+	// and only as its first message.
 	bitfieldMu      sync.RWMutex
 	bitfield        *bitfield.Bitfield
 	pendingBitfield []byte
+	pendingHaveAll  bool
+
+	// allowedFast holds the piece indices the peer has told us (BEP 6's
+	// AllowedFast) we may request even while choked. Separate lock from
+	// bitfieldMu: written only by the read loop, read only by the owner's
+	// picking logic, no reason to contend with bitfield access for it.
+	allowedFastMu sync.RWMutex
+	allowedFast   map[uint32]bool
 
 	WorkQueue chan *BlockRequest
 	Results   chan *PieceBlock
@@ -307,6 +330,8 @@ type Client struct {
 	// peerSupportsExt is read from the handshake's reserved bits at
 	// construction and never changes, so it needs no synchronization.
 	peerSupportsExt bool
+	// peerSupportsFast mirrors peerSupportsExt for BEP 6 (Fast extension).
+	peerSupportsFast bool
 	// peerUtMetadataID is the id (BEP 10, from the peer's own "m" dict) to
 	// address them by when we want to send a ut_metadata message; 0 means
 	// they haven't told us, or don't support it.
@@ -416,6 +441,7 @@ func newClient(conn net.Conn, torrent TorrentInfo, ourID [20]byte, peerHandshake
 		done:              make(chan struct{}),
 		limits:            limits,
 		peerSupportsExt:   peerHandshake.SupportsExtensions(),
+		peerSupportsFast:  peerHandshake.SupportsFast(),
 		hasPiece:          callbacks.HasPiece,
 		readBlockFromDisk: callbacks.ReadBlock,
 		metadataBytes:     callbacks.MetadataBytes,
@@ -455,21 +481,31 @@ func (c *Client) info() TorrentInfo { return *c.torrentInfo.Load() }
 // becomes known for a connection that started before it did (the
 // magnet-link path). It publishes the real NumPieces/PieceLength/
 // TotalLength for every future validation on this connection, and applies
-// whatever Bitfield the peer sent before there was anything to validate it
-// against — see pendingBitfield's field comment for why that particular
-// message can't just be re-requested if it was missed the first time.
+// whatever Bitfield or HaveAll the peer sent before there was anything to
+// validate it against — see pendingBitfield's field comment for why that
+// particular message can't just be re-requested if it was missed the first
+// time.
 func (c *Client) UpgradeMetadata(info TorrentInfo) error {
 	c.torrentInfo.Store(&info)
 
 	c.bitfieldMu.Lock()
 	defer c.bitfieldMu.Unlock()
 
+	if c.pendingHaveAll {
+		c.pendingHaveAll = false
+		c.pendingBitfield = nil
+		c.bitfield = bitfield.Full(info.NumPieces)
+		return nil
+	}
+
 	raw := c.pendingBitfield
 	c.pendingBitfield = nil
 	if raw == nil {
-		// No Bitfield ever arrived — some clients skip it when they have
-		// nothing to offer yet. Resize to the now-known width so a future
-		// Have has a correctly-sized bitfield to set a bit in.
+		// No Bitfield/HaveAll ever arrived — some clients skip it when they
+		// have nothing to offer yet (or sent HaveNone, which needs no
+		// pending state: an empty bitfield is already what that declares).
+		// Resize to the now-known width so a future Have has a
+		// correctly-sized bitfield to set a bit in.
 		c.bitfield = bitfield.New(info.NumPieces)
 		return nil
 	}
@@ -559,6 +595,11 @@ func (c *Client) Run() {
 	if err := c.SendInterested(); err != nil {
 		logger.Logf("Error sending Interested to %s: %v\n", c.Conn.RemoteAddr(), err)
 		return
+	}
+	if err := c.sendInitialState(); err != nil {
+		// Not fatal: BEP 3 already tolerates a peer that never sends its
+		// initial state at all, so this is no worse than that.
+		logger.Logf("Error sending initial piece state to %s: %v\n", c.Conn.RemoteAddr(), err)
 	}
 	if c.peerSupportsExt {
 		if err := c.sendExtendedHandshake(); err != nil {
@@ -694,6 +735,52 @@ func (c *Client) handleMessage(msg *Message) bool {
 		}
 		c.serveRequest(reqPayload)
 
+	case MsgHaveAll:
+		if len(msg.Payload) != 0 {
+			logger.Warning.Printf("Peer %s: HaveAll with a non-empty payload\n", c.Conn.RemoteAddr())
+			return false
+		}
+		c.applyHaveAll()
+
+	case MsgHaveNone:
+		if len(msg.Payload) != 0 {
+			logger.Warning.Printf("Peer %s: HaveNone with a non-empty payload\n", c.Conn.RemoteAddr())
+			return false
+		}
+		// Nothing to apply: bitfield.New (or whatever UpgradeMetadata builds
+		// once NumPieces is known, absent any pending state) is already the
+		// all-empty state HaveNone declares. Still notify: the owner may
+		// care that the peer's initial state has arrived at all.
+		c.notify(Event{Kind: EventBitfield})
+
+	case MsgSuggestPiece:
+		var p MsgHavePayload
+		if err := p.Parse(msg.Payload); err != nil {
+			logger.Warning.Printf("Peer %s: malformed SuggestPiece: %v\n", c.Conn.RemoteAddr(), err)
+			return false
+		}
+		// Advisory only (BEP 6: a peer "MAY" act on this disk-cache-locality
+		// hint). Parsed and validated so a malformed one still drops the
+		// connection like any other malformed message, but otherwise
+		// intentionally ignored — this client has no cache-locality signal
+		// of its own to weigh it against.
+
+	case MsgAllowedFast:
+		var p MsgHavePayload
+		if err := p.Parse(msg.Payload); err != nil {
+			logger.Warning.Printf("Peer %s: malformed AllowedFast: %v\n", c.Conn.RemoteAddr(), err)
+			return false
+		}
+		c.markAllowedFast(p.PieceIndex)
+
+	case MsgRejectRequest:
+		var p MsgRequestPayload
+		if err := p.Parse(msg.Payload); err != nil {
+			logger.Warning.Printf("Peer %s: malformed RejectRequest: %v\n", c.Conn.RemoteAddr(), err)
+			return false
+		}
+		c.notify(Event{Kind: EventRejectRequest, PieceIndex: p.Index, Begin: p.Begin, Length: p.Length})
+
 	case MsgExtended:
 		if len(msg.Payload) < 1 {
 			logger.Warning.Printf("Peer %s: empty Extended message\n", c.Conn.RemoteAddr())
@@ -729,6 +816,15 @@ func (c *Client) serveRequest(req MsgRequestPayload) {
 	if c.AmChoking() || c.hasPiece == nil || !c.hasPiece(req.Index) {
 		logger.Logf("Ignoring request from peer %s for piece %d (we don't have it or we are choking them).\n",
 			c.Conn.RemoteAddr(), req.Index)
+		// A peer without Fast extension support gets silence, per BEP 3's
+		// original (and still valid) behavior — they have no RejectRequest
+		// to understand anyway. A Fast-capable peer gets an explicit
+		// answer instead of waiting out its own request timeout.
+		if c.peerSupportsFast {
+			if err := c.SendMessage(MsgRejectRequest, req.Serialize()); err != nil {
+				logger.Logf("Peer %s: failed to send RejectRequest: %v\n", c.Conn.RemoteAddr(), err)
+			}
+		}
 		return
 	}
 
@@ -785,9 +881,12 @@ func (c *Client) writeLoop() {
 		case <-c.done:
 			return
 		case work := <-c.WorkQueue:
-			// If we are choked, drop the request. The session times the block
-			// out and re-assigns it, so dropping is cheaper than stalling.
-			if c.PeerChoking() {
+			// If we are choked and the peer hasn't granted this specific
+			// piece via BEP 6's AllowedFast, drop the request — the owner
+			// times the block out and re-assigns it, so dropping is cheaper
+			// than stalling. An allowed-fast piece is sent through despite
+			// the choke; that is the entire point of the grant.
+			if c.PeerChoking() && !c.IsAllowedFast(work.Index) {
 				continue
 			}
 			if !c.HasPiece(work.Index) {
