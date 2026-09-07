@@ -148,6 +148,11 @@ type Picker struct {
 	avail  *Availability
 	active map[int]*pieceProgress
 
+	// priority is per-piece, set by SetPriorities. nil means "every piece is
+	// PriorityNormal" — the state a Picker starts in and stays in for a
+	// torrent that never uses file selection at all.
+	priority []Priority
+
 	// order is a scratch slice reused by the rarest-first scan so picking does
 	// not allocate on every tick.
 	order []int
@@ -178,11 +183,36 @@ func (p *Picker) Have() *bitfield.Bitfield { return p.have }
 // Availability exposes the index so peer events can update it.
 func (p *Picker) Availability() *Availability { return p.avail }
 
-// Complete reports whether every piece is verified.
-func (p *Picker) Complete() bool { return p.have.Complete() }
+// Complete reports whether every non-skip-priority piece is verified — a
+// torrent with one or more files skipped is "complete" (settles into
+// Seeding) once everything it actually wants has arrived, the skipped
+// pieces notwithstanding.
+func (p *Picker) Complete() bool {
+	if p.priority == nil {
+		return p.have.Complete()
+	}
+	return p.Remaining() == 0
+}
 
-// Remaining is how many pieces are still missing.
-func (p *Picker) Remaining() int { return p.cfg.NumPieces - p.have.Count() }
+// Remaining is how many wanted (non-skip-priority) pieces are still
+// missing. Without SetPriorities this is a plain bitfield count; with it,
+// an O(NumPieces) scan — a deliberate simplification (no incrementally
+// maintained counter) on the grounds that a priority change is a rare,
+// explicit user action, not a hot path, and NumPieces stays small enough in
+// practice (tens of thousands at most for any real torrent) that a scan
+// costs microseconds even run every tick.
+func (p *Picker) Remaining() int {
+	if p.priority == nil {
+		return p.cfg.NumPieces - p.have.Count()
+	}
+	n := 0
+	for i := 0; i < p.cfg.NumPieces; i++ {
+		if p.priority[i] != PrioritySkip && !p.have.Has(i) {
+			n++
+		}
+	}
+	return n
+}
 
 // ActiveCount is how many pieces are currently in progress.
 func (p *Picker) ActiveCount() int { return len(p.active) }
@@ -382,9 +412,14 @@ func (p *Picker) fill(out []Request, pp *pieceProgress, max int, now time.Time, 
 	return out
 }
 
-// nextPiece chooses a piece to start.
+// nextPiece chooses a piece to start: the highest-priority tier that has
+// anything pickable at all wins outright, and the configured strategy
+// (rarest-first or sequential) applies within that tier exactly as it would
+// without priorities in play. A torrent that never called SetPriorities has
+// every piece at the implicit PriorityNormal, so this degrades to a single
+// tier and behaves exactly as before priorities existed at all.
 func (p *Picker) nextPiece(peerHas func(index int) bool) int {
-	want := func(index int) bool {
+	baseWant := func(index int) bool {
 		if p.have.Has(index) {
 			return false
 		}
@@ -394,6 +429,23 @@ func (p *Picker) nextPiece(peerHas func(index int) bool) int {
 		return peerHas(index)
 	}
 
+	if p.priority == nil {
+		return p.pickByStrategy(baseWant)
+	}
+
+	for _, tier := range priorityTiers {
+		want := func(i int) bool { return p.priority[i] == tier && baseWant(i) }
+		if index := p.pickByStrategy(want); index >= 0 {
+			return index
+		}
+	}
+	return -1
+}
+
+// pickByStrategy applies Strategy against a caller-supplied want predicate —
+// factored out of nextPiece so priority tiers and the no-priority fast path
+// both reuse the exact same rarest-first/sequential logic.
+func (p *Picker) pickByStrategy(want func(index int) bool) int {
 	if p.cfg.Strategy == Sequential {
 		for i := 0; i < p.cfg.NumPieces; i++ {
 			if want(i) {
@@ -402,7 +454,6 @@ func (p *Picker) nextPiece(peerHas func(index int) bool) int {
 		}
 		return -1
 	}
-
 	return p.rarestWithTieBreak(want)
 }
 
