@@ -392,6 +392,75 @@ func TestListenClosesConnectionForUnmanagedInfoHash(t *testing.T) {
 	}
 }
 
+// freeUDPPort borrows an ephemeral UDP port from the OS and gives it back,
+// for tests that need a real, fixed (non-zero) port number to hand to
+// StartDHT — 0 is reserved to mean "don't start DHT at all", the same
+// convention Listen uses for Defaults.ListenPort.
+func freeUDPPort(t *testing.T) uint16 {
+	t.Helper()
+	probe, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatalf("probing for a free UDP port: %v", err)
+	}
+	port := probe.LocalAddr().(*net.UDPAddr).Port
+	probe.Close()
+	return uint16(port)
+}
+
+func TestStartDHTIsANoOpAtZeroPort(t *testing.T) {
+	e := newTestEngine(t)
+	if err := e.StartDHT(context.Background(), 0); err != nil {
+		t.Fatalf("StartDHT(0): %v", err)
+	}
+	if e.dhtNode != nil {
+		t.Fatal("StartDHT(0) started a node; want a no-op")
+	}
+	if cfg := e.torrentConfig(t.TempDir()); cfg.DHT != nil {
+		t.Fatal("torrentConfig set a DHT client when StartDHT was never really started")
+	}
+}
+
+// TestStartDHTWiresANodeIntoTorrentConfig proves the actual plumbing: once
+// StartDHT has bound a real node, every subsequently-built torrent Config
+// carries it. The DHT wire protocol and peer-discovery behavior themselves
+// are covered by internal/dht's own tests and internal/torrent's
+// dht_test.go against a fake DHTClient; this only checks the seam between
+// them is connected.
+func TestStartDHTWiresANodeIntoTorrentConfig(t *testing.T) {
+	e := newTestEngine(t)
+	port := freeUDPPort(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	if err := e.StartDHT(ctx, port); err != nil {
+		t.Fatalf("StartDHT: %v", err)
+	}
+	if e.dhtNode == nil {
+		t.Fatal("StartDHT did not set a node")
+	}
+	if cfg := e.torrentConfig(t.TempDir()); cfg.DHT == nil {
+		t.Fatal("torrentConfig did not carry the started DHT node")
+	}
+}
+
+// TestShutdownClosesTheDHTNode proves Shutdown tears the DHT node down
+// alongside every torrent, rather than leaking its UDP socket.
+func TestShutdownClosesTheDHTNode(t *testing.T) {
+	e, err := New(t.TempDir(), Defaults{DownloadDir: t.TempDir(), ResumeDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := e.StartDHT(context.Background(), freeUDPPort(t)); err != nil {
+		t.Fatalf("StartDHT: %v", err)
+	}
+
+	e.Shutdown()
+
+	if e.dhtNode != nil {
+		t.Fatal("Shutdown left dhtNode set")
+	}
+}
+
 // TestLoadWithNoManifestIsNotAnError covers the first-run case: nothing has
 // ever been added, so there is no manifest file yet.
 func TestLoadWithNoManifestIsNotAnError(t *testing.T) {

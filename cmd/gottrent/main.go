@@ -61,11 +61,16 @@ func main() {
 	if err != nil {
 		logger.Error.Fatalf("Error creating engine: %v\n", err)
 	}
-	if err := e.Load(); err != nil {
-		logger.Error.Fatalf("Error loading fleet manifest: %v\n", err)
-	}
 	if err := e.Listen(context.Background()); err != nil {
 		logger.Warning.Printf("Not accepting inbound connections: %v\n", err)
+	}
+	if err := e.StartDHT(context.Background(), uint16(*listenPort)); err != nil {
+		logger.Warning.Printf("Not starting DHT: %v\n", err)
+	}
+	// Both must be up before Load/Add so every torrent - reloaded from a
+	// previous run included - gets a working DHT peer source from the start.
+	if err := e.Load(); err != nil {
+		logger.Error.Fatalf("Error loading fleet manifest: %v\n", err)
 	}
 
 	for _, src := range sources {

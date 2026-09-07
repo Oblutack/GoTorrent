@@ -18,6 +18,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/Oblutack/GoTorrent/internal/dht"
 	"github.com/Oblutack/GoTorrent/internal/logger"
 	"github.com/Oblutack/GoTorrent/internal/metainfo"
 	"github.com/Oblutack/GoTorrent/internal/peer"
@@ -101,6 +102,12 @@ type Engine struct {
 	// listener is non-nil once Listen has bound a port, so Shutdown knows to
 	// close it. Guarded by mu like everything else here.
 	listener net.Listener
+
+	// dhtNode is non-nil once StartDHT has bound a UDP socket. One node is
+	// shared by every torrent this engine manages — see StartDHT and
+	// torrentConfig — the same reasoning as one shared TCP listener in
+	// Listen: a DHT node is a property of the process, not of one torrent.
+	dhtNode *dht.DHT
 }
 
 // New creates an Engine whose manifest lives under stateDir. It does not load
@@ -332,6 +339,39 @@ func (e *Engine) handleIncoming(conn net.Conn) {
 	mt.t.AcceptPeer(conn, hs)
 }
 
+// StartDHT brings up the mainline DHT node shared by every torrent this
+// engine manages that wants one (anything not private, per BEP 27 — see
+// torrent.dhtLoop), then begins bootstrapping it against the well-known
+// public routers in the background. It returns once the UDP socket is
+// bound; bootstrapping and ongoing lookups continue after that. A zero port
+// means "don't start DHT" and is a no-op, matching Listen's convention for
+// the TCP side.
+func (e *Engine) StartDHT(ctx context.Context, port uint16) error {
+	if port == 0 {
+		return nil
+	}
+
+	var statePath string
+	if e.stateDir != "" {
+		statePath = filepath.Join(e.stateDir, "dht.nodes")
+	}
+	node, err := dht.New(dht.Config{Port: port, StatePath: statePath})
+	if err != nil {
+		return fmt.Errorf("engine: starting DHT: %w", err)
+	}
+
+	e.mu.Lock()
+	e.dhtNode = node
+	e.mu.Unlock()
+
+	go func() {
+		<-ctx.Done()
+		node.Close()
+	}()
+	go node.Bootstrap(ctx, dht.DefaultBootstrapNodes)
+	return nil
+}
+
 // Shutdown stops every managed torrent and waits for all of them to finish.
 // Torrents are stopped concurrently — Stop is documented safe to call from
 // any goroutine — so shutting down N torrents costs the slowest one, not the
@@ -342,13 +382,25 @@ func (e *Engine) Shutdown() {
 		e.listener.Close()
 		e.listener = nil
 	}
+	dhtNode := e.dhtNode
+	e.dhtNode = nil
 	torrents := make([]*torrent.Torrent, 0, len(e.torrents))
 	for _, mt := range e.torrents {
 		torrents = append(torrents, mt.t)
 	}
 	e.mu.Unlock()
 
+	// dhtNode.Close can take up to ~1s (its read loop polls its done channel
+	// on a 1s deadline) — worth doing off the lock, and concurrently with
+	// stopping every torrent, rather than serially in front of them.
 	var wg sync.WaitGroup
+	if dhtNode != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			dhtNode.Close()
+		}()
+	}
 	wg.Add(len(torrents))
 	for _, tr := range torrents {
 		go func(tr *torrent.Torrent) {
@@ -360,7 +412,7 @@ func (e *Engine) Shutdown() {
 }
 
 func (e *Engine) torrentConfig(downloadDir string) torrent.Config {
-	return torrent.Config{
+	cfg := torrent.Config{
 		DownloadDir:    downloadDir,
 		ResumeDir:      e.defaults.ResumeDir,
 		ListenPort:     e.defaults.ListenPort,
@@ -369,4 +421,13 @@ func (e *Engine) torrentConfig(downloadDir string) torrent.Config {
 		DownLimit:      e.defaults.DownLimit,
 		UpLimit:        e.defaults.UpLimit,
 	}
+	// Only assign when non-nil: cfg.DHT is a torrent.DHTClient interface, and
+	// assigning a nil *dht.DHT to it would leave the interface non-nil (it
+	// would hold a nil pointer, not be nil itself) — the classic Go gotcha —
+	// which would make dhtLoop's "cfg.DHT == nil means disabled" check pass
+	// right up until the first real method call panicked.
+	if e.dhtNode != nil {
+		cfg.DHT = e.dhtNode
+	}
+	return cfg
 }
