@@ -56,9 +56,15 @@ func DefaultStateDir() (string, error) {
 // so the cap bounds the process's total transfer rate rather than each
 // torrent independently.
 type Defaults struct {
-	DownloadDir    string
-	ResumeDir      string
-	ListenPort     uint16
+	DownloadDir string
+	ResumeDir   string
+	ListenPort  uint16
+	// BindAddress restricts the inbound TCP listener (Listen/
+	// ListenRandomPort) to one local address — a specific interface's IP,
+	// or "127.0.0.1" to refuse anything but loopback connections. Empty
+	// (the default) listens on every interface, same as before this field
+	// existed.
+	BindAddress    string
 	Allocation     storage.Allocation
 	PickerStrategy picker.Strategy
 	DownLimit      *ratelimit.Limiter
@@ -330,13 +336,35 @@ func (e *Engine) Listen(ctx context.Context) error {
 	if e.defaults.ListenPort == 0 {
 		return nil
 	}
-	ln, err := net.Listen("tcp", ":"+strconv.Itoa(int(e.defaults.ListenPort)))
+	_, err := e.listenOn(ctx, e.defaults.ListenPort)
+	return err
+}
+
+// ListenRandomPort behaves like Listen but always binds a port the OS picks
+// rather than reading Defaults.ListenPort, and returns whichever port that
+// turned out to be — every subsequently-built torrent Config.ListenPort
+// (and any later StartDHT/StartPortMapping/StartLSD call, since those also
+// bind their own ports) needs to use exactly that number, so the caller
+// (cmd/gottrent's -random-port flag) must sequence this before any of them.
+func (e *Engine) ListenRandomPort(ctx context.Context) (uint16, error) {
+	return e.listenOn(ctx, 0)
+}
+
+// listenOn does the real binding for both Listen and ListenRandomPort. It
+// always writes the actually-bound port back into Defaults.ListenPort —
+// a no-op for Listen's fixed-port case (net.Listen binds exactly what was
+// asked or fails), the entire point for ListenRandomPort's port-0 case.
+func (e *Engine) listenOn(ctx context.Context, port uint16) (uint16, error) {
+	addr := e.defaults.BindAddress + ":" + strconv.Itoa(int(port))
+	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		return fmt.Errorf("engine: listening on port %d: %w", e.defaults.ListenPort, err)
+		return 0, fmt.Errorf("engine: listening on %s: %w", addr, err)
 	}
+	actual := uint16(ln.Addr().(*net.TCPAddr).Port)
 
 	e.mu.Lock()
 	e.listener = ln
+	e.defaults.ListenPort = actual
 	e.mu.Unlock()
 
 	go func() {
@@ -344,7 +372,7 @@ func (e *Engine) Listen(ctx context.Context) error {
 		ln.Close()
 	}()
 	go e.acceptLoop(ln)
-	return nil
+	return actual, nil
 }
 
 // acceptLoop accepts connections until ln is closed (by ctx cancellation or

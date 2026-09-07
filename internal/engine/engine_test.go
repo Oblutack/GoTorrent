@@ -380,6 +380,51 @@ func TestListenRoutesInboundConnectionToTheRightTorrent(t *testing.T) {
 	t.Fatalf("torrent's PeerCount never reached 1 after an inbound connection, got %d", tr.Stats().PeerCount)
 }
 
+// TestListenRandomPortBindsAndUpdatesDefaults proves ListenRandomPort
+// actually gets a real, usable port from the OS and publishes it back
+// through Defaults.ListenPort, since that's what every subsequent
+// StartDHT/StartPortMapping/StartLSD/Add call needs to see.
+func TestListenRandomPortBindsAndUpdatesDefaults(t *testing.T) {
+	e := newTestEngine(t)
+	port, err := e.ListenRandomPort(context.Background())
+	if err != nil {
+		t.Fatalf("ListenRandomPort: %v", err)
+	}
+	if port == 0 {
+		t.Fatal("ListenRandomPort returned port 0")
+	}
+	if e.defaults.ListenPort != port {
+		t.Fatalf("Defaults.ListenPort = %d, want it updated to match the bound port %d", e.defaults.ListenPort, port)
+	}
+
+	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		t.Fatalf("dialing the randomly-assigned port: %v", err)
+	}
+	conn.Close()
+}
+
+// TestBindAddressRestrictsTheListener proves Defaults.BindAddress reaches
+// the actual listen call — the bound address matches what was configured,
+// not the default wildcard.
+func TestBindAddressRestrictsTheListener(t *testing.T) {
+	e := newTestEngine(t)
+	e.defaults.BindAddress = "127.0.0.1"
+
+	port, err := e.ListenRandomPort(context.Background())
+	if err != nil {
+		t.Fatalf("ListenRandomPort: %v", err)
+	}
+
+	e.mu.Lock()
+	addr := e.listener.Addr().String()
+	e.mu.Unlock()
+	want := fmt.Sprintf("127.0.0.1:%d", port)
+	if addr != want {
+		t.Fatalf("listener bound to %q, want %q", addr, want)
+	}
+}
+
 // TestListenClosesConnectionForUnmanagedInfoHash proves an inbound
 // connection for a torrent this engine does not manage gets its connection
 // closed rather than silently held open or routed nowhere.

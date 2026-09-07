@@ -33,6 +33,8 @@ func main() {
 	downloadDir := flag.String("dir", ".", "Default directory to save downloaded files")
 	stateDir := flag.String("state-dir", "", "Directory for the fleet manifest (default: a directory under the OS config dir)")
 	listenPort := flag.Uint("port", 6881, "Port to listen on for inbound peer connections and advertise to trackers")
+	randomPort := flag.Bool("random-port", false, "Listen on a random OS-assigned port instead of -port")
+	bindAddress := flag.String("bind-address", "", "Local address to listen on for inbound peer connections (default: all interfaces)")
 	noPortMap := flag.Bool("no-portmap", false, "Disable automatic UPnP/NAT-PMP port mapping")
 	downLimitKB := flag.Uint("down-limit", 0, "Download rate cap in KiB/s across the whole fleet (0 = unlimited)")
 	upLimitKB := flag.Uint("up-limit", 0, "Upload rate cap in KiB/s across the whole fleet (0 = unlimited)")
@@ -50,7 +52,7 @@ func main() {
 		dir = d
 	}
 
-	defaults := engine.Defaults{DownloadDir: *downloadDir, ListenPort: uint16(*listenPort)}
+	defaults := engine.Defaults{DownloadDir: *downloadDir, ListenPort: uint16(*listenPort), BindAddress: *bindAddress}
 	if *downLimitKB > 0 {
 		defaults.DownLimit = ratelimit.New(int64(*downLimitKB) * 1024)
 	}
@@ -62,24 +64,39 @@ func main() {
 	if err != nil {
 		logger.Error.Fatalf("Error creating engine: %v\n", err)
 	}
-	if err := e.Listen(context.Background()); err != nil {
+
+	// actualPort is what every subsequent StartDHT/StartPortMapping/StartLSD
+	// call below (and torrentConfig, on every Add) advertises. It starts as
+	// the requested -port and, with -random-port, becomes whatever the OS
+	// actually assigned once Listen has bound it.
+	actualPort := uint16(*listenPort)
+	if *randomPort {
+		p, err := e.ListenRandomPort(context.Background())
+		if err != nil {
+			logger.Warning.Printf("Not accepting inbound connections: %v\n", err)
+		} else {
+			actualPort = p
+			logger.Logf("Listening on random port %d\n", actualPort)
+		}
+	} else if err := e.Listen(context.Background()); err != nil {
 		logger.Warning.Printf("Not accepting inbound connections: %v\n", err)
 	}
+
 	if !*noPortMap {
 		// Before StartDHT/Load: a successful mapping updates the port every
 		// subsequently-built torrent advertises to trackers and DHT peers, so
 		// it needs to land before anything reads that value.
-		if err := e.StartPortMapping(context.Background(), uint16(*listenPort)); err != nil {
+		if err := e.StartPortMapping(context.Background(), actualPort); err != nil {
 			logger.Logf("Not mapping a port automatically (%v) - inbound connections need the port forwarded by hand unless this machine is already reachable\n", err)
 		}
 	}
-	if err := e.StartDHT(context.Background(), uint16(*listenPort)); err != nil {
+	if err := e.StartDHT(context.Background(), actualPort); err != nil {
 		logger.Warning.Printf("Not starting DHT: %v\n", err)
 	}
 	// LSD always advertises the internal port, never StartPortMapping's
 	// rewritten external one - an LSD peer is on the same LAN and connects
 	// directly, not through any NAT mapping.
-	if err := e.StartLSD(context.Background(), uint16(*listenPort)); err != nil {
+	if err := e.StartLSD(context.Background(), actualPort); err != nil {
 		logger.Warning.Printf("Not starting local service discovery: %v\n", err)
 	}
 	// All three must be up before Load/Add so every torrent - reloaded from a
