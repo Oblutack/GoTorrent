@@ -23,10 +23,19 @@ import (
 	"github.com/Oblutack/GoTorrent/internal/metainfo"
 	"github.com/Oblutack/GoTorrent/internal/peer"
 	"github.com/Oblutack/GoTorrent/internal/picker"
+	"github.com/Oblutack/GoTorrent/internal/portmap"
 	"github.com/Oblutack/GoTorrent/internal/ratelimit"
 	"github.com/Oblutack/GoTorrent/internal/storage"
 	"github.com/Oblutack/GoTorrent/internal/torrent"
 )
+
+// maxInboundPerIP caps how many concurrent inbound connections one source IP
+// may hold open at once, so a single misbehaving or hostile address cannot
+// exhaust this process's connection slots, goroutines, or file descriptors
+// by opening connection after connection. Deliberately generous: a real peer
+// can legitimately hold several connections open at once across different
+// torrents this engine manages.
+const maxInboundPerIP = 8
 
 // DefaultStateDir returns the directory an Engine's manifest lives in when a
 // caller has no preference, mirroring torrent.ResumeDir: a per-user config
@@ -108,6 +117,18 @@ type Engine struct {
 	// torrentConfig — the same reasoning as one shared TCP listener in
 	// Listen: a DHT node is a property of the process, not of one torrent.
 	dhtNode *dht.DHT
+
+	// portmapClient is non-nil once StartPortMapping has successfully
+	// mapped a port through the local NAT (UPnP or NAT-PMP — see
+	// internal/portmap). Nil just means no gateway was found or mapping
+	// failed, which is not fatal: inbound connections still work if the
+	// port is already reachable some other way.
+	portmapClient *portmap.Client
+
+	// inboundMu and inboundCounts implement maxInboundPerIP, tracking how
+	// many inbound connections are currently open per source IP.
+	inboundMu     sync.Mutex
+	inboundCounts map[string]int
 }
 
 // New creates an Engine whose manifest lives under stateDir. It does not load
@@ -319,8 +340,25 @@ func (e *Engine) acceptLoop(ln net.Listener) {
 // handleIncoming reads just enough of an inbound connection to route it: the
 // handshake, which carries the infohash. A torrent this engine does not
 // manage, or a malformed handshake, just gets the connection closed — there
-// is nobody to hand it to.
+// is nobody to hand it to. Enforces maxInboundPerIP before doing anything
+// else with the connection, including the handshake read, so a source IP
+// already at its limit cannot even tie up a goroutine reading from it.
 func (e *Engine) handleIncoming(conn net.Conn) {
+	ip := remoteIP(conn)
+	if !e.reserveInboundSlot(ip) {
+		logger.Logf("engine: %s already has %d inbound connections, closing this one\n", ip, maxInboundPerIP)
+		conn.Close()
+		return
+	}
+	// countedConn's Close releases the slot exactly once, however the
+	// connection eventually ends: rejected here for a bad handshake,
+	// rejected by acceptIncoming's own dedup/cap check, or (the common
+	// case) closed much later by peer.Client once the torrent actor is done
+	// with it. The engine loses visibility into the connection the moment
+	// AcceptPeer hands it off, so this is the only point that can reliably
+	// free the slot.
+	conn = &countedConn{Conn: conn, release: func() { e.releaseInboundSlot(ip) }}
+
 	hs, err := peer.ReadHandshake(conn)
 	if err != nil {
 		conn.Close()
@@ -337,6 +375,53 @@ func (e *Engine) handleIncoming(conn net.Conn) {
 		return
 	}
 	mt.t.AcceptPeer(conn, hs)
+}
+
+// remoteIP returns just the host part of conn's remote address, so
+// maxInboundPerIP counts by IP rather than by IP:port (every connection has
+// a distinct source port, which would make the limit meaningless).
+func remoteIP(conn net.Conn) string {
+	host, _, err := net.SplitHostPort(conn.RemoteAddr().String())
+	if err != nil {
+		return conn.RemoteAddr().String()
+	}
+	return host
+}
+
+func (e *Engine) reserveInboundSlot(ip string) bool {
+	e.inboundMu.Lock()
+	defer e.inboundMu.Unlock()
+	if e.inboundCounts == nil {
+		e.inboundCounts = make(map[string]int)
+	}
+	if e.inboundCounts[ip] >= maxInboundPerIP {
+		return false
+	}
+	e.inboundCounts[ip]++
+	return true
+}
+
+func (e *Engine) releaseInboundSlot(ip string) {
+	e.inboundMu.Lock()
+	defer e.inboundMu.Unlock()
+	e.inboundCounts[ip]--
+	if e.inboundCounts[ip] <= 0 {
+		delete(e.inboundCounts, ip)
+	}
+}
+
+// countedConn wraps an inbound net.Conn so closing it — from anywhere, any
+// number of times — releases its maxInboundPerIP slot exactly once.
+type countedConn struct {
+	net.Conn
+	once    sync.Once
+	release func()
+}
+
+func (c *countedConn) Close() error {
+	err := c.Conn.Close()
+	c.once.Do(c.release)
+	return err
 }
 
 // StartDHT brings up the mainline DHT node shared by every torrent this
@@ -372,6 +457,46 @@ func (e *Engine) StartDHT(ctx context.Context, port uint16) error {
 	return nil
 }
 
+// StartPortMapping attempts to open internalPort through the local NAT via
+// UPnP or NAT-PMP (see internal/portmap), keeping the mapping alive and
+// renewed for as long as ctx is not cancelled. On success, every
+// subsequently-built torrent Config.ListenPort — and so every tracker
+// announce and DHT node this engine advertises — carries the external port
+// the gateway actually granted (usually, but not guaranteed to be, the same
+// number) rather than the internal one: trackers and DHT peers need the
+// address the outside world can actually reach, not the one this process
+// happens to have bound. Torrents already running when mapping succeeds are
+// not retroactively updated — call this before Load/Add, as
+// cmd/gottrent does, for it to matter.
+//
+// Failure is not fatal and is returned rather than logged here: this is a
+// best-effort convenience for the common "behind a home router with
+// UPnP/NAT-PMP enabled" case, not a requirement — a manually port-forwarded
+// or publicly-routed setup works fine without it, so the caller decides
+// whether and how loudly to report it (see cmd/gottrent). A zero port means
+// "don't attempt mapping" and is a no-op, matching Listen and StartDHT's
+// convention.
+func (e *Engine) StartPortMapping(ctx context.Context, internalPort uint16) error {
+	if internalPort == 0 {
+		return nil
+	}
+	client, mapping, err := portmap.Start(ctx, "TCP", internalPort)
+	if err != nil {
+		return err
+	}
+
+	e.mu.Lock()
+	e.portmapClient = client
+	if mapping.ExternalPort != 0 {
+		e.defaults.ListenPort = mapping.ExternalPort
+	}
+	e.mu.Unlock()
+
+	logger.Logf("engine: mapped external port %d -> internal %d via %s (external IP %s)\n",
+		mapping.ExternalPort, internalPort, client.GatewayKind(), mapping.ExternalIP)
+	return nil
+}
+
 // Shutdown stops every managed torrent and waits for all of them to finish.
 // Torrents are stopped concurrently — Stop is documented safe to call from
 // any goroutine — so shutting down N torrents costs the slowest one, not the
@@ -384,6 +509,8 @@ func (e *Engine) Shutdown() {
 	}
 	dhtNode := e.dhtNode
 	e.dhtNode = nil
+	portmapClient := e.portmapClient
+	e.portmapClient = nil
 	torrents := make([]*torrent.Torrent, 0, len(e.torrents))
 	for _, mt := range e.torrents {
 		torrents = append(torrents, mt.t)
@@ -391,14 +518,23 @@ func (e *Engine) Shutdown() {
 	e.mu.Unlock()
 
 	// dhtNode.Close can take up to ~1s (its read loop polls its done channel
-	// on a 1s deadline) — worth doing off the lock, and concurrently with
-	// stopping every torrent, rather than serially in front of them.
+	// on a 1s deadline), and portmapClient.Close makes a final network round
+	// trip (bounded at 5s) to withdraw the mapping — both worth doing off
+	// the lock, and concurrently with stopping every torrent, rather than
+	// serially in front of them.
 	var wg sync.WaitGroup
 	if dhtNode != nil {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			dhtNode.Close()
+		}()
+	}
+	if portmapClient != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			portmapClient.Close()
 		}()
 	}
 	wg.Add(len(torrents))

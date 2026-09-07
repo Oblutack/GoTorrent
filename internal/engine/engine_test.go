@@ -392,6 +392,102 @@ func TestListenClosesConnectionForUnmanagedInfoHash(t *testing.T) {
 	}
 }
 
+// dialLoopback opens n TCP connections to addr, all necessarily from the
+// same source IP (127.0.0.1) since that's how loopback works — exactly what
+// maxInboundPerIP counts by.
+func dialLoopback(t *testing.T, addr string, n int) []net.Conn {
+	t.Helper()
+	conns := make([]net.Conn, n)
+	for i := range conns {
+		c, err := net.Dial("tcp", addr)
+		if err != nil {
+			t.Fatalf("dial %d: %v", i, err)
+		}
+		conns[i] = c
+	}
+	t.Cleanup(func() {
+		for _, c := range conns {
+			c.Close()
+		}
+	})
+	return conns
+}
+
+// TestHandleIncomingAllowsUpToPerIPLimit proves a connection within the
+// per-IP budget is kept open, waiting for a handshake, rather than closed
+// outright — the read below times out (nothing was ever sent) rather than
+// failing with a closed-connection error, which is how "still open" and
+// "rejected" are told apart without a real peer.Client on the other end.
+func TestHandleIncomingAllowsUpToPerIPLimit(t *testing.T) {
+	e := newTestEngine(t)
+	port := freeTCPPort(t)
+	e.defaults.ListenPort = port
+	if err := e.Listen(context.Background()); err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+
+	conns := dialLoopback(t, fmt.Sprintf("127.0.0.1:%d", port), maxInboundPerIP)
+	last := conns[len(conns)-1]
+
+	last.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+	buf := make([]byte, 1)
+	_, err := last.Read(buf)
+	ne, ok := err.(net.Error)
+	if !ok || !ne.Timeout() {
+		t.Fatalf("got err=%v, want a read timeout (the connection should still be open, waiting for a handshake)", err)
+	}
+}
+
+// TestHandleIncomingRejectsConnectionsOverThePerIPLimit proves the
+// (maxInboundPerIP+1)th concurrent connection from the same source IP gets
+// closed immediately, before it can even tie up a goroutine reading a
+// handshake that will never come from a hostile or malfunctioning peer.
+func TestHandleIncomingRejectsConnectionsOverThePerIPLimit(t *testing.T) {
+	e := newTestEngine(t)
+	port := freeTCPPort(t)
+	e.defaults.ListenPort = port
+	if err := e.Listen(context.Background()); err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	dialLoopback(t, addr, maxInboundPerIP)
+
+	// Give the engine's goroutines a moment to actually reserve each of the
+	// first maxInboundPerIP slots before this one more is expected to be
+	// rejected — otherwise this dial could race ahead of them.
+	time.Sleep(100 * time.Millisecond)
+
+	extra, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer extra.Close()
+
+	extra.SetReadDeadline(time.Now().Add(2 * time.Second))
+	buf := make([]byte, 1)
+	if _, err := extra.Read(buf); err == nil {
+		t.Fatal("expected the over-limit connection to be closed, got data instead")
+	} else if ne, ok := err.(net.Error); ok && ne.Timeout() {
+		t.Fatal("the over-limit connection was left open (read timed out) instead of being closed")
+	}
+}
+
+// freeTCPPort borrows an ephemeral TCP port from the OS and gives it back,
+// for tests that need a real, fixed (non-zero) port number — 0 is reserved
+// to mean "don't listen at all", the same convention Listen uses for
+// Defaults.ListenPort.
+func freeTCPPort(t *testing.T) uint16 {
+	t.Helper()
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("probing for a free TCP port: %v", err)
+	}
+	port := probe.Addr().(*net.TCPAddr).Port
+	probe.Close()
+	return uint16(port)
+}
+
 // freeUDPPort borrows an ephemeral UDP port from the OS and gives it back,
 // for tests that need a real, fixed (non-zero) port number to hand to
 // StartDHT — 0 is reserved to mean "don't start DHT at all", the same
@@ -458,6 +554,42 @@ func TestShutdownClosesTheDHTNode(t *testing.T) {
 
 	if e.dhtNode != nil {
 		t.Fatal("Shutdown left dhtNode set")
+	}
+}
+
+func TestStartPortMappingIsANoOpAtZeroPort(t *testing.T) {
+	e := newTestEngine(t)
+	if err := e.StartPortMapping(context.Background(), 0); err != nil {
+		t.Fatalf("StartPortMapping(0): %v", err)
+	}
+	if e.portmapClient != nil {
+		t.Fatal("StartPortMapping(0) started a client; want a no-op")
+	}
+}
+
+// TestStartPortMappingFailsGracefullyWithNoGateway exercises the real
+// discovery path. It assumes — as any CI environment or most sandboxed dev
+// environments do — that no actual UPnP or NAT-PMP gateway is reachable, so
+// mapping fails; what this checks is that a failure is reported as an error
+// rather than a panic, and leaves the engine's state untouched (no client
+// stored, ListenPort not rewritten to a mapping that never happened). See
+// internal/portmap's own TestStartReturnsErrNoGatewayWhenNoneIsReachable for
+// the same assumption spelled out in more detail.
+func TestStartPortMappingFailsGracefullyWithNoGateway(t *testing.T) {
+	e := newTestEngine(t)
+	e.defaults.ListenPort = 6881
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	err := e.StartPortMapping(ctx, 6881)
+	if err == nil {
+		t.Fatal("StartPortMapping succeeded with no gateway reachable, want an error")
+	}
+	if e.portmapClient != nil {
+		t.Fatal("a failed StartPortMapping left a client set")
+	}
+	if e.defaults.ListenPort != 6881 {
+		t.Fatalf("ListenPort = %d after a failed mapping, want it unchanged at 6881", e.defaults.ListenPort)
 	}
 }
 
