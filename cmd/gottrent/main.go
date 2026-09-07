@@ -5,6 +5,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
@@ -31,7 +32,7 @@ func main() {
 	flag.Var(&sources, "torrent", "A .torrent file path or a magnet: URI (repeat for multiple torrents)")
 	downloadDir := flag.String("dir", ".", "Default directory to save downloaded files")
 	stateDir := flag.String("state-dir", "", "Directory for the fleet manifest (default: a directory under the OS config dir)")
-	listenPort := flag.Uint("port", 6881, "Port advertised to trackers (no inbound listener yet)")
+	listenPort := flag.Uint("port", 6881, "Port to listen on for inbound peer connections and advertise to trackers")
 	downLimitKB := flag.Uint("down-limit", 0, "Download rate cap in KiB/s across the whole fleet (0 = unlimited)")
 	upLimitKB := flag.Uint("up-limit", 0, "Upload rate cap in KiB/s across the whole fleet (0 = unlimited)")
 	verbose := flag.Bool("verbose", false, "Enable verbose logging")
@@ -62,6 +63,9 @@ func main() {
 	}
 	if err := e.Load(); err != nil {
 		logger.Error.Fatalf("Error loading fleet manifest: %v\n", err)
+	}
+	if err := e.Listen(context.Background()); err != nil {
+		logger.Warning.Printf("Not accepting inbound connections: %v\n", err)
 	}
 
 	for _, src := range sources {

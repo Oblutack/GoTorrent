@@ -10,14 +10,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/Oblutack/GoTorrent/internal/logger"
 	"github.com/Oblutack/GoTorrent/internal/metainfo"
+	"github.com/Oblutack/GoTorrent/internal/peer"
 	"github.com/Oblutack/GoTorrent/internal/picker"
 	"github.com/Oblutack/GoTorrent/internal/ratelimit"
 	"github.com/Oblutack/GoTorrent/internal/storage"
@@ -94,6 +97,10 @@ type Engine struct {
 	stateDir string
 	defaults Defaults
 	torrents map[metainfo.Hash]*managedTorrent
+
+	// listener is non-nil once Listen has bound a port, so Shutdown knows to
+	// close it. Guarded by mu like everything else here.
+	listener net.Listener
 }
 
 // New creates an Engine whose manifest lives under stateDir. It does not load
@@ -258,12 +265,83 @@ func (e *Engine) List() []Summary {
 	return out
 }
 
+// Listen opens a single TCP listener shared by every torrent this engine
+// manages and starts routing inbound connections in the background: one
+// listener per process, not one per torrent, because only something that
+// knows about the whole fleet can read a connection's handshake and decide
+// which torrent's infohash it matches. It returns once the port is bound (so
+// a caller learns synchronously whether the port was available); accepting
+// happens in a spawned goroutine that runs until ctx is cancelled or
+// Shutdown closes the listener. A zero ListenPort in Defaults means "don't
+// listen" and is a no-op, so callers that never configured a port don't need
+// to guard this call themselves.
+func (e *Engine) Listen(ctx context.Context) error {
+	if e.defaults.ListenPort == 0 {
+		return nil
+	}
+	ln, err := net.Listen("tcp", ":"+strconv.Itoa(int(e.defaults.ListenPort)))
+	if err != nil {
+		return fmt.Errorf("engine: listening on port %d: %w", e.defaults.ListenPort, err)
+	}
+
+	e.mu.Lock()
+	e.listener = ln
+	e.mu.Unlock()
+
+	go func() {
+		<-ctx.Done()
+		ln.Close()
+	}()
+	go e.acceptLoop(ln)
+	return nil
+}
+
+// acceptLoop accepts connections until ln is closed (by ctx cancellation or
+// Shutdown), handing each one off to its own goroutine so a slow or stalled
+// handshake from one peer cannot delay accepting the next.
+func (e *Engine) acceptLoop(ln net.Listener) {
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		go e.handleIncoming(conn)
+	}
+}
+
+// handleIncoming reads just enough of an inbound connection to route it: the
+// handshake, which carries the infohash. A torrent this engine does not
+// manage, or a malformed handshake, just gets the connection closed — there
+// is nobody to hand it to.
+func (e *Engine) handleIncoming(conn net.Conn) {
+	hs, err := peer.ReadHandshake(conn)
+	if err != nil {
+		conn.Close()
+		return
+	}
+
+	e.mu.Lock()
+	mt, ok := e.torrents[metainfo.Hash(hs.InfoHash)]
+	e.mu.Unlock()
+	if !ok {
+		logger.Logf("engine: inbound connection from %s for unmanaged torrent %x, closing\n",
+			conn.RemoteAddr(), hs.InfoHash)
+		conn.Close()
+		return
+	}
+	mt.t.AcceptPeer(conn, hs)
+}
+
 // Shutdown stops every managed torrent and waits for all of them to finish.
 // Torrents are stopped concurrently — Stop is documented safe to call from
 // any goroutine — so shutting down N torrents costs the slowest one, not the
 // sum of all of them.
 func (e *Engine) Shutdown() {
 	e.mu.Lock()
+	if e.listener != nil {
+		e.listener.Close()
+		e.listener = nil
+	}
 	torrents := make([]*torrent.Torrent, 0, len(e.torrents))
 	for _, mt := range e.torrents {
 		torrents = append(torrents, mt.t)

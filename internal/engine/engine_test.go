@@ -1,8 +1,11 @@
 package engine
 
 import (
+	"context"
 	"crypto/sha1"
+	"fmt"
 	"math/rand"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -11,6 +14,7 @@ import (
 	"github.com/Oblutack/GoTorrent/internal/bencode"
 	"github.com/Oblutack/GoTorrent/internal/logger"
 	"github.com/Oblutack/GoTorrent/internal/metainfo"
+	"github.com/Oblutack/GoTorrent/internal/peer"
 	"github.com/Oblutack/GoTorrent/internal/torrent"
 )
 
@@ -284,6 +288,107 @@ func TestLoadReconstructsTheFleet(t *testing.T) {
 	}
 	if _, ok := e2.Get(hashB); !ok {
 		t.Fatal("Load did not reconstruct torrent b")
+	}
+}
+
+// TestListenRoutesInboundConnectionToTheRightTorrent proves the engine's
+// shared listener actually reaches a managed torrent's peer set: a fake
+// remote peer dials in, completes a handshake against a real infohash this
+// engine manages, and the torrent's own Stats().PeerCount should reflect it
+// - exactly the path a real inbound connection from outside a NAT would take
+// once port-forwarded, minus the NAT.
+func TestListenRoutesInboundConnectionToTheRightTorrent(t *testing.T) {
+	e := newTestEngine(t)
+
+	// Borrow an ephemeral port from the OS, then hand it to the engine: Listen
+	// itself always binds a fixed (if arbitrary) port rather than 0, since 0
+	// is reserved by Defaults to mean "don't listen at all".
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("probing for a free port: %v", err)
+	}
+	port := probe.Addr().(*net.TCPAddr).Port
+	probe.Close()
+	e.defaults.ListenPort = uint16(port)
+
+	if err := e.Listen(context.Background()); err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+
+	path, hash := writeTorrentFile(t, t.TempDir(), "inbound")
+	if _, err := e.Add(path, ""); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	tr, ok := e.Get(hash)
+	if !ok {
+		t.Fatal("Get did not find the added torrent")
+	}
+	waitForState(t, tr, torrent.StateDownloading, 10*time.Second)
+
+	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		t.Fatalf("dialing the engine's listener: %v", err)
+	}
+	defer conn.Close()
+
+	var remoteID [20]byte
+	copy(remoteID[:], "-TEST01-inbound00000")
+	if _, err := conn.Write(peer.NewHandshake(hash, remoteID).Serialize()); err != nil {
+		t.Fatalf("writing handshake: %v", err)
+	}
+	reply, err := peer.ReadHandshake(conn)
+	if err != nil {
+		t.Fatalf("reading reply handshake: %v", err)
+	}
+	if reply.InfoHash != hash {
+		t.Fatalf("reply infohash = %x, want %x", reply.InfoHash, hash)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if tr.Stats().PeerCount == 1 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("torrent's PeerCount never reached 1 after an inbound connection, got %d", tr.Stats().PeerCount)
+}
+
+// TestListenClosesConnectionForUnmanagedInfoHash proves an inbound
+// connection for a torrent this engine does not manage gets its connection
+// closed rather than silently held open or routed nowhere.
+func TestListenClosesConnectionForUnmanagedInfoHash(t *testing.T) {
+	e := newTestEngine(t)
+
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("probing for a free port: %v", err)
+	}
+	port := probe.Addr().(*net.TCPAddr).Port
+	probe.Close()
+	e.defaults.ListenPort = uint16(port)
+
+	if err := e.Listen(context.Background()); err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+
+	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		t.Fatalf("dialing the engine's listener: %v", err)
+	}
+	defer conn.Close()
+
+	var remoteID [20]byte
+	copy(remoteID[:], "-TEST01-nobody000000")
+	unmanaged := metainfo.Hash{0xde, 0xad, 0xbe, 0xef}
+	if _, err := conn.Write(peer.NewHandshake(unmanaged, remoteID).Serialize()); err != nil {
+		t.Fatalf("writing handshake: %v", err)
+	}
+
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	buf := make([]byte, 1)
+	if _, err := conn.Read(buf); err == nil {
+		t.Fatal("expected the connection to be closed for an unmanaged infohash, got data instead")
 	}
 }
 

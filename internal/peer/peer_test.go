@@ -97,6 +97,85 @@ func dialTestPeer(t *testing.T, callbacks Callbacks) (*Client, net.Conn) {
 	return client, got.conn
 }
 
+// TestAcceptClientCompletesInboundHandshake mirrors dialTestPeer with the
+// roles reversed: a fake remote peer dials in, sends its handshake first,
+// and the code under test (ReadHandshake + AcceptClient, exactly what the
+// engine's shared listener does) replies and builds a working Client.
+func TestAcceptClientCompletesInboundHandshake(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { ln.Close() })
+
+	var remoteID [20]byte
+	copy(remoteID[:], "-TEST01-remote000000")
+
+	type dialed struct {
+		conn net.Conn
+		err  error
+	}
+	dialCh := make(chan dialed, 1)
+	go func() {
+		conn, err := net.Dial("tcp", ln.Addr().String())
+		if err != nil {
+			dialCh <- dialed{err: err}
+			return
+		}
+		if _, err := conn.Write(NewHandshake(testTorrent.InfoHash, remoteID).Serialize()); err != nil {
+			conn.Close()
+			dialCh <- dialed{err: err}
+			return
+		}
+		dialCh <- dialed{conn: conn}
+	}()
+
+	conn, err := ln.Accept()
+	if err != nil {
+		t.Fatalf("accept: %v", err)
+	}
+	t.Cleanup(func() { conn.Close() })
+
+	theirHandshake, err := ReadHandshake(conn)
+	if err != nil {
+		t.Fatalf("ReadHandshake: %v", err)
+	}
+	if theirHandshake.InfoHash != testTorrent.InfoHash {
+		t.Fatalf("got infohash %x, want %x", theirHandshake.InfoHash, testTorrent.InfoHash)
+	}
+	if theirHandshake.PeerID != remoteID {
+		t.Fatalf("got peer id %x, want %x", theirHandshake.PeerID, remoteID)
+	}
+
+	client, err := AcceptClient(conn, theirHandshake, testTorrent, [20]byte{}, Callbacks{}, Limits{})
+	if err != nil {
+		t.Fatalf("AcceptClient: %v", err)
+	}
+	t.Cleanup(func() { client.Close() })
+
+	if client.RemoteID != remoteID {
+		t.Fatalf("client.RemoteID = %x, want %x", client.RemoteID, remoteID)
+	}
+	if client.info().NumPieces != testTorrent.NumPieces {
+		t.Fatalf("client did not pick up the given TorrentInfo: NumPieces = %d, want %d",
+			client.info().NumPieces, testTorrent.NumPieces)
+	}
+
+	got := <-dialCh
+	if got.err != nil {
+		t.Fatalf("dial side: %v", got.err)
+	}
+	defer got.conn.Close()
+
+	ourReply, err := ReadHandshake(got.conn)
+	if err != nil {
+		t.Fatalf("reading our reply handshake: %v", err)
+	}
+	if ourReply.InfoHash != testTorrent.InfoHash {
+		t.Fatalf("reply infohash = %x, want %x", ourReply.InfoHash, testTorrent.InfoHash)
+	}
+}
+
 // readFrame reads one length-prefixed wire frame and returns its payload
 // including the message ID. A zero-length frame (keep-alive) returns nil.
 func readFrame(t *testing.T, conn net.Conn) []byte {
