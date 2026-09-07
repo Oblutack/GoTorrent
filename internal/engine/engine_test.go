@@ -136,6 +136,30 @@ func TestAddStartsAndListsTheTorrent(t *testing.T) {
 	}
 }
 
+// TestListReportsPrivateFlag proves Summary.Private reflects BEP 27's
+// info.private once metadata is known — a CLI/UI surface, not something any
+// behavior depends on (see Summary.Private's own doc comment for why: the
+// real DHT/PEX/LSD gating re-checks live metadata itself, continuously,
+// rather than trusting this field).
+func TestListReportsPrivateFlag(t *testing.T) {
+	e := newTestEngine(t)
+	publicHash := addTorrentWithPrivacy(t, e, "public-listed", false)
+	privateHash := addTorrentWithPrivacy(t, e, "private-listed", true)
+
+	for _, s := range e.List() {
+		switch s.InfoHash {
+		case publicHash:
+			if s.Private {
+				t.Fatalf("List() marked the public torrent %s private", s.InfoHash)
+			}
+		case privateHash:
+			if !s.Private {
+				t.Fatalf("List() did not mark the private torrent %s private", s.InfoHash)
+			}
+		}
+	}
+}
+
 // TestAddAcceptsMagnetURI proves Add's file-path-vs-magnet branch actually
 // takes the magnet path: no .torrent file involved at all, just a
 // "magnet:?xt=..." string, and the torrent should come up in

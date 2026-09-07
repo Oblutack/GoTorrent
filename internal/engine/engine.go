@@ -79,6 +79,16 @@ type Summary struct {
 	Name        string
 	DownloadDir string
 	Stats       torrent.Stats
+	// Private is BEP 27's info.private flag, once metadata reveals it —
+	// always false for a magnet-shaped torrent whose metadata hasn't
+	// arrived yet, which is also why nothing here needs to react to it
+	// changing: DHT/PEX/LSD's own private-torrent gating (torrent.dhtLoop,
+	// broadcastPEX, onPEXUpdate, engine's LSD loops) all re-check
+	// Info.Private directly against live metadata on every cycle rather
+	// than trusting a value cached here — this field exists purely to let
+	// a caller (the CLI today, any future UI) show the user which torrents
+	// BEP 27 applies to, not to drive any behavior itself.
+	Private bool
 }
 
 // managedTorrent is what the Engine tracks per torrent beyond what Torrent
@@ -289,12 +299,17 @@ func (e *Engine) List() []Summary {
 
 	out := make([]Summary, 0, len(e.torrents))
 	for hash, mt := range e.torrents {
+		var private bool
+		if mi := mt.t.Metadata(); mi != nil {
+			private = mi.Info.Private
+		}
 		out = append(out, Summary{
 			InfoHash:    hash,
 			Source:      mt.source,
 			Name:        displayNameFor(mt),
 			DownloadDir: mt.downloadDir,
 			Stats:       mt.t.Stats(),
+			Private:     private,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].InfoHash.String() < out[j].InfoHash.String() })

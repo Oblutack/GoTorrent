@@ -157,9 +157,18 @@ func displayFleet(e *engine.Engine, shutdownDone <-chan struct{}) {
 			if len(name) > 24 {
 				name = name[:21] + "..."
 			}
+			// BEP 27: a private torrent never touches DHT/PEX/LSD (enforced
+			// where it matters, in internal/torrent and internal/engine);
+			// this marker is just so the person running the client can see
+			// which of their torrents that applies to.
+			private := "  "
+			if s.Private {
+				private = "P "
+			}
 
-			fmt.Printf("%-24s %-16s %6.2f%% %6.2f/%6.2f MB %s peers:%-3d\033[K\n",
+			fmt.Printf("%-24s %s%-16s %6.2f%% %6.2f/%6.2f MB %s peers:%-3d\033[K\n",
 				name,
+				private,
 				s.Stats.State,
 				percent,
 				float64(s.Stats.Downloaded)/(1024*1024),
