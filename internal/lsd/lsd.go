@@ -44,9 +44,10 @@ type LSD struct {
 	group  *net.UDPAddr
 	cookie string
 
-	found chan PeerFound
-	done  chan struct{}
-	wg    sync.WaitGroup
+	found     chan PeerFound
+	done      chan struct{}
+	closeOnce sync.Once
+	wg        sync.WaitGroup
 }
 
 // New joins the LSD multicast group and starts listening in the background.
@@ -111,10 +112,15 @@ func (l *LSD) Announce(infoHash [20]byte, port uint16) error {
 // (Close, or the socket otherwise dying). Draining it is the caller's job.
 func (l *LSD) Found() <-chan PeerFound { return l.found }
 
-// Close stops listening and unblocks readLoop.
+// Close stops listening and unblocks readLoop. Safe to call more than once
+// (StartLSD's own ctx-cancellation watcher and an explicit shutdown path can
+// both legitimately reach it) and from any goroutine.
 func (l *LSD) Close() error {
-	close(l.done)
-	err := l.conn.Close()
+	var err error
+	l.closeOnce.Do(func() {
+		close(l.done)
+		err = l.conn.Close()
+	})
 	l.wg.Wait()
 	return err
 }

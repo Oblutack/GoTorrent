@@ -76,7 +76,13 @@ func main() {
 	if err := e.StartDHT(context.Background(), uint16(*listenPort)); err != nil {
 		logger.Warning.Printf("Not starting DHT: %v\n", err)
 	}
-	// Both must be up before Load/Add so every torrent - reloaded from a
+	// LSD always advertises the internal port, never StartPortMapping's
+	// rewritten external one - an LSD peer is on the same LAN and connects
+	// directly, not through any NAT mapping.
+	if err := e.StartLSD(context.Background(), uint16(*listenPort)); err != nil {
+		logger.Warning.Printf("Not starting local service discovery: %v\n", err)
+	}
+	// All three must be up before Load/Add so every torrent - reloaded from a
 	// previous run included - gets a working DHT peer source from the start.
 	if err := e.Load(); err != nil {
 		logger.Error.Fatalf("Error loading fleet manifest: %v\n", err)

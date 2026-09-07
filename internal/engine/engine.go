@@ -17,9 +17,11 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Oblutack/GoTorrent/internal/dht"
 	"github.com/Oblutack/GoTorrent/internal/logger"
+	"github.com/Oblutack/GoTorrent/internal/lsd"
 	"github.com/Oblutack/GoTorrent/internal/metainfo"
 	"github.com/Oblutack/GoTorrent/internal/peer"
 	"github.com/Oblutack/GoTorrent/internal/picker"
@@ -27,6 +29,7 @@ import (
 	"github.com/Oblutack/GoTorrent/internal/ratelimit"
 	"github.com/Oblutack/GoTorrent/internal/storage"
 	"github.com/Oblutack/GoTorrent/internal/torrent"
+	"github.com/Oblutack/GoTorrent/internal/tracker"
 )
 
 // maxInboundPerIP caps how many concurrent inbound connections one source IP
@@ -124,6 +127,11 @@ type Engine struct {
 	// failed, which is not fatal: inbound connections still work if the
 	// port is already reachable some other way.
 	portmapClient *portmap.Client
+
+	// lsdNode is non-nil once StartLSD has joined the multicast group — see
+	// StartLSD. One node for the whole fleet, same reasoning as dhtNode and
+	// listener: LSD is a single multicast socket, not a per-torrent thing.
+	lsdNode *lsd.LSD
 
 	// inboundMu and inboundCounts implement maxInboundPerIP, tracking how
 	// many inbound connections are currently open per source IP.
@@ -497,6 +505,99 @@ func (e *Engine) StartPortMapping(ctx context.Context, internalPort uint16) erro
 	return nil
 }
 
+// StartLSD joins the local multicast group (BEP 14) and starts announcing
+// every non-private managed torrent's infohash on internalPort every
+// lsd.AnnounceInterval, while dispatching whatever peers other local nodes
+// announce back to the matching managed torrent via DialPeer. internalPort
+// is deliberately what LSD advertises, never StartPortMapping's rewritten
+// external port: an LSD peer is on the same LAN by definition and connects
+// directly to this machine's local address, not through any NAT mapping.
+// A zero port means "don't start LSD" and is a no-op, matching Listen and
+// StartDHT's convention.
+func (e *Engine) StartLSD(ctx context.Context, internalPort uint16) error {
+	if internalPort == 0 {
+		return nil
+	}
+	node, err := lsd.New()
+	if err != nil {
+		return fmt.Errorf("engine: starting LSD: %w", err)
+	}
+
+	e.mu.Lock()
+	e.lsdNode = node
+	e.mu.Unlock()
+
+	go func() {
+		<-ctx.Done()
+		node.Close()
+	}()
+	go e.lsdAnnounceLoop(ctx, node, internalPort)
+	go e.lsdDispatchLoop(node.Found())
+	return nil
+}
+
+// lsdAnnounceLoop announces every non-private managed torrent once
+// immediately (no reason to wait a full interval for the very first one)
+// and then on lsd.AnnounceInterval's cadence for as long as ctx allows.
+func (e *Engine) lsdAnnounceLoop(ctx context.Context, node *lsd.LSD, port uint16) {
+	e.lsdAnnounceOnce(node, port)
+	ticker := time.NewTicker(lsd.AnnounceInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			e.lsdAnnounceOnce(node, port)
+		}
+	}
+}
+
+func (e *Engine) lsdAnnounceOnce(node *lsd.LSD, port uint16) {
+	for _, hash := range e.lsdAnnounceableHashes() {
+		if err := node.Announce(hash, port); err != nil {
+			logger.Logf("engine: LSD announce for %s: %v\n", hash, err)
+		}
+	}
+}
+
+// lsdAnnounceableHashes is every managed torrent's infohash except private
+// ones (BEP 27: never advertise those over LSD) — split out from
+// lsdAnnounceOnce so the filtering logic is testable without a real
+// multicast socket.
+func (e *Engine) lsdAnnounceableHashes() []metainfo.Hash {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	hashes := make([]metainfo.Hash, 0, len(e.torrents))
+	for hash, mt := range e.torrents {
+		if mi := mt.t.Metadata(); mi != nil && mi.Info.Private {
+			continue
+		}
+		hashes = append(hashes, hash)
+	}
+	return hashes
+}
+
+// lsdDispatchLoop hands every peer LSD hears about to whichever managed
+// torrent its infohash matches, if any — the LSD equivalent of
+// handleIncoming routing an inbound TCP connection by infohash. Takes the
+// channel rather than a *lsd.LSD directly so it can be driven by a fake one
+// in tests, without a real multicast socket. Runs until found closes.
+func (e *Engine) lsdDispatchLoop(found <-chan lsd.PeerFound) {
+	for f := range found {
+		e.mu.Lock()
+		mt, ok := e.torrents[metainfo.Hash(f.InfoHash)]
+		e.mu.Unlock()
+		if !ok {
+			continue
+		}
+		if mi := mt.t.Metadata(); mi != nil && mi.Info.Private {
+			continue // BEP 27: ignore even an unsolicited LSD peer for a private torrent
+		}
+		mt.t.DialPeer(tracker.PeerInfo{IP: f.Addr.IP, Port: uint16(f.Addr.Port)})
+	}
+}
+
 // Shutdown stops every managed torrent and waits for all of them to finish.
 // Torrents are stopped concurrently — Stop is documented safe to call from
 // any goroutine — so shutting down N torrents costs the slowest one, not the
@@ -511,6 +612,8 @@ func (e *Engine) Shutdown() {
 	e.dhtNode = nil
 	portmapClient := e.portmapClient
 	e.portmapClient = nil
+	lsdNode := e.lsdNode
+	e.lsdNode = nil
 	torrents := make([]*torrent.Torrent, 0, len(e.torrents))
 	for _, mt := range e.torrents {
 		torrents = append(torrents, mt.t)
@@ -535,6 +638,13 @@ func (e *Engine) Shutdown() {
 		go func() {
 			defer wg.Done()
 			portmapClient.Close()
+		}()
+	}
+	if lsdNode != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			lsdNode.Close()
 		}()
 	}
 	wg.Add(len(torrents))

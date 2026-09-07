@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha1"
 	"fmt"
+	"io"
 	"math/rand"
 	"net"
 	"os"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/Oblutack/GoTorrent/internal/bencode"
 	"github.com/Oblutack/GoTorrent/internal/logger"
+	"github.com/Oblutack/GoTorrent/internal/lsd"
 	"github.com/Oblutack/GoTorrent/internal/metainfo"
 	"github.com/Oblutack/GoTorrent/internal/peer"
 	"github.com/Oblutack/GoTorrent/internal/torrent"
@@ -590,6 +592,160 @@ func TestStartPortMappingFailsGracefullyWithNoGateway(t *testing.T) {
 	}
 	if e.defaults.ListenPort != 6881 {
 		t.Fatalf("ListenPort = %d after a failed mapping, want it unchanged at 6881", e.defaults.ListenPort)
+	}
+}
+
+func TestStartLSDIsANoOpAtZeroPort(t *testing.T) {
+	e := newTestEngine(t)
+	if err := e.StartLSD(context.Background(), 0); err != nil {
+		t.Fatalf("StartLSD(0): %v", err)
+	}
+	if e.lsdNode != nil {
+		t.Fatal("StartLSD(0) started a node; want a no-op")
+	}
+}
+
+// TestStartLSDBindsANode proves StartLSD actually joins the multicast group
+// (a real *lsd.LSD gets created) without depending on any multicast packet
+// actually being delivered — internal/lsd's own tests cover the wire
+// protocol and note that this dev sandbox does not carry multicast traffic
+// at all, an environment fact this test does not need to work around since
+// joining the group succeeds independently of whether anything is ever
+// heard on it.
+func TestStartLSDBindsANode(t *testing.T) {
+	e := newTestEngine(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	if err := e.StartLSD(ctx, 6881); err != nil {
+		t.Fatalf("StartLSD: %v", err)
+	}
+	if e.lsdNode == nil {
+		t.Fatal("StartLSD did not set a node")
+	}
+}
+
+// addTorrentWithPrivacy adds a real torrent (a genuine .torrent file on
+// disk, like writeTorrentFile) and, if private is true, marks it private
+// after loading — mutating the in-memory metadata is enough for these
+// tests, which only ever read back mt.t.Metadata().Info.Private, never the
+// original file bytes.
+func addTorrentWithPrivacy(t *testing.T, e *Engine, name string, private bool) metainfo.Hash {
+	t.Helper()
+	path, hash := writeTorrentFile(t, t.TempDir(), name)
+	if _, err := e.Add(path, ""); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if private {
+		tr, ok := e.Get(hash)
+		if !ok {
+			t.Fatal("Get did not find the just-added torrent")
+		}
+		if mi := tr.Metadata(); mi != nil {
+			mi.Info.Private = true
+		} else {
+			t.Fatal("newly-added torrent has no metadata yet")
+		}
+	}
+	return hash
+}
+
+func TestLSDAnnounceableHashesSkipsPrivateTorrents(t *testing.T) {
+	e := newTestEngine(t)
+	publicHash := addTorrentWithPrivacy(t, e, "public", false)
+	privateHash := addTorrentWithPrivacy(t, e, "private", true)
+
+	hashes := e.lsdAnnounceableHashes()
+	var sawPublic, sawPrivate bool
+	for _, h := range hashes {
+		if h == publicHash {
+			sawPublic = true
+		}
+		if h == privateHash {
+			sawPrivate = true
+		}
+	}
+	if !sawPublic {
+		t.Fatal("lsdAnnounceableHashes omitted the public torrent")
+	}
+	if sawPrivate {
+		t.Fatal("lsdAnnounceableHashes included a private torrent")
+	}
+}
+
+// acceptOneHandshake stands up a real listener that completes exactly one
+// BitTorrent handshake for hash and then holds the connection open — enough
+// for peer.NewClient (and so DialPeer) to succeed and register, without
+// needing a full fake seeder (Bitfield/Unchoke/serving pieces): registerPeer
+// fires right after a successful handshake, before any of that.
+func acceptOneHandshake(t *testing.T, hash metainfo.Hash) *net.TCPAddr {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		hs := make([]byte, 68)
+		if _, err := io.ReadFull(conn, hs); err != nil {
+			return
+		}
+		var id [20]byte
+		copy(id[:], "-TEST01-lsdtarget000")
+		if _, err := conn.Write(peer.NewHandshake(hash, id).Serialize()); err != nil {
+			return
+		}
+		time.Sleep(3 * time.Second) // stay connected long enough for the test to observe it
+	}()
+	return ln.Addr().(*net.TCPAddr)
+}
+
+func TestLSDDispatchLoopDialsMatchingManagedTorrent(t *testing.T) {
+	e := newTestEngine(t)
+	hash := addTorrentWithPrivacy(t, e, "target", false)
+	tr, _ := e.Get(hash)
+	target := acceptOneHandshake(t, hash)
+
+	found := make(chan lsd.PeerFound, 1)
+	found <- lsd.PeerFound{InfoHash: hash, Addr: &net.UDPAddr{IP: target.IP, Port: target.Port}}
+	close(found)
+	e.lsdDispatchLoop(found)
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && tr.Stats().PeerCount == 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if tr.Stats().PeerCount == 0 {
+		t.Fatal("lsdDispatchLoop did not dial the found peer")
+	}
+}
+
+func TestLSDDispatchLoopSkipsUnmanagedInfohash(t *testing.T) {
+	e := newTestEngine(t)
+	// No torrents added at all - any infohash is unmanaged.
+	found := make(chan lsd.PeerFound, 1)
+	found <- lsd.PeerFound{InfoHash: metainfo.Hash{0xaa}, Addr: &net.UDPAddr{IP: net.IPv4(198, 51, 100, 7), Port: 6881}}
+	close(found)
+	e.lsdDispatchLoop(found) // must not panic; nothing else observable to assert
+}
+
+func TestLSDDispatchLoopSkipsPrivateTorrent(t *testing.T) {
+	e := newTestEngine(t)
+	hash := addTorrentWithPrivacy(t, e, "private-target", true)
+	tr, _ := e.Get(hash)
+
+	found := make(chan lsd.PeerFound, 1)
+	found <- lsd.PeerFound{InfoHash: hash, Addr: &net.UDPAddr{IP: net.IPv4(198, 51, 100, 7), Port: 6881}}
+	close(found)
+	e.lsdDispatchLoop(found)
+
+	time.Sleep(200 * time.Millisecond)
+	if tr.Stats().PeerCount != 0 {
+		t.Fatalf("PeerCount = %d, want 0 (a private torrent's peers must never be dialed via LSD)", tr.Stats().PeerCount)
 	}
 }
 

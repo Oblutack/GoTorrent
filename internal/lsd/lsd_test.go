@@ -135,6 +135,19 @@ func TestAnnounceAndReceiveRoundTrip(t *testing.T) {
 	}
 }
 
+// TestCloseIsIdempotent proves Close can be called more than once without
+// panicking — a real requirement, not a hypothetical: internal/engine calls
+// it both from a ctx-cancellation watcher and from an explicit Shutdown
+// path, and either can legitimately win the race to call it first.
+func TestCloseIsIdempotent(t *testing.T) {
+	l, err := New()
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	l.Close()
+	l.Close() // must not panic
+}
+
 // TestOwnAnnounceIsFiltered proves a node never hears its own announce back
 // (the cookie mechanism) — without it, a client would append itself to
 // every torrent's PEX-like discovery for no reason.
