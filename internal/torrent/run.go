@@ -307,6 +307,9 @@ func (t *Torrent) handleEvent(ev any) {
 // This is the sole writer of t.dialing and t.peers, so these checks cannot
 // race with a concurrent dial from another source.
 func (t *Torrent) dial(pi tracker.PeerInfo) {
+	if t.cfg.IPFilter.Blocked(pi.IP) {
+		return
+	}
 	addr := pi.Addr()
 	if t.peers[addr] != nil || t.dialing[addr] {
 		return
@@ -327,6 +330,10 @@ func (t *Torrent) dial(pi tracker.PeerInfo) {
 // rejection just means closing it instead of never opening it.
 func (t *Torrent) acceptIncoming(conn net.Conn, hs *peer.Handshake) {
 	addr := conn.RemoteAddr().String()
+	if t.cfg.IPFilter.Blocked(remoteIP(conn)) {
+		conn.Close()
+		return
+	}
 	if t.peers[addr] != nil || t.dialing[addr] {
 		conn.Close()
 		return

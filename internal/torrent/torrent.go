@@ -11,6 +11,7 @@ import (
 
 	"github.com/Oblutack/GoTorrent/internal/bitfield"
 	"github.com/Oblutack/GoTorrent/internal/choker"
+	"github.com/Oblutack/GoTorrent/internal/ipfilter"
 	"github.com/Oblutack/GoTorrent/internal/logger"
 	"github.com/Oblutack/GoTorrent/internal/metainfo"
 	"github.com/Oblutack/GoTorrent/internal/peer"
@@ -92,6 +93,13 @@ type Config struct {
 	// address is a private or loopback IP, so a same-LAN transfer always
 	// runs at full local speed regardless of the internet-facing cap.
 	ExcludeLANFromLimits bool
+	// IPFilter rejects a peer address before ever dialing or accepting it
+	// (3.7) — checked in dial and acceptIncoming. Nil (the default, and
+	// also what a nil *ipfilter.Filter itself does — see its own doc
+	// comment) blocks nothing; an engine typically hands every torrent it
+	// manages the same shared *ipfilter.Filter, the same "one instance,
+	// several owners" shape as DownLimit/UpLimit.
+	IPFilter *ipfilter.Filter
 	// Trackers seeds the announce loop before metadata is known — a magnet
 	// link's tr= parameters. Ignored once mi is set: from then on
 	// announceURLs reads mi.AnnounceURLs() instead. Meaningless for a

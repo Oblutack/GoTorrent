@@ -20,3 +20,15 @@ func isLANAddr(addr string) bool {
 	}
 	return ip.IsPrivate() || ip.IsLoopback()
 }
+
+// remoteIP extracts conn's remote address as a net.IP, or nil if it
+// somehow can't be parsed (in which case Config.IPFilter's own nil-safe
+// Blocked treats it as not blocked — conservative, matching isLANAddr's
+// stance on the same kind of failure).
+func remoteIP(conn net.Conn) net.IP {
+	host, _, err := net.SplitHostPort(conn.RemoteAddr().String())
+	if err != nil {
+		return nil
+	}
+	return net.ParseIP(host)
+}
