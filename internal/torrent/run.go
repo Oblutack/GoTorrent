@@ -318,9 +318,10 @@ func (t *Torrent) dial(pi tracker.PeerInfo) {
 		return
 	}
 	t.dialing[addr] = true
+	ssPiece, ssOK := t.superSeedAssign(addr)
 
 	t.wg.Add(1)
-	go t.connectAndPump(t.ctx, pi)
+	go t.connectAndPump(t.ctx, pi, ssPiece, ssOK)
 }
 
 // acceptIncoming applies the same dedup-by-address and peer-cap rules dial
@@ -343,20 +344,21 @@ func (t *Torrent) acceptIncoming(conn net.Conn, hs *peer.Handshake) {
 		return
 	}
 	t.dialing[addr] = true
+	ssPiece, ssOK := t.superSeedAssign(addr)
 
 	t.wg.Add(1)
-	go t.acceptAndPump(t.ctx, conn, hs)
+	go t.acceptAndPump(t.ctx, conn, hs, ssPiece, ssOK)
 }
 
 // connectAndPump dials, handshakes, registers on success, and then pumps the
 // connection's events back to the actor until it disconnects. It runs
 // entirely off the actor goroutine; the only actor state it touches is via
 // events sent over t.events.
-func (t *Torrent) connectAndPump(ctx context.Context, pi tracker.PeerInfo) {
+func (t *Torrent) connectAndPump(ctx context.Context, pi tracker.PeerInfo, ssPiece int, ssOK bool) {
 	defer t.wg.Done()
 
 	client, err := peer.NewClient(pi, t.peerTorrentInfo(), t.cfg.OurID,
-		peer.Callbacks{HasPiece: t.hasPieceSafe, ReadBlock: t.readBlockSafe, MetadataBytes: t.metadataBytesSafe, UploadOnly: t.uploadOnlySafe},
+		t.buildCallbacks(ssPiece, ssOK),
 		t.peerLimits(pi.Addr()), t.cfg.ProxyDialer.DialContext)
 	if err != nil {
 		t.sendEvent(ctx, eventDialFailed{addr: pi.Addr()})
@@ -366,15 +368,27 @@ func (t *Torrent) connectAndPump(ctx context.Context, pi tracker.PeerInfo) {
 	t.registerAndPump(ctx, &peerConn{addr: pi.Addr(), client: client, peerInfo: pi})
 }
 
+// buildCallbacks assembles the peer.Callbacks for a new connection. ssOK
+// bakes in a fixed InitialHaves closure over the single piece super-seeding
+// assigned this peer at dial/acceptIncoming time — see superSeedAssign for
+// why that decision can't be made any later than this.
+func (t *Torrent) buildCallbacks(ssPiece int, ssOK bool) peer.Callbacks {
+	cb := peer.Callbacks{HasPiece: t.hasPieceSafe, ReadBlock: t.readBlockSafe, MetadataBytes: t.metadataBytesSafe, UploadOnly: t.uploadOnlySafe}
+	if ssOK {
+		cb.InitialHaves = func() (int, bool) { return ssPiece, true }
+	}
+	return cb
+}
+
 // acceptAndPump completes the reply half of an inbound handshake and then
 // pumps the connection exactly like connectAndPump — the two differ only in
 // how the *peer.Client comes to exist.
-func (t *Torrent) acceptAndPump(ctx context.Context, conn net.Conn, hs *peer.Handshake) {
+func (t *Torrent) acceptAndPump(ctx context.Context, conn net.Conn, hs *peer.Handshake, ssPiece int, ssOK bool) {
 	defer t.wg.Done()
 
 	addr := conn.RemoteAddr().String()
 	client, err := peer.AcceptClient(conn, hs, t.peerTorrentInfo(), t.cfg.OurID,
-		peer.Callbacks{HasPiece: t.hasPieceSafe, ReadBlock: t.readBlockSafe, MetadataBytes: t.metadataBytesSafe, UploadOnly: t.uploadOnlySafe},
+		t.buildCallbacks(ssPiece, ssOK),
 		t.peerLimits(addr))
 	if err != nil {
 		t.sendEvent(ctx, eventDialFailed{addr: addr})
@@ -488,6 +502,9 @@ func (t *Torrent) removePeer(pc *peerConn) {
 		t.pick.Availability().RemovePeer(pc.client.BitfieldSnapshot())
 	}
 	t.abandonMetadataFetch(pc)
+	if t.superSeed != nil {
+		delete(t.superSeed.assigned, pc.addr)
+	}
 }
 
 // flushUploaded folds however many more bytes pc has served since the last
@@ -532,8 +549,14 @@ func (t *Torrent) onPeerControl(pc *peerConn, ev peer.Event) {
 		// against the first; see the package-level note in torrent.go on
 		// availability accounting for why this is an accepted simplification.
 		t.pick.Availability().AddPeer(pc.client.BitfieldSnapshot())
+		if t.superSeed != nil {
+			if assigned, ok := t.superSeed.assigned[pc.addr]; ok && pc.client.BitfieldSnapshot().Has(assigned) {
+				t.maybeSuperSeedAdvance(pc, assigned)
+			}
+		}
 	case peer.EventHave:
 		t.pick.Availability().Add(int(ev.PieceIndex))
+		t.maybeSuperSeedAdvance(pc, int(ev.PieceIndex))
 	case peer.EventRejectRequest:
 		// BEP 6: the peer has explicitly told us this block is not coming,
 		// rather than us finding out only once the picker's own

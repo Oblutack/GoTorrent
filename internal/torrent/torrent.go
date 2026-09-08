@@ -155,6 +155,18 @@ type Config struct {
 	// end arrive early regardless of PickerStrategy, so a player pointed at
 	// the (still incomplete) file can open it and show something.
 	FirstLastPieceFirst bool
+	// SuperSeeding (BEP 16) makes a from-scratch seed advertise having zero
+	// pieces at first, revealing exactly one piece at a time to each peer
+	// and only handing that peer a new one once its own Have/Bitfield shows
+	// it obtained the one already assigned — spreading the first copies of
+	// a brand-new torrent across the swarm instead of every peer racing to
+	// request the same handful of pieces from the only real source. Applies
+	// only once this torrent has actually reached Seeding (see
+	// Torrent.superSeeding); harmless, and a no-op, on one that starts out
+	// incomplete. Does not affect what data this client actually serves —
+	// Callbacks.HasPiece/ReadBlock have no peer-identity parameter to
+	// restrict by — only what is advertised.
+	SuperSeeding bool
 }
 
 // peerConn is one connected peer plus the bookkeeping the actor needs that
@@ -249,6 +261,11 @@ type Torrent struct {
 	// metadataFetch tracks an in-progress BEP 9 metadata download. Non-nil
 	// only while mi is nil; see maybeStartMetadataFetch.
 	metadataFetch *metadataAssembly
+
+	// superSeed is BEP 16's state, non-nil only while Config.SuperSeeding is
+	// set and super-seeding hasn't graduated to ordinary seeding yet — see
+	// superseed.go.
+	superSeed *superSeedState
 
 	// filePriorities is one entry per file, set from Config.FilePriorities
 	// once metadata is known (openMetadata) and updated by SetFilePriority
@@ -638,6 +655,10 @@ func (t *Torrent) openMetadata(mi *metainfo.MetaInfo) error {
 		return fmt.Errorf("applying file priorities: %w", err)
 	}
 	t.pick = pk
+
+	if t.cfg.SuperSeeding {
+		t.superSeed = newSuperSeedState(mi.NumPieces())
+	}
 
 	t.setState(StateCheckingFiles)
 
