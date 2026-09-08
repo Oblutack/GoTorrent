@@ -113,6 +113,12 @@ func runFleet() {
 	ipFilterURL := flag.String("ip-filter-url", "", "URL to auto-update the IP filter from, in addition to -ip-filter (empty = disabled)")
 	ipFilterFormat := flag.String("ip-filter-format", "", `Blocklist format: "dat" or "p2p" (empty = guess from -ip-filter/-ip-filter-url's extension)`)
 	ipFilterUpdateInterval := flag.Duration("ip-filter-update-interval", 0, "How often to re-fetch -ip-filter-url, e.g. 12h (0 = 24h default)")
+	proxyType := flag.String("proxy-type", "", `Outbound proxy for peer connections and HTTP(S) tracker announces: "socks5" or "http" (empty = disabled; UDP trackers and DHT are never proxied)`)
+	proxyAddress := flag.String("proxy-address", "", "Proxy address, as \"host:port\"")
+	proxyUsername := flag.String("proxy-username", "", "Proxy username, if it requires authentication")
+	proxyPassword := flag.String("proxy-password", "", "Proxy password, if it requires authentication")
+	proxyDNS := flag.Bool("proxy-dns", false, "Resolve hostnames through the SOCKS5 proxy itself instead of locally (meaningless for -proxy-type=http)")
+	anonymousMode := flag.Bool("anonymous-mode", false, "Strip the client fingerprint from the peer ID and disable LSD; requires -proxy-type to also be set")
 	verbose := flag.Bool("verbose", false, "Enable verbose logging")
 	flag.Parse()
 
@@ -153,6 +159,12 @@ func runFleet() {
 		IPFilterURL:            *ipFilterURL,
 		IPFilterFormat:         *ipFilterFormat,
 		IPFilterUpdateInterval: *ipFilterUpdateInterval,
+		ProxyType:              *proxyType,
+		ProxyAddress:           *proxyAddress,
+		ProxyUsername:          *proxyUsername,
+		ProxyPassword:          *proxyPassword,
+		ProxyDNS:               *proxyDNS,
+		AnonymousMode:          *anonymousMode,
 	}
 	if *sequential {
 		defaults.PickerStrategy = picker.Sequential
