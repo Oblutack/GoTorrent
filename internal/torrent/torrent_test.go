@@ -145,7 +145,15 @@ type fakeUtMetadataMsg struct {
 
 func newFakeSeeder(t *testing.T, mi *metainfo.MetaInfo, content []byte) *fakeSeeder {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	return newFakeSeederAt(t, "127.0.0.1:0", mi, content)
+}
+
+// newFakeSeederAt is newFakeSeeder with an explicit bind address — 3.7's
+// IPv6 test uses "[::1]:0" to prove a real transfer works over an IPv6
+// loopback connection, not just IPv4.
+func newFakeSeederAt(t *testing.T, addr string, mi *metainfo.MetaInfo, content []byte) *fakeSeeder {
+	t.Helper()
+	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
