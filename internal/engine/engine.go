@@ -83,6 +83,10 @@ type Defaults struct {
 	// means unlimited, for both.
 	SeedRatioLimit float64
 	SeedTimeLimit  time.Duration
+	// SeedLimitAction chooses what happens beyond the automatic pause when
+	// SeedRatioLimit/SeedTimeLimit is reached — see SeedLimitAction's own
+	// doc comment. SeedLimitActionPause (the default) does nothing further.
+	SeedLimitAction SeedLimitAction
 	// FirstLastPieceFirst applies to every torrent this Engine starts — see
 	// torrent.Config.FirstLastPieceFirst.
 	FirstLastPieceFirst bool
@@ -468,6 +472,11 @@ func (e *Engine) AddWithOptions(source, downloadDir string, opts AddOptions) (me
 		go e.reevaluateQueue()
 		go e.dispatchCompletionHook(hash, s)
 	})
+	// Same constraint as OnStateChange above — must not block or call back
+	// into tr synchronously, since it fires from the actor's own tick
+	// goroutine. A no-op when SeedLimitAction is the default (Pause): the
+	// pause itself already happened inside the actor before this fires.
+	tr.OnSeedLimitReached(func() { go e.applySeedLimitAction(hash) })
 
 	go func() {
 		if err := tr.Run(context.Background()); err != nil {

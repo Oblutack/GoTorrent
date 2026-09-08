@@ -92,6 +92,7 @@ func (e *Engine) MoveData(hash metainfo.Hash, newDir string) error {
 		go e.reevaluateQueue()
 		go e.dispatchCompletionHook(hash, s)
 	})
+	tr.OnSeedLimitReached(func() { go e.applySeedLimitAction(hash) })
 	go func() {
 		if err := tr.Run(context.Background()); err != nil {
 			logger.Error.Printf("engine: torrent %s: %v\n", hash, err)
