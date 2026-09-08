@@ -74,6 +74,15 @@ type Defaults struct {
 	// means unlimited, for both.
 	SeedRatioLimit float64
 	SeedTimeLimit  time.Duration
+	// FirstLastPieceFirst applies to every torrent this Engine starts — see
+	// torrent.Config.FirstLastPieceFirst.
+	FirstLastPieceFirst bool
+	// MaxActiveDownloads, MaxActiveSeeds, and MaxActiveTotal cap how many
+	// managed torrents may be Downloading, Seeding, or either at once — see
+	// queue.go. 0 (the default, for each independently) means unlimited.
+	MaxActiveDownloads int
+	MaxActiveSeeds     int
+	MaxActiveTotal     int
 }
 
 // Summary is a point-in-time view of one managed torrent, safe to read from
@@ -100,6 +109,13 @@ type Summary struct {
 	// a caller (the CLI today, any future UI) show the user which torrents
 	// BEP 27 applies to, not to drive any behavior itself.
 	Private bool
+	// QueuePosition and ForceStart are the queue's view of this torrent —
+	// see queue.go. QueuePosition is assigned in Add order and only ever
+	// meaningful relative to other managed torrents' positions; it is not
+	// persisted across a restart (same known-gap shape as 3.2/3.4's runtime
+	// state), so a reload starts everyone back at Add order.
+	QueuePosition int
+	ForceStart    bool
 }
 
 // managedTorrent is what the Engine tracks per torrent beyond what Torrent
@@ -111,6 +127,14 @@ type managedTorrent struct {
 	source      string
 	downloadDir string
 	displayName string
+
+	// queuePos, forceStart, and queueHeld are queue.go's bookkeeping — see
+	// its package doc comment for what each means and reevaluateQueue for
+	// how they're used. All three are guarded by Engine.mu like every other
+	// managedTorrent field.
+	queuePos   int
+	forceStart bool
+	queueHeld  bool
 }
 
 // displayNameFor picks the best name available for mt — see Summary.Name.
@@ -158,6 +182,10 @@ type Engine struct {
 	// many inbound connections are currently open per source IP.
 	inboundMu     sync.Mutex
 	inboundCounts map[string]int
+
+	// nextQueuePos assigns each newly-Added torrent's initial queue
+	// position — see queue.go.
+	nextQueuePos int
 }
 
 // New creates an Engine whose manifest lives under stateDir. It does not load
@@ -229,13 +257,20 @@ func (e *Engine) Add(source, downloadDir string) (metainfo.Hash, error) {
 		return metainfo.Hash{}, fmt.Errorf("engine: creating torrent: %w", err)
 	}
 
-	mt := &managedTorrent{t: tr, source: source, downloadDir: downloadDir, displayName: dn}
+	mt := &managedTorrent{t: tr, source: source, downloadDir: downloadDir, displayName: dn, queuePos: e.nextQueuePos}
+	e.nextQueuePos++
 	e.torrents[hash] = mt
 
 	if err := e.saveManifestLocked(); err != nil {
 		delete(e.torrents, hash)
 		return metainfo.Hash{}, fmt.Errorf("engine: persisting manifest: %w", err)
 	}
+
+	// Must be set before Run (see OnStateChange's own doc comment), and must
+	// never call back into tr itself from the actor goroutine it fires on —
+	// reevaluateQueue can Pause/Resume tr, which would deadlock if run
+	// synchronously here, so this only ever schedules it to run separately.
+	tr.OnStateChange(func(torrent.State) { go e.reevaluateQueue() })
 
 	go func() {
 		if err := tr.Run(context.Background()); err != nil {
@@ -287,6 +322,10 @@ func (e *Engine) Remove(hash metainfo.Hash) error {
 	// holding e.mu; List/Get calls a Remove-in-progress torrent would
 	// otherwise deadlock behind still need to work.
 	mt.t.Stop()
+	// A removed torrent may have been occupying a slot a queued one was
+	// waiting on; reconcile promptly rather than waiting for the periodic
+	// safety-net pass (see queue.go).
+	e.reevaluateQueue()
 	return nil
 }
 
@@ -315,12 +354,14 @@ func (e *Engine) List() []Summary {
 			private = mi.Info.Private
 		}
 		out = append(out, Summary{
-			InfoHash:    hash,
-			Source:      mt.source,
-			Name:        displayNameFor(mt),
-			DownloadDir: mt.downloadDir,
-			Stats:       mt.t.Stats(),
-			Private:     private,
+			InfoHash:      hash,
+			Source:        mt.source,
+			Name:          displayNameFor(mt),
+			DownloadDir:   mt.downloadDir,
+			Stats:         mt.t.Stats(),
+			Private:       private,
+			QueuePosition: mt.queuePos,
+			ForceStart:    mt.forceStart,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].InfoHash.String() < out[j].InfoHash.String() })
@@ -707,15 +748,16 @@ func (e *Engine) Shutdown() {
 
 func (e *Engine) torrentConfig(downloadDir string) torrent.Config {
 	cfg := torrent.Config{
-		DownloadDir:    downloadDir,
-		ResumeDir:      e.defaults.ResumeDir,
-		ListenPort:     e.defaults.ListenPort,
-		Allocation:     e.defaults.Allocation,
-		PickerStrategy: e.defaults.PickerStrategy,
-		DownLimit:      e.defaults.DownLimit,
-		UpLimit:        e.defaults.UpLimit,
-		SeedRatioLimit: e.defaults.SeedRatioLimit,
-		SeedTimeLimit:  e.defaults.SeedTimeLimit,
+		DownloadDir:         downloadDir,
+		ResumeDir:           e.defaults.ResumeDir,
+		ListenPort:          e.defaults.ListenPort,
+		Allocation:          e.defaults.Allocation,
+		PickerStrategy:      e.defaults.PickerStrategy,
+		DownLimit:           e.defaults.DownLimit,
+		UpLimit:             e.defaults.UpLimit,
+		SeedRatioLimit:      e.defaults.SeedRatioLimit,
+		SeedTimeLimit:       e.defaults.SeedTimeLimit,
+		FirstLastPieceFirst: e.defaults.FirstLastPieceFirst,
 	}
 	// Only assign when non-nil: cfg.DHT is a torrent.DHTClient interface, and
 	// assigning a nil *dht.DHT to it would leave the interface non-nil (it
