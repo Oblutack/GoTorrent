@@ -46,6 +46,11 @@ func main() {
 	maxActiveDownloads := flag.Int("max-active-downloads", 0, "Maximum torrents actively downloading at once across the fleet (0 = unlimited)")
 	maxActiveSeeds := flag.Int("max-active-seeds", 0, "Maximum torrents actively seeding at once across the fleet (0 = unlimited)")
 	maxActiveTotal := flag.Int("max-active", 0, "Maximum torrents active (downloading or seeding) at once across the fleet (0 = unlimited)")
+	uploadSlots := flag.Int("upload-slots", 0, "Peers unchoked for upload at once, per torrent (0 = choker default)")
+	excludeLAN := flag.Bool("exclude-lan-limits", false, "Don't apply -down-limit/-up-limit to peers on a private or loopback address")
+	altDownLimitKB := flag.Uint("alt-down-limit", 0, "Download rate cap in KiB/s while -alt-schedule is active (0 = unlimited)")
+	altUpLimitKB := flag.Uint("alt-up-limit", 0, "Upload rate cap in KiB/s while -alt-schedule is active (0 = unlimited)")
+	altSchedule := flag.String("alt-schedule", "", `Weekly window to apply -alt-down-limit/-alt-up-limit instead of -down-limit/-up-limit, e.g. "22:00-06:00" or "Mon,Tue,Wed,Thu,Fri 09:00-17:00" (empty = disabled)`)
 	verbose := flag.Bool("verbose", false, "Enable verbose logging")
 	flag.Parse()
 
@@ -61,15 +66,19 @@ func main() {
 	}
 
 	defaults := engine.Defaults{
-		DownloadDir:         *downloadDir,
-		ListenPort:          uint16(*listenPort),
-		BindAddress:         *bindAddress,
-		SeedRatioLimit:      *ratioLimit,
-		SeedTimeLimit:       *seedTimeLimit,
-		FirstLastPieceFirst: *firstLastPiece,
-		MaxActiveDownloads:  *maxActiveDownloads,
-		MaxActiveSeeds:      *maxActiveSeeds,
-		MaxActiveTotal:      *maxActiveTotal,
+		DownloadDir:          *downloadDir,
+		ListenPort:           uint16(*listenPort),
+		BindAddress:          *bindAddress,
+		SeedRatioLimit:       *ratioLimit,
+		SeedTimeLimit:        *seedTimeLimit,
+		FirstLastPieceFirst:  *firstLastPiece,
+		MaxActiveDownloads:   *maxActiveDownloads,
+		MaxActiveSeeds:       *maxActiveSeeds,
+		MaxActiveTotal:       *maxActiveTotal,
+		UploadSlots:          *uploadSlots,
+		ExcludeLANFromLimits: *excludeLAN,
+		AltDownLimit:         int64(*altDownLimitKB) * 1024,
+		AltUpLimit:           int64(*altUpLimitKB) * 1024,
 	}
 	if *sequential {
 		defaults.PickerStrategy = picker.Sequential
@@ -79,6 +88,13 @@ func main() {
 	}
 	if *upLimitKB > 0 {
 		defaults.UpLimit = ratelimit.New(int64(*upLimitKB) * 1024)
+	}
+	if *altSchedule != "" {
+		sched, err := engine.ParseSchedule(*altSchedule)
+		if err != nil {
+			logger.Error.Fatalf("Error parsing -alt-schedule: %v\n", err)
+		}
+		defaults.AltSchedule = &sched
 	}
 
 	e, err := engine.New(dir, defaults)
@@ -124,6 +140,8 @@ func main() {
 	// OnStateChange callback triggers it); this just adds the periodic
 	// safety-net pass, and can start any time before or after Load/Add.
 	e.StartQueue(context.Background())
+	// A no-op unless -alt-schedule was given.
+	e.StartAltSpeedSchedule(context.Background())
 	// All three must be up before Load/Add so every torrent - reloaded from a
 	// previous run included - gets a working DHT peer source from the start.
 	if err := e.Load(); err != nil {
