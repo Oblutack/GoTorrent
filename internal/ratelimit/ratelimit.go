@@ -61,6 +61,20 @@ func (l *Limiter) SetLimit(bytesPerSecond int64) {
 	}
 }
 
+// Limit reports the currently configured rate in bytes/sec, or 0 if
+// unlimited — the inverse of New/SetLimit's bytesPerSecond argument, for a
+// caller that needs to remember a rate it did not itself choose (3.3's
+// alternative-speed scheduler restoring the "normal" rate after a scheduled
+// window ends).
+func (l *Limiter) Limit() int64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.limit <= 0 {
+		return 0
+	}
+	return int64(l.limit)
+}
+
 // Wait blocks until n bytes' worth of budget is available, or done is
 // closed first. It reports whether the budget was granted; false means done
 // fired and the reservation was refunded, so the caller made no progress and

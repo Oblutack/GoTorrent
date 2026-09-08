@@ -226,14 +226,30 @@ type Event struct {
 // is generous headroom rather than a tight budget.
 const eventQueueSize = 256
 
-// Limits bounds how fast one connection may exchange data, drawing from a
-// shared budget its owner hands out. A nil field means unlimited on that
-// direction. The same *ratelimit.Limiter passed to every Client in a swarm
-// (or every Client the process holds, for a global cap) is what makes the
-// limit apply in aggregate rather than per-peer.
+// Limits bounds how fast one connection may exchange data by waiting on
+// every limiter in Down/Up in turn — nil or empty means unlimited on that
+// direction. Waiting on each sequentially rather than jointly is a
+// deliberate simplification: worst case it is a little more conservative
+// than the true minimum of several simultaneously-contended limiters, never
+// less, so a connection carrying both a per-torrent and a process-wide cap
+// (3.3) never exceeds either one. The same *ratelimit.Limiter passed to
+// every Client sharing a budget (a torrent, or the whole process) is what
+// makes a limit apply in aggregate rather than per-peer.
 type Limits struct {
-	Down *ratelimit.Limiter
-	Up   *ratelimit.Limiter
+	Down []*ratelimit.Limiter
+	Up   []*ratelimit.Limiter
+}
+
+// wait blocks until every limiter in ls grants n bytes' worth of budget, or
+// done fires first — see Limits' doc comment for why this is sequential
+// rather than joint.
+func waitAll(ls []*ratelimit.Limiter, done <-chan struct{}, n int) bool {
+	for _, l := range ls {
+		if !l.Wait(done, n) {
+			return false
+		}
+	}
+	return true
 }
 
 // Callbacks are the owner's hooks for serving another peer's requests. All
@@ -420,13 +436,6 @@ func AcceptClient(
 // newClient builds a Client once a handshake has been exchanged in either
 // direction, shared by NewClient and AcceptClient.
 func newClient(conn net.Conn, torrent TorrentInfo, ourID [20]byte, peerHandshake *Handshake, callbacks Callbacks, limits Limits) *Client {
-	if limits.Down == nil {
-		limits.Down = ratelimit.Unlimited()
-	}
-	if limits.Up == nil {
-		limits.Up = ratelimit.Unlimited()
-	}
-
 	c := &Client{
 		Conn:              conn,
 		OurID:             ourID,
@@ -709,7 +718,7 @@ func (c *Client) handleMessage(msg *Message) bool {
 		// connection's next ReadMessage call — the natural way to cap
 		// download rate without a separate reader goroutine or buffering
 		// scheme, since nothing else reads from this peer meanwhile.
-		if !c.limits.Down.Wait(c.done, len(piecePayload.Block)) {
+		if !waitAll(c.limits.Down, c.done, len(piecePayload.Block)) {
 			return false
 		}
 		c.lastPieceReceived.Store(time.Now().Unix())
@@ -909,7 +918,7 @@ func (c *Client) sendLoop() {
 		case <-c.done:
 			return
 		case frame := <-c.outbound:
-			if !c.limits.Up.Wait(c.done, len(frame)) {
+			if !waitAll(c.limits.Up, c.done, len(frame)) {
 				return
 			}
 			if err := c.Conn.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
