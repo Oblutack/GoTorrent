@@ -7,6 +7,7 @@ import (
 	"sort"
 
 	"github.com/Oblutack/GoTorrent/internal/bencode"
+	"github.com/Oblutack/GoTorrent/internal/logger"
 	"github.com/Oblutack/GoTorrent/internal/metainfo"
 )
 
@@ -16,7 +17,13 @@ import (
 //
 // v2: torrent_path (a filesystem path only) became source (a filesystem path
 // or a magnet: URI), when Add gained magnet support.
-const manifestVersion = 2
+// v3: added category and tags (3.5) — unlike queue position or per-torrent
+// rate limits, these are meant to survive a restart. No migration from v2:
+// same precedent as the v1->v2 bump. A v2 manifest is not read by a v3
+// build (see readManifest's version check) — the fleet it recorded has to
+// be re-Added by hand, though nothing about the actual downloaded data or
+// the .torrent files/magnets themselves is touched or lost.
+const manifestVersion = 3
 
 var manifestMagic = [4]byte{'G', 'T', 'F', 'L'}
 
@@ -26,6 +33,8 @@ type manifestEntry struct {
 	InfoHash    metainfo.Hash
 	Source      string
 	DownloadDir string
+	Category    string
+	Tags        []string
 }
 
 // manifestEntryWire and manifestWire are the exact bencoded shapes, kept
@@ -33,9 +42,11 @@ type manifestEntry struct {
 // (readable in the file on disk) rather than needing bencode to know about
 // the type.
 type manifestEntryWire struct {
-	InfoHash    string `bencode:"info_hash"`
-	Source      string `bencode:"source"`
-	DownloadDir string `bencode:"download_dir"`
+	InfoHash    string   `bencode:"info_hash"`
+	Source      string   `bencode:"source"`
+	DownloadDir string   `bencode:"download_dir"`
+	Category    string   `bencode:"category,omitempty"`
+	Tags        []string `bencode:"tags,omitempty"`
 }
 
 type manifestWire struct {
@@ -62,6 +73,8 @@ func (e *Engine) saveManifestLocked() error {
 			InfoHash:    hash.String(),
 			Source:      mt.source,
 			DownloadDir: mt.downloadDir,
+			Category:    mt.category,
+			Tags:        mt.tags,
 		})
 	}
 	sort.Slice(wire.Entries, func(i, j int) bool { return wire.Entries[i].InfoHash < wire.Entries[j].InfoHash })
@@ -96,8 +109,20 @@ func (e *Engine) readManifest() ([]manifestEntry, error) {
 	if err := bencode.Unmarshal(data, &wire); err != nil {
 		return nil, fmt.Errorf("engine: decoding manifest: %w", err)
 	}
-	if wire.Magic != string(manifestMagic[:]) || wire.Version != manifestVersion {
+	if wire.Magic != string(manifestMagic[:]) {
 		return nil, fmt.Errorf("engine: manifest has an unrecognised format")
+	}
+	if wire.Version != manifestVersion {
+		// A stale-but-recognisable version, not corruption: honor the
+		// package doc's promise that this is "treated as absent rather
+		// than corrupt" (Load swallows os.ErrNotExist) instead of the
+		// fatal error a plain mismatch used to bubble all the way up to
+		// main.go — a version bump must not brick an existing fleet's
+		// manifest. Every torrent's own .torrent file/magnet is untouched,
+		// so re-adding is enough to pick the fleet back up; just not
+		// automatically.
+		logger.Warning.Printf("engine: manifest is format version %d, this build writes version %d - starting with an empty fleet instead of one it can't fully understand\n", wire.Version, manifestVersion)
+		return nil, os.ErrNotExist
 	}
 
 	entries := make([]manifestEntry, 0, len(wire.Entries))
@@ -110,6 +135,8 @@ func (e *Engine) readManifest() ([]manifestEntry, error) {
 			InfoHash:    hash,
 			Source:      we.Source,
 			DownloadDir: we.DownloadDir,
+			Category:    we.Category,
+			Tags:        we.Tags,
 		})
 	}
 	return entries, nil

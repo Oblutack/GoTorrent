@@ -66,6 +66,7 @@ type Defaults struct {
 	// existed.
 	BindAddress    string
 	Allocation     storage.Allocation
+	ContentLayout  storage.ContentLayout
 	PickerStrategy picker.Strategy
 	DownLimit      *ratelimit.Limiter
 	UpLimit        *ratelimit.Limiter
@@ -96,6 +97,18 @@ type Defaults struct {
 	AltDownLimit int64
 	AltUpLimit   int64
 	AltSchedule  *Schedule
+	// OnComplete, if non-empty, is a shell command run (via the platform
+	// shell — cmd /C on Windows, /bin/sh -c elsewhere) the first time a
+	// torrent reaches StateSeeding in this process run — see completion.go.
+	// %N expands to the torrent's name, %F to ContentPath(), %D to its
+	// download directory; %% is a literal percent sign.
+	OnComplete string
+	// CategoryPaths maps a category name (AddOptions.Category) to the
+	// download directory a torrent Added under that category uses when its
+	// own downloadDir argument is empty — checked before falling back to
+	// DownloadDir. Changing a torrent's category later (SetCategory) does
+	// not move its files; see MoveData for that.
+	CategoryPaths map[string]string
 }
 
 // Summary is a point-in-time view of one managed torrent, safe to read from
@@ -129,6 +142,11 @@ type Summary struct {
 	// state), so a reload starts everyone back at Add order.
 	QueuePosition int
 	ForceStart    bool
+	// Category and Tags are 3.5's organization metadata — see AddOptions,
+	// SetCategory, and SetTags. Both are persisted in the manifest, unlike
+	// QueuePosition/ForceStart.
+	Category string
+	Tags     []string
 }
 
 // managedTorrent is what the Engine tracks per torrent beyond what Torrent
@@ -159,6 +177,17 @@ type managedTorrent struct {
 	// torrent actor is needed.
 	downLimit *ratelimit.Limiter
 	upLimit   *ratelimit.Limiter
+
+	// category and tags are 3.5's organization metadata — persisted in the
+	// manifest (manifest.go), unlike queuePos/forceStart/queueHeld above.
+	category string
+	tags     []string
+
+	// completionHookFired guards Defaults.OnComplete (completion.go) so it
+	// runs at most once per process run for this torrent — set the instant
+	// the hook is dispatched, checked by the same OnStateChange callback
+	// queue.go already wires for every Added torrent.
+	completionHookFired bool
 }
 
 // displayNameFor picks the best name available for mt — see Summary.Name.
@@ -252,14 +281,34 @@ func New(stateDir string, defaults Defaults) (*Engine, error) {
 	return e, nil
 }
 
+// AddOptions carries the parts of Add that most callers don't need — see
+// AddWithOptions.
+type AddOptions struct {
+	// Category, if non-empty, records this torrent under a category — see
+	// Defaults.CategoryPaths (consulted only when downloadDir is empty) and
+	// SetCategory (to change it later; does not move existing files).
+	Category string
+	// Tags are free-form labels, persisted but not otherwise acted on —
+	// nothing in this package filters or groups by them today. Copied, not
+	// aliased, so the caller's slice can be reused.
+	Tags []string
+}
+
 // Add starts a torrent running under the engine's management from either a
 // .torrent file path or a magnet: URI — anything metainfo.ParseMagnet
 // recognises by its "magnet:" prefix is treated as the latter. downloadDir
 // overrides the engine's default for this torrent alone; pass "" to use the
-// default. The torrent is persisted to the manifest before it is started, so
-// Add either leaves the fleet exactly as it was or commits both the
-// in-memory and on-disk state together.
+// default (or, with opts.Category set, that category's path — see
+// Defaults.CategoryPaths). Equivalent to AddWithOptions with a zero
+// AddOptions.
 func (e *Engine) Add(source, downloadDir string) (metainfo.Hash, error) {
+	return e.AddWithOptions(source, downloadDir, AddOptions{})
+}
+
+// AddWithOptions is Add plus category/tags. The torrent is persisted to the
+// manifest before it is started, so it either leaves the fleet exactly as
+// it was or commits both the in-memory and on-disk state together.
+func (e *Engine) AddWithOptions(source, downloadDir string, opts AddOptions) (metainfo.Hash, error) {
 	var (
 		hash     metainfo.Hash
 		mi       *metainfo.MetaInfo
@@ -286,6 +335,9 @@ func (e *Engine) Add(source, downloadDir string) (metainfo.Hash, error) {
 
 	if _, exists := e.torrents[hash]; exists {
 		return hash, fmt.Errorf("engine: %s is already added", hash)
+	}
+	if downloadDir == "" && opts.Category != "" {
+		downloadDir = e.defaults.CategoryPaths[opts.Category]
 	}
 	if downloadDir == "" {
 		downloadDir = e.defaults.DownloadDir
@@ -321,6 +373,7 @@ func (e *Engine) Add(source, downloadDir string) (metainfo.Hash, error) {
 	mt := &managedTorrent{
 		t: tr, source: source, downloadDir: downloadDir, displayName: dn,
 		queuePos: e.nextQueuePos, downLimit: downLimit, upLimit: upLimit,
+		category: opts.Category, tags: append([]string(nil), opts.Tags...),
 	}
 	e.nextQueuePos++
 	e.torrents[hash] = mt
@@ -334,7 +387,13 @@ func (e *Engine) Add(source, downloadDir string) (metainfo.Hash, error) {
 	// never call back into tr itself from the actor goroutine it fires on —
 	// reevaluateQueue can Pause/Resume tr, which would deadlock if run
 	// synchronously here, so this only ever schedules it to run separately.
-	tr.OnStateChange(func(torrent.State) { go e.reevaluateQueue() })
+	// dispatchCompletionHook has the same constraint (it may run an external
+	// program, which must not block the actor either) so it goes through the
+	// same detached goroutine.
+	tr.OnStateChange(func(s torrent.State) {
+		go e.reevaluateQueue()
+		go e.dispatchCompletionHook(hash, s)
+	})
 
 	go func() {
 		if err := tr.Run(context.Background()); err != nil {
@@ -358,7 +417,8 @@ func (e *Engine) Load() error {
 		return fmt.Errorf("engine: reading manifest: %w", err)
 	}
 	for _, ent := range entries {
-		if _, err := e.Add(ent.Source, ent.DownloadDir); err != nil {
+		opts := AddOptions{Category: ent.Category, Tags: ent.Tags}
+		if _, err := e.AddWithOptions(ent.Source, ent.DownloadDir, opts); err != nil {
 			logger.Warning.Printf("engine: could not reload %s: %v\n", ent.Source, err)
 		}
 	}
@@ -426,6 +486,8 @@ func (e *Engine) List() []Summary {
 			Private:       private,
 			QueuePosition: mt.queuePos,
 			ForceStart:    mt.forceStart,
+			Category:      mt.category,
+			Tags:          append([]string(nil), mt.tags...),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].InfoHash.String() < out[j].InfoHash.String() })
@@ -820,6 +882,7 @@ func (e *Engine) torrentConfig(downloadDir string) torrent.Config {
 		ResumeDir:            e.defaults.ResumeDir,
 		ListenPort:           e.defaults.ListenPort,
 		Allocation:           e.defaults.Allocation,
+		ContentLayout:        e.defaults.ContentLayout,
 		PickerStrategy:       e.defaults.PickerStrategy,
 		SeedRatioLimit:       e.defaults.SeedRatioLimit,
 		SeedTimeLimit:        e.defaults.SeedTimeLimit,
