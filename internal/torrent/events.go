@@ -22,6 +22,7 @@ const (
 	ctrlRecheck
 	ctrlSetMetadata
 	ctrlSetFilePriority
+	ctrlAddTracker
 	ctrlStats
 )
 
@@ -33,9 +34,11 @@ type controlMsg struct {
 	// fileIndex and priority are set for ctrlSetFilePriority.
 	fileIndex int
 	priority  picker.Priority
+	// trackerURL is set for ctrlAddTracker.
+	trackerURL string
 
 	// errReply receives the result of Pause/Resume/Recheck/SetMetadata/
-	// SetFilePriority.
+	// SetFilePriority/AddTracker.
 	errReply chan error
 	// statsReply receives the actor-owned half of a Stats snapshot.
 	statsReply chan Stats

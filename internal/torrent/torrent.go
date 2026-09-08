@@ -204,6 +204,15 @@ type Torrent struct {
 	// mutates in place.
 	haveSnapshot atomic.Pointer[bitfield.Bitfield]
 
+	// extraTrackers is every URL added at runtime via AddTracker (3.6),
+	// written only by the actor (doAddTracker) but read by announceLoop/
+	// announceOnce, which run on their own spawned goroutines — the same
+	// publish-once-read-many shape as mi/haveSnapshot above, hence the same
+	// atomic.Pointer treatment. Nil means none added. Not persisted: a
+	// reloaded torrent starts back with just what its own .torrent/magnet
+	// already specified.
+	extraTrackers atomic.Pointer[[]string]
+
 	state atomic.Int32 // State, readable from any goroutine
 
 	// --- actor-owned: touched only from run() in run.go ---
@@ -657,6 +666,48 @@ func (t *Torrent) SetFilePriority(fileIndex int, priority picker.Priority) error
 	case <-t.done:
 		return ErrClosed
 	}
+}
+
+// AddTracker adds url to this torrent's tracker list at runtime (3.6), as
+// its own announce-list tier (BEP 12) — the announce loop picks it up on
+// its next iteration (or immediately, if the torrent is Paused and later
+// Resumed) without needing a restart. Not persisted anywhere: a torrent
+// reloaded from the engine's manifest starts back with just what its own
+// .torrent/magnet already specified — see ExportTorrentFile if the point is
+// to keep it.
+func (t *Torrent) AddTracker(url string) error {
+	resp := make(chan error, 1)
+	select {
+	case t.control <- controlMsg{kind: ctrlAddTracker, trackerURL: url, errReply: resp}:
+	case <-t.done:
+		return ErrClosed
+	}
+	select {
+	case err := <-resp:
+		return err
+	case <-t.done:
+		return ErrClosed
+	}
+}
+
+// ExportTorrentFile reconstructs a standalone .torrent file's raw bytes
+// from this torrent's current metadata and tracker list (including
+// anything AddTracker has added) — see metainfo.Export. This is what lets
+// a magnet-added torrent be saved as an ordinary .torrent once its
+// metadata is known. Returns metainfo.ErrNoMetadata before that. Safe to
+// call from any goroutine: mi and extraTrackers are both published via
+// atomic.Pointer specifically so reads like this one never need to go
+// through the actor.
+func (t *Torrent) ExportTorrentFile() ([]byte, error) {
+	mi := t.mi.Load()
+	if mi == nil {
+		return nil, metainfo.ErrNoMetadata
+	}
+	var trackers []string
+	if p := t.extraTrackers.Load(); p != nil {
+		trackers = *p
+	}
+	return metainfo.Export(mi, trackers)
 }
 
 // Pause stops network activity and peer connections but keeps piece state, so

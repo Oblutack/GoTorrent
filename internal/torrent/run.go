@@ -89,6 +89,9 @@ func (t *Torrent) handleControl(msg controlMsg) {
 
 	case ctrlSetFilePriority:
 		msg.errReply <- t.doSetFilePriority(msg.fileIndex, msg.priority)
+
+	case ctrlAddTracker:
+		msg.errReply <- t.doAddTracker(msg.trackerURL)
 	}
 }
 
@@ -235,6 +238,33 @@ func (t *Torrent) doSetFilePriority(fileIndex int, priority picker.Priority) err
 	case !t.pick.Complete() && t.State() == StateSeeding:
 		t.setState(StateCheckingFiles)
 		t.setState(StateDownloading)
+	}
+	return nil
+}
+
+// doAddTracker appends url to extraTrackers, publishing the whole updated
+// slice as a new snapshot — extraTrackers is read by announceLoop/
+// announceOnce, both running on their own goroutines, so this is a
+// publish, not an in-place mutation (a reader could be mid-range over the
+// old slice).
+func (t *Torrent) doAddTracker(url string) error {
+	if url == "" {
+		return errors.New("torrent: tracker URL is empty")
+	}
+	var current []string
+	if p := t.extraTrackers.Load(); p != nil {
+		current = *p
+	}
+	updated := append(append([]string(nil), current...), url)
+	t.extraTrackers.Store(&updated)
+
+	// Nudge the announce loop to pick up the new tracker right away rather
+	// than waiting out whatever interval it's currently idling on (up to
+	// defaultAnnounceInterval, if nothing has ever answered yet) — only
+	// when a loop should actually be running; Paused leaves it stopped on
+	// purpose, and AddTracker doesn't override that.
+	if t.State().Active() {
+		t.restartAnnounceLoop(tracker.EventNone)
 	}
 	return nil
 }

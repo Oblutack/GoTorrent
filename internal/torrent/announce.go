@@ -50,6 +50,17 @@ func (t *Torrent) announceLoop(ctx context.Context, firstEvent tracker.Event) {
 		if mi := t.mi.Load(); mi != nil {
 			if !haveMetadata {
 				tiers = buildTiers(mi.AnnounceList, mi.Announce)
+				// A magnet's tr= parameters (Config.Trackers) are never
+				// part of what BEP 9 actually exchanges (only the info
+				// dict), so mi.AnnounceList/Announce are empty for a
+				// magnet-sourced MetaInfo — without this, a magnet
+				// torrent's tracker-based peer discovery would silently
+				// stop the instant metadata arrived, keeping only
+				// DHT/PEX/LSD. A real bug, found while wiring 3.6's
+				// AddTracker/extraTrackers into this same loop.
+				if urls := supportedAnnounceURLs(t.cfg.Trackers); len(urls) > 0 {
+					tiers = append(tiers, trackerTier{urls: urls})
+				}
 				haveMetadata = true
 			}
 		} else if tiers == nil {
@@ -59,9 +70,14 @@ func (t *Torrent) announceLoop(ctx context.Context, firstEvent tracker.Event) {
 			}
 		}
 
-		if len(tiers) == 0 {
+		allTiers := tiers
+		if extra := t.extraTrackerTier(); extra != nil {
+			allTiers = append(append([]trackerTier(nil), tiers...), *extra)
+		}
+
+		if len(allTiers) == 0 {
 			logger.Logf("torrent %s: no trackers to announce to yet\n", t.infoHash)
-		} else if resp, err := t.announceTiers(ctx, tiers, event); err != nil {
+		} else if resp, err := t.announceTiers(ctx, allTiers, event); err != nil {
 			logger.Warning.Printf("torrent %s: announce failed across every tier: %v\n", t.infoHash, err)
 		} else {
 			if resp.Interval > 0 {
@@ -116,8 +132,17 @@ func (t *Torrent) announceOnce(event tracker.Event, timeout time.Duration) {
 	var tiers []trackerTier
 	if mi := t.mi.Load(); mi != nil {
 		tiers = buildTiers(mi.AnnounceList, mi.Announce)
+		// See announceLoop's identical comment: a magnet's tr= parameters
+		// are not part of the exchanged metadata and must be kept even
+		// after metadata is known.
+		if urls := supportedAnnounceURLs(t.cfg.Trackers); len(urls) > 0 {
+			tiers = append(tiers, trackerTier{urls: urls})
+		}
 	} else if urls := supportedAnnounceURLs(t.cfg.Trackers); len(urls) > 0 {
 		tiers = []trackerTier{{urls: urls}}
+	}
+	if extra := t.extraTrackerTier(); extra != nil {
+		tiers = append(tiers, *extra)
 	}
 	if len(tiers) == 0 {
 		return
@@ -127,6 +152,25 @@ func (t *Torrent) announceOnce(event tracker.Event, timeout time.Duration) {
 	if _, err := t.announceTiers(ctx, tiers, event); err != nil {
 		logger.Logf("torrent %s: %s announce failed: %v\n", t.infoHash, event, err)
 	}
+}
+
+// extraTrackerTier returns a tier holding whatever AddTracker has recorded
+// so far, or nil if none. Unlike tiers (built once and then only mutated in
+// place for promotion), this is rebuilt fresh from the atomic snapshot on
+// every call — so a tracker promoted to the front of it does not stay
+// promoted across announce cycles. Accepted: the point of AddTracker is
+// "this tracker gets tried at all", not tier-promotion memory for it.
+func (t *Torrent) extraTrackerTier() *trackerTier {
+	p := t.extraTrackers.Load()
+	if p == nil || len(*p) == 0 {
+		return nil
+	}
+	urls := supportedAnnounceURLs(*p)
+	if len(urls) == 0 {
+		return nil
+	}
+	tier := trackerTier{urls: urls}
+	return &tier
 }
 
 // buildTiers turns a metainfo announce-list into shuffled tracker tiers,
