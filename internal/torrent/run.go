@@ -320,7 +320,7 @@ func (t *Torrent) connectAndPump(ctx context.Context, pi tracker.PeerInfo) {
 
 	client, err := peer.NewClient(pi, t.peerTorrentInfo(), t.cfg.OurID,
 		peer.Callbacks{HasPiece: t.hasPieceSafe, ReadBlock: t.readBlockSafe, MetadataBytes: t.metadataBytesSafe},
-		peer.Limits{Down: t.cfg.DownLimit, Up: t.cfg.UpLimit})
+		t.peerLimits(pi.Addr()))
 	if err != nil {
 		t.sendEvent(ctx, eventDialFailed{addr: pi.Addr()})
 		return
@@ -338,7 +338,7 @@ func (t *Torrent) acceptAndPump(ctx context.Context, conn net.Conn, hs *peer.Han
 	addr := conn.RemoteAddr().String()
 	client, err := peer.AcceptClient(conn, hs, t.peerTorrentInfo(), t.cfg.OurID,
 		peer.Callbacks{HasPiece: t.hasPieceSafe, ReadBlock: t.readBlockSafe, MetadataBytes: t.metadataBytesSafe},
-		peer.Limits{Down: t.cfg.DownLimit, Up: t.cfg.UpLimit})
+		t.peerLimits(addr))
 	if err != nil {
 		t.sendEvent(ctx, eventDialFailed{addr: addr})
 		return
@@ -814,6 +814,16 @@ func (t *Torrent) metadataBytesSafe() []byte {
 		return mi.InfoBytes
 	}
 	return nil
+}
+
+// peerLimits builds the rate limits a new connection to addr should carry —
+// empty (unlimited) for a LAN peer when Config.ExcludeLANFromLimits is set,
+// Config.DownLimit/UpLimit otherwise.
+func (t *Torrent) peerLimits(addr string) peer.Limits {
+	if t.cfg.ExcludeLANFromLimits && isLANAddr(addr) {
+		return peer.Limits{}
+	}
+	return peer.Limits{Down: t.cfg.DownLimit, Up: t.cfg.UpLimit}
 }
 
 func (t *Torrent) peerTorrentInfo() peer.TorrentInfo {

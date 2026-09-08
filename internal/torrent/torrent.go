@@ -74,12 +74,21 @@ type Config struct {
 	// PickerStrategy selects piece ordering. Defaults to rarest-first.
 	PickerStrategy picker.Strategy
 	// DownLimit and UpLimit cap this torrent's aggregate transfer rate,
-	// shared across every peer connection it opens. Nil means unlimited. An
-	// engine managing several torrents typically hands every one of them the
-	// same *ratelimit.Limiter, so the cap bounds the whole process rather
-	// than each torrent independently.
-	DownLimit *ratelimit.Limiter
-	UpLimit   *ratelimit.Limiter
+	// shared across every peer connection it opens — every entry is waited
+	// on (see peer.Limits), so a torrent can carry both a process-wide cap
+	// (the same *ratelimit.Limiter an engine hands to every torrent it
+	// manages, bounding the whole process rather than each torrent
+	// independently) and its own per-torrent cap at once. Nil or empty
+	// means unlimited.
+	DownLimit []*ratelimit.Limiter
+	UpLimit   []*ratelimit.Limiter
+	// UploadSlots overrides how many peers this torrent unchokes at once
+	// (choker.WithSlots) — 0 means choker.DefaultSlots.
+	UploadSlots int
+	// ExcludeLANFromLimits skips DownLimit/UpLimit entirely for a peer whose
+	// address is a private or loopback IP, so a same-LAN transfer always
+	// runs at full local speed regardless of the internet-facing cap.
+	ExcludeLANFromLimits bool
 	// Trackers seeds the announce loop before metadata is known — a magnet
 	// link's tr= parameters. Ignored once mi is set: from then on
 	// announceURLs reads mi.AnnounceURLs() instead. Meaningless for a
@@ -310,6 +319,11 @@ func newTorrent(hash metainfo.Hash, cfg Config) (*Torrent, error) {
 		cfg.ResumeDir = dir
 	}
 
+	var chokerOpts []choker.Option
+	if cfg.UploadSlots > 0 {
+		chokerOpts = append(chokerOpts, choker.WithSlots(cfg.UploadSlots))
+	}
+
 	t := &Torrent{
 		infoHash:      hash,
 		cfg:           cfg,
@@ -317,7 +331,7 @@ func newTorrent(hash metainfo.Hash, cfg Config) (*Torrent, error) {
 		peers:         make(map[string]*peerConn),
 		dialing:       make(map[string]bool),
 		pexKnownPeers: make(map[string]tracker.PeerInfo),
-		choke:         choker.New(),
+		choke:         choker.New(chokerOpts...),
 		events:        make(chan any, 256),
 		control:       make(chan controlMsg),
 		done:          make(chan struct{}),

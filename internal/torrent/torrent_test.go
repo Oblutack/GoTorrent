@@ -452,7 +452,7 @@ func TestDownloadRespectsRateLimit(t *testing.T) {
 
 	const rate = pieceLength // 16 KiB/s: one piece's worth per second
 	cfg := newTestConfig(t)
-	cfg.DownLimit = ratelimit.New(rate)
+	cfg.DownLimit = []*ratelimit.Limiter{ratelimit.New(rate)}
 
 	tr, err := New(mi, cfg)
 	if err != nil {
@@ -472,6 +472,42 @@ func TestDownloadRespectsRateLimit(t *testing.T) {
 	want := time.Duration(float64(len(content)-pieceLength) / float64(rate) * float64(time.Second))
 	if elapsed < want/2 {
 		t.Fatalf("download finished in %s, want at least ~%s at a %d B/s cap", elapsed, want, rate)
+	}
+}
+
+// TestDownloadRespectsTheTighterOfSeveralLimits proves every entry in
+// Config.DownLimit is actually applied (3.3's per-torrent-plus-global
+// composition), not just the first — a loose limit alongside a tight one
+// must still throttle to the tight one's rate.
+func TestDownloadRespectsTheTighterOfSeveralLimits(t *testing.T) {
+	const pieceLength = 16384
+	mi, content := buildTorrent(t, "throttled2.bin", pieceLength, []fileSpec{
+		{length: pieceLength * 3},
+	})
+
+	const tightRate = pieceLength // 16 KiB/s
+	cfg := newTestConfig(t)
+	cfg.DownLimit = []*ratelimit.Limiter{
+		ratelimit.New(100 * 1024 * 1024), // effectively unlimited for this transfer
+		ratelimit.New(tightRate),
+	}
+
+	tr, err := New(mi, cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_, _ = runInBackground(t, tr)
+
+	seeder := newFakeSeeder(t, mi, content)
+	start := time.Now()
+	tr.DialPeer(seeder.peerInfo())
+
+	waitForState(t, tr, StateSeeding, 30*time.Second)
+	elapsed := time.Since(start)
+
+	want := time.Duration(float64(len(content)-pieceLength) / float64(tightRate) * float64(time.Second))
+	if elapsed < want/2 {
+		t.Fatalf("download finished in %s, want at least ~%s given a %d B/s limit in the mix", elapsed, want, tightRate)
 	}
 }
 
