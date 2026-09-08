@@ -467,8 +467,37 @@ func (t *Torrent) setState(next State) {
 	}
 	t.state.Store(int32(next))
 	logger.Logf("torrent %s: %s -> %s\n", t.infoHash, cur, next)
+
+	// BEP 21: tell every already-connected peer our upload-only status
+	// just changed. New connections learn it from the extended handshake
+	// (uploadOnlySafe) instead, so this only matters for peers that were
+	// already connected across the transition.
+	if (next == StateSeeding) != (cur == StateSeeding) {
+		t.broadcastUploadOnly(next == StateSeeding)
+	}
+
 	if t.onStateChange != nil {
 		t.onStateChange(next)
+	}
+}
+
+// uploadOnlySafe answers a peer's extended handshake "are we upload-only"
+// question (BEP 21) — Seeding is exactly "pick.Complete() is true" (every
+// call site that can make Complete() true also transitions to Seeding, and
+// vice versa), so State() alone is enough; unlike t.pick itself, State() is
+// a plain atomic and safe to read from a peer goroutine.
+func (t *Torrent) uploadOnlySafe() bool { return t.State() == StateSeeding }
+
+// broadcastUploadOnly tells every connected peer our upload-only status via
+// BEP 21, ignoring (logging only) a peer that never advertised support —
+// SendUploadOnly already no-ops for those, so this only exists to iterate
+// t.peers. Actor-only: called from setState, which only ever runs on the
+// actor goroutine.
+func (t *Torrent) broadcastUploadOnly(uploadOnly bool) {
+	for _, pc := range t.peers {
+		if err := pc.client.SendUploadOnly(uploadOnly); err != nil {
+			logger.Logf("torrent %s: upload_only to %s: %v\n", t.infoHash, pc.addr, err)
+		}
 	}
 }
 

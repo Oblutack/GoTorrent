@@ -135,6 +135,7 @@ const fakeSeederUtMetadataID = 9
 type fakeExtHandshake struct {
 	M            map[string]int `bencode:"m"`
 	MetadataSize int            `bencode:"metadata_size,omitempty"`
+	UploadOnly   int            `bencode:"upload_only,omitempty"`
 }
 
 type fakeUtMetadataMsg struct {

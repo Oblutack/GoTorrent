@@ -356,7 +356,7 @@ func (t *Torrent) connectAndPump(ctx context.Context, pi tracker.PeerInfo) {
 	defer t.wg.Done()
 
 	client, err := peer.NewClient(pi, t.peerTorrentInfo(), t.cfg.OurID,
-		peer.Callbacks{HasPiece: t.hasPieceSafe, ReadBlock: t.readBlockSafe, MetadataBytes: t.metadataBytesSafe},
+		peer.Callbacks{HasPiece: t.hasPieceSafe, ReadBlock: t.readBlockSafe, MetadataBytes: t.metadataBytesSafe, UploadOnly: t.uploadOnlySafe},
 		t.peerLimits(pi.Addr()), t.cfg.ProxyDialer.DialContext)
 	if err != nil {
 		t.sendEvent(ctx, eventDialFailed{addr: pi.Addr()})
@@ -374,7 +374,7 @@ func (t *Torrent) acceptAndPump(ctx context.Context, conn net.Conn, hs *peer.Han
 
 	addr := conn.RemoteAddr().String()
 	client, err := peer.AcceptClient(conn, hs, t.peerTorrentInfo(), t.cfg.OurID,
-		peer.Callbacks{HasPiece: t.hasPieceSafe, ReadBlock: t.readBlockSafe, MetadataBytes: t.metadataBytesSafe},
+		peer.Callbacks{HasPiece: t.hasPieceSafe, ReadBlock: t.readBlockSafe, MetadataBytes: t.metadataBytesSafe, UploadOnly: t.uploadOnlySafe},
 		t.peerLimits(addr))
 	if err != nil {
 		t.sendEvent(ctx, eventDialFailed{addr: addr})
