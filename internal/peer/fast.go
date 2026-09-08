@@ -21,7 +21,12 @@ func (h *Handshake) SupportsFast() bool {
 // sendInitialState sends this connection's one-time initial piece-state
 // message, called once from Run right after the handshake — the thing this
 // client never used to send at all before BEP 6 gave it a cheap way to.
-// Exactly one of HaveAll, HaveNone, or a plain Bitfield goes out, chosen
+//
+// If initialHaves is set (BEP 16 super-seeding — see Callbacks.InitialHaves)
+// and reports a piece, that single Have is sent instead of anything
+// haveSnapshot-derived, and the peer is left believing we have exactly one
+// piece regardless of what hasPiece would otherwise say. Everywhere else,
+// exactly one of HaveAll, HaveNone, or a plain Bitfield goes out, chosen
 // from what hasPiece reports:
 //   - nothing yet known (NumPieces == 0, the magnet-fetching path, or no
 //     HasPiece callback at all): HaveNone if the peer supports Fast, nothing
@@ -33,6 +38,13 @@ func (h *Handshake) SupportsFast() bool {
 //   - some pieces: a plain Bitfield either way — BEP 6 only replaces the
 //     two extreme cases, not the general one.
 func (c *Client) sendInitialState() error {
+	if c.initialHaves != nil {
+		if piece, ok := c.initialHaves(); ok {
+			payload := MsgHavePayload{PieceIndex: uint32(piece)}
+			return c.SendMessage(MsgHave, payload.Serialize())
+		}
+	}
+
 	info := c.info()
 	if info.NumPieces == 0 || c.hasPiece == nil {
 		if c.peerSupportsFast {

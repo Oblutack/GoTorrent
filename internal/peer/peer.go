@@ -270,6 +270,12 @@ type Callbacks struct {
 	// priorities) is complete even if the torrent as a whole isn't. Nil
 	// means never announce upload_only at all (advertised as false).
 	UploadOnly func() bool
+	// InitialHaves overrides the connection's one-time initial piece-state
+	// message (see sendInitialState) — BEP 16 super-seeding's hook. When
+	// set and it returns ok, that one piece is sent via Have and nothing
+	// else; when nil, or set but returning ok=false, behaves exactly as if
+	// it were nil (the normal HaveAll/HaveNone/Bitfield logic).
+	InitialHaves func() (piece int, ok bool)
 }
 
 // Client represents a connection to a single BitTorrent peer.
@@ -377,6 +383,7 @@ type Client struct {
 	readBlockFromDisk func(index, begin, length uint32) ([]byte, error)
 	metadataBytes     func() []byte
 	uploadOnly        func() bool
+	initialHaves      func() (int, bool)
 }
 
 // DialFunc dials one outbound connection, matching net.Dialer.DialContext's
@@ -483,6 +490,7 @@ func newClient(conn net.Conn, torrent TorrentInfo, ourID [20]byte, peerHandshake
 		readBlockFromDisk: callbacks.ReadBlock,
 		metadataBytes:     callbacks.MetadataBytes,
 		uploadOnly:        callbacks.UploadOnly,
+		initialHaves:      callbacks.InitialHaves,
 	}
 	c.torrentInfo.Store(&torrent)
 	c.amChoking.Store(true)   // we start by choking the peer

@@ -59,6 +59,50 @@ func TestSendInitialStateSendsBitfieldWhenPartial(t *testing.T) {
 	}
 }
 
+// TestSendInitialStateHonorsInitialHavesOverride proves BEP 16 super-seeding's
+// hook takes priority over HasPiece entirely: even though HasPiece reports
+// every piece present (the normal case for a real seed), InitialHaves being
+// set overrides that and the peer is told about exactly one piece via a
+// targeted Have, not HaveAll.
+func TestSendInitialStateHonorsInitialHavesOverride(t *testing.T) {
+	client, server := dialTestPeer(t, Callbacks{
+		HasPiece:     func(uint32) bool { return true },
+		InitialHaves: func() (int, bool) { return 2, true },
+	})
+	go client.Run()
+
+	readFrame(t, server) // Interested
+	body := readFrame(t, server)
+	if MessageID(body[0]) != MsgHave {
+		t.Fatalf("expected a targeted Have for the super-seed hook, got %s", MessageID(body[0]))
+	}
+	var have MsgHavePayload
+	if err := have.Parse(body[1:]); err != nil {
+		t.Fatalf("parse Have: %v", err)
+	}
+	if have.PieceIndex != 2 {
+		t.Fatalf("Have piece index = %d, want 2", have.PieceIndex)
+	}
+}
+
+// TestSendInitialStateFallsBackWhenInitialHavesDeclines is the control: an
+// InitialHaves callback that's set but returns ok=false (super-seeding not
+// currently assigning this peer a piece) must fall back to the normal
+// HasPiece-derived behavior unchanged, not send nothing.
+func TestSendInitialStateFallsBackWhenInitialHavesDeclines(t *testing.T) {
+	client, server := dialTestPeer(t, Callbacks{
+		HasPiece:     func(uint32) bool { return false },
+		InitialHaves: func() (int, bool) { return 0, false },
+	})
+	go client.Run()
+
+	readFrame(t, server) // Interested
+	body := readFrame(t, server)
+	if MessageID(body[0]) != MsgHaveNone {
+		t.Fatalf("expected the normal HaveNone fallback, got %s", MessageID(body[0]))
+	}
+}
+
 func TestReceivesHaveAllSetsFullBitfield(t *testing.T) {
 	client, server := dialTestPeer(t, Callbacks{HasPiece: func(uint32) bool { return false }})
 	go client.Run()
