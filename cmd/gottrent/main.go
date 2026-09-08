@@ -63,6 +63,19 @@ func parseContentLayout(s string) (storage.ContentLayout, error) {
 	}
 }
 
+func parseSeedLimitAction(s string) (engine.SeedLimitAction, error) {
+	switch s {
+	case "pause", "":
+		return engine.SeedLimitActionPause, nil
+	case "remove":
+		return engine.SeedLimitActionRemove, nil
+	case "remove-delete-data":
+		return engine.SeedLimitActionRemoveDeleteData, nil
+	default:
+		return "", fmt.Errorf(`%q is not one of "pause", "remove", "remove-delete-data"`, s)
+	}
+}
+
 // main dispatches to a subcommand (create, verify) if the first argument
 // names one, otherwise runs the ordinary fleet manager — kept as the
 // no-subcommand default so every existing invocation (bare -torrent flags)
@@ -94,6 +107,7 @@ func runFleet() {
 	upLimitKB := flag.Uint("up-limit", 0, "Upload rate cap in KiB/s across the whole fleet (0 = unlimited)")
 	ratioLimit := flag.Float64("ratio-limit", 0, "Pause a torrent once its upload/download ratio reaches this (0 = unlimited)")
 	seedTimeLimit := flag.Duration("seed-time-limit", 0, "Pause a torrent once it has spent this long seeding, e.g. 2h30m (0 = unlimited)")
+	seedLimitAction := flag.String("seed-limit-action", "pause", `What to do beyond pausing when -ratio-limit/-seed-time-limit is reached: "pause", "remove", or "remove-delete-data"`)
 	sequential := flag.Bool("sequential", false, "Download pieces in order instead of rarest-first (useful for streaming)")
 	firstLastPiece := flag.Bool("first-last-piece-first", false, "Fetch each file's first and last piece early, so a partially-downloaded file can be previewed")
 	maxActiveDownloads := flag.Int("max-active-downloads", 0, "Maximum torrents actively downloading at once across the fleet (0 = unlimited)")
@@ -126,6 +140,10 @@ func runFleet() {
 	if err != nil {
 		logger.Error.Fatalf("Error parsing -content-layout: %v\n", err)
 	}
+	seedLimitActionValue, err := parseSeedLimitAction(*seedLimitAction)
+	if err != nil {
+		logger.Error.Fatalf("Error parsing -seed-limit-action: %v\n", err)
+	}
 
 	logger.Init(*verbose)
 
@@ -144,6 +162,7 @@ func runFleet() {
 		BindAddress:            *bindAddress,
 		SeedRatioLimit:         *ratioLimit,
 		SeedTimeLimit:          *seedTimeLimit,
+		SeedLimitAction:        seedLimitActionValue,
 		FirstLastPieceFirst:    *firstLastPiece,
 		MaxActiveDownloads:     *maxActiveDownloads,
 		MaxActiveSeeds:         *maxActiveSeeds,
