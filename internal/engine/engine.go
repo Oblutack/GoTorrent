@@ -32,6 +32,12 @@ import (
 	"github.com/Oblutack/GoTorrent/internal/tracker"
 )
 
+// ErrAlreadyAdded is wrapped into the error AddWithOptions/Add return when
+// hash is already managed — checkable with errors.Is, e.g. by
+// StartWatchFolder to tell "nothing to do, already added" apart from a
+// real failure worth logging.
+var ErrAlreadyAdded = errors.New("engine: torrent already added")
+
 // maxInboundPerIP caps how many concurrent inbound connections one source IP
 // may hold open at once, so a single misbehaving or hostile address cannot
 // exhaust this process's connection slots, goroutines, or file descriptors
@@ -334,7 +340,7 @@ func (e *Engine) AddWithOptions(source, downloadDir string, opts AddOptions) (me
 	defer e.mu.Unlock()
 
 	if _, exists := e.torrents[hash]; exists {
-		return hash, fmt.Errorf("engine: %s is already added", hash)
+		return hash, fmt.Errorf("%w: %s", ErrAlreadyAdded, hash)
 	}
 	if downloadDir == "" && opts.Category != "" {
 		downloadDir = e.defaults.CategoryPaths[opts.Category]
