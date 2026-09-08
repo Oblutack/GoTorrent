@@ -17,6 +17,7 @@ import (
 	"github.com/Oblutack/GoTorrent/internal/engine"
 	"github.com/Oblutack/GoTorrent/internal/logger"
 	"github.com/Oblutack/GoTorrent/internal/metainfo"
+	"github.com/Oblutack/GoTorrent/internal/picker"
 	"github.com/Oblutack/GoTorrent/internal/ratelimit"
 )
 
@@ -40,6 +41,11 @@ func main() {
 	upLimitKB := flag.Uint("up-limit", 0, "Upload rate cap in KiB/s across the whole fleet (0 = unlimited)")
 	ratioLimit := flag.Float64("ratio-limit", 0, "Pause a torrent once its upload/download ratio reaches this (0 = unlimited)")
 	seedTimeLimit := flag.Duration("seed-time-limit", 0, "Pause a torrent once it has spent this long seeding, e.g. 2h30m (0 = unlimited)")
+	sequential := flag.Bool("sequential", false, "Download pieces in order instead of rarest-first (useful for streaming)")
+	firstLastPiece := flag.Bool("first-last-piece-first", false, "Fetch each file's first and last piece early, so a partially-downloaded file can be previewed")
+	maxActiveDownloads := flag.Int("max-active-downloads", 0, "Maximum torrents actively downloading at once across the fleet (0 = unlimited)")
+	maxActiveSeeds := flag.Int("max-active-seeds", 0, "Maximum torrents actively seeding at once across the fleet (0 = unlimited)")
+	maxActiveTotal := flag.Int("max-active", 0, "Maximum torrents active (downloading or seeding) at once across the fleet (0 = unlimited)")
 	verbose := flag.Bool("verbose", false, "Enable verbose logging")
 	flag.Parse()
 
@@ -55,11 +61,18 @@ func main() {
 	}
 
 	defaults := engine.Defaults{
-		DownloadDir:    *downloadDir,
-		ListenPort:     uint16(*listenPort),
-		BindAddress:    *bindAddress,
-		SeedRatioLimit: *ratioLimit,
-		SeedTimeLimit:  *seedTimeLimit,
+		DownloadDir:         *downloadDir,
+		ListenPort:          uint16(*listenPort),
+		BindAddress:         *bindAddress,
+		SeedRatioLimit:      *ratioLimit,
+		SeedTimeLimit:       *seedTimeLimit,
+		FirstLastPieceFirst: *firstLastPiece,
+		MaxActiveDownloads:  *maxActiveDownloads,
+		MaxActiveSeeds:      *maxActiveSeeds,
+		MaxActiveTotal:      *maxActiveTotal,
+	}
+	if *sequential {
+		defaults.PickerStrategy = picker.Sequential
 	}
 	if *downLimitKB > 0 {
 		defaults.DownLimit = ratelimit.New(int64(*downLimitKB) * 1024)
@@ -107,6 +120,10 @@ func main() {
 	if err := e.StartLSD(context.Background(), actualPort); err != nil {
 		logger.Warning.Printf("Not starting local service discovery: %v\n", err)
 	}
+	// Reactive queue enforcement is always on (every Add'd torrent's own
+	// OnStateChange callback triggers it); this just adds the periodic
+	// safety-net pass, and can start any time before or after Load/Add.
+	e.StartQueue(context.Background())
 	// All three must be up before Load/Add so every torrent - reloaded from a
 	// previous run included - gets a working DHT peer source from the start.
 	if err := e.Load(); err != nil {
