@@ -43,6 +43,10 @@ type MetaInfo struct {
 	Comment      string
 	CreatedBy    string
 	CreationDate int64
+	// UrlList is BEP 19's web seed list. Round-tripped (parsed and, via
+	// Build/Export in create.go/export.go, written) but not otherwise acted
+	// on — actually downloading from a web seed is Phase 7, not this one.
+	UrlList []string
 
 	Info InfoDict
 
@@ -126,6 +130,7 @@ type torrentFile struct {
 	CreatedBy    string             `bencode:"created by,omitempty"`
 	CreationDate int64              `bencode:"creation date,omitempty"`
 	Encoding     string             `bencode:"encoding,omitempty"`
+	UrlList      []string           `bencode:"url-list,omitempty"`
 	Info         bencode.RawMessage `bencode:"info"`
 }
 
@@ -185,6 +190,7 @@ func Parse(data []byte) (*MetaInfo, error) {
 		Comment:      tf.Comment,
 		CreatedBy:    tf.CreatedBy,
 		CreationDate: tf.CreationDate,
+		UrlList:      tf.UrlList,
 	}
 	if err := mi.setInfo(tf.Info); err != nil {
 		return nil, err
