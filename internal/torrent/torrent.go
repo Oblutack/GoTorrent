@@ -48,6 +48,14 @@ type Stats struct {
 	// FilePriorities is one entry per file, in file order — nil until
 	// metadata is known (see Torrent.SetFilePriority).
 	FilePriorities []picker.Priority
+	// SeedRatio is Uploaded / (Downloaded, falling back to TotalLength if
+	// nothing has been downloaded this session — the initial-seed case) — see
+	// seedRatio. Meaningless before metadata is known.
+	SeedRatio float64
+	// SeedingDuration is cumulative time spent in StateSeeding, across
+	// however many Pause/Resume cycles happened since the process started —
+	// see Torrent.setState. Not persisted across a restart.
+	SeedingDuration time.Duration
 }
 
 // Config configures a Torrent.
@@ -94,6 +102,16 @@ type Config struct {
 	// exists on disk. Meaningless before metadata is known: applied once,
 	// in openMetadata.
 	FilePriorities []picker.Priority
+	// SeedRatioLimit pauses the torrent once SeedRatio (see Stats) reaches
+	// this value, checked continuously while Seeding. 0 (the default) means
+	// unlimited. Note that resuming a torrent that is already over its ratio
+	// limit pauses it again on the very next tick — this is deliberate, the
+	// same "hard limit" semantics most clients use, not a bug.
+	SeedRatioLimit float64
+	// SeedTimeLimit pauses the torrent once it has spent this much cumulative
+	// time in StateSeeding (see Stats.SeedingDuration), checked continuously
+	// while Seeding. 0 (the default) means unlimited.
+	SeedTimeLimit time.Duration
 }
 
 // peerConn is one connected peer plus the bookkeeping the actor needs that
@@ -195,6 +213,14 @@ type Torrent struct {
 
 	piecesVerifiedSinceCheckpoint int
 	lastCheckpoint                time.Time
+
+	// seedingStartedAt is when the current unbroken run of StateSeeding
+	// began, zero when not currently seeding. seedingDuration accumulates
+	// each such run's length as it ends (see setState), so
+	// currentSeedingDuration's sum survives a Pause/Resume cycle within this
+	// process — but not a restart, since neither field is in resume data.
+	seedingStartedAt time.Time
+	seedingDuration  time.Duration
 
 	// announceCancel stops the currently-running announceLoop, if any. It
 	// exists so Pause/Resume/Recheck can restart the loop cleanly instead of
@@ -318,6 +344,13 @@ func (t *Torrent) setState(next State) {
 		logger.Warning.Printf("torrent %s: illegal transition %s -> %s (ignored)\n", t.infoHash, cur, next)
 		return
 	}
+	switch {
+	case next == StateSeeding:
+		t.seedingStartedAt = time.Now()
+	case cur == StateSeeding:
+		t.seedingDuration += time.Since(t.seedingStartedAt)
+		t.seedingStartedAt = time.Time{}
+	}
 	t.state.Store(int32(next))
 	logger.Logf("torrent %s: %s -> %s\n", t.infoHash, cur, next)
 	if t.onStateChange != nil {
@@ -357,6 +390,8 @@ func (t *Torrent) Stats() Stats {
 		s.PeerCount = fromActor.PeerCount
 		s.InEndgame = fromActor.InEndgame
 		s.FilePriorities = fromActor.FilePriorities
+		s.SeedRatio = fromActor.SeedRatio
+		s.SeedingDuration = fromActor.SeedingDuration
 	case <-t.done:
 	}
 	return s

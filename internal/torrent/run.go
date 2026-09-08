@@ -67,6 +67,12 @@ func (t *Torrent) handleControl(msg controlMsg) {
 		if t.filePriorities != nil {
 			s.FilePriorities = append([]picker.Priority(nil), t.filePriorities...)
 		}
+		var total int64
+		if mi := t.mi.Load(); mi != nil {
+			total = mi.TotalLength
+		}
+		s.SeedRatio = seedRatio(t.uploaded.Load(), t.downloaded.Load(), total)
+		s.SeedingDuration = t.currentSeedingDuration(time.Now())
 		msg.statsReply <- s
 
 	case ctrlPause:
@@ -693,6 +699,7 @@ func (t *Torrent) tick(now time.Time) {
 		t.setState(StateSeeding)
 		t.checkpoint()
 	}
+	t.checkSeedLimits(now)
 }
 
 // adaptPipeline recomputes how many outstanding requests pc should be
