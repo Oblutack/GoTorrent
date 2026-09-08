@@ -304,6 +304,10 @@ type Torrent struct {
 	// onStateChange is set before Run and never touched again, so reading it
 	// from the actor goroutine needs no synchronization.
 	onStateChange func(State)
+
+	// onSeedLimitReached is set before Run and never touched again, same as
+	// onStateChange. See OnSeedLimitReached.
+	onSeedLimitReached func()
 }
 
 // --- construction ------------------------------------------------------
@@ -435,6 +439,15 @@ func (t *Torrent) State() State { return State(t.state.Load()) }
 // transition. It must not block or call back into the Torrent. Must be set
 // before Run.
 func (t *Torrent) OnStateChange(fn func(State)) { t.onStateChange = fn }
+
+// OnSeedLimitReached installs a callback fired once each time
+// Config.SeedRatioLimit/SeedTimeLimit trips (3.4) — after the automatic
+// pause that always happens first, regardless of what fn goes on to do.
+// Fired from checkSeedLimits, which runs on the actor's own tick
+// goroutine, so like OnStateChange it must not block or call back into
+// this Torrent synchronously. Must be set before Run. Engine uses this to
+// implement remove/remove-and-delete-data as an action beyond pausing.
+func (t *Torrent) OnSeedLimitReached(fn func()) { t.onSeedLimitReached = fn }
 
 func (t *Torrent) setState(next State) {
 	cur := t.State()

@@ -52,6 +52,7 @@ func (t *Torrent) checkSeedLimits(now time.Time) {
 		if seedRatio(t.uploaded.Load(), t.downloaded.Load(), total) >= t.cfg.SeedRatioLimit {
 			logger.Logf("torrent %s: seed ratio limit (%.2f) reached, pausing\n", t.infoHash, t.cfg.SeedRatioLimit)
 			t.doPause()
+			t.fireSeedLimitReached()
 			return
 		}
 	}
@@ -59,5 +60,14 @@ func (t *Torrent) checkSeedLimits(now time.Time) {
 	if t.cfg.SeedTimeLimit > 0 && t.currentSeedingDuration(now) >= t.cfg.SeedTimeLimit {
 		logger.Logf("torrent %s: seed time limit (%s) reached, pausing\n", t.infoHash, t.cfg.SeedTimeLimit)
 		t.doPause()
+		t.fireSeedLimitReached()
+	}
+}
+
+// fireSeedLimitReached calls the OnSeedLimitReached callback, if any — see
+// its own doc comment for why this must never block or call back into t.
+func (t *Torrent) fireSeedLimitReached() {
+	if t.onSeedLimitReached != nil {
+		t.onSeedLimitReached()
 	}
 }

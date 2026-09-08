@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -141,6 +142,56 @@ func TestSeedTimeLimitPausesSeedingTorrent(t *testing.T) {
 
 	if got := tr.Stats().SeedingDuration; got < cfg.SeedTimeLimit {
 		t.Fatalf("seeder paused with SeedingDuration %s, want at least the configured limit %s", got, cfg.SeedTimeLimit)
+	}
+}
+
+// TestOnSeedLimitReachedFiresAfterThePause proves the callback fires
+// exactly once, and only after doPause has already taken effect — 3.4's
+// remove/remove-and-delete-data actions rely on the pause (peers
+// disconnected, checkpointed) having already happened by the time they run.
+func TestOnSeedLimitReachedFiresAfterThePause(t *testing.T) {
+	const pieceLength = 16384
+	mi, content := buildTorrent(t, "callback.bin", pieceLength, []fileSpec{{length: pieceLength * 3}})
+
+	cfg := newTestConfig(t)
+	cfg.SeedTimeLimit = 200 * time.Millisecond
+	tr := newPreSeededTorrent(t, "callback.bin", mi, content, cfg)
+
+	var mu sync.Mutex
+	fired := 0
+	var stateWhenFired State
+	tr.OnSeedLimitReached(func() {
+		mu.Lock()
+		fired++
+		stateWhenFired = tr.State()
+		mu.Unlock()
+	})
+	runInBackground(t, tr)
+
+	waitForState(t, tr, StateSeeding, 5*time.Second)
+	waitForState(t, tr, StatePaused, 5*time.Second)
+
+	// The callback runs asynchronously with no ordering guarantee relative
+	// to the caller observing StatePaused, so poll rather than assume it
+	// already ran the instant State() reports Paused.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		n := fired
+		mu.Unlock()
+		if n > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if fired != 1 {
+		t.Fatalf("OnSeedLimitReached fired %d times, want exactly 1", fired)
+	}
+	if stateWhenFired != StatePaused {
+		t.Fatalf("OnSeedLimitReached observed state %s, want it to fire after StatePaused", stateWhenFired)
 	}
 }
 
