@@ -38,6 +38,8 @@ func main() {
 	noPortMap := flag.Bool("no-portmap", false, "Disable automatic UPnP/NAT-PMP port mapping")
 	downLimitKB := flag.Uint("down-limit", 0, "Download rate cap in KiB/s across the whole fleet (0 = unlimited)")
 	upLimitKB := flag.Uint("up-limit", 0, "Upload rate cap in KiB/s across the whole fleet (0 = unlimited)")
+	ratioLimit := flag.Float64("ratio-limit", 0, "Pause a torrent once its upload/download ratio reaches this (0 = unlimited)")
+	seedTimeLimit := flag.Duration("seed-time-limit", 0, "Pause a torrent once it has spent this long seeding, e.g. 2h30m (0 = unlimited)")
 	verbose := flag.Bool("verbose", false, "Enable verbose logging")
 	flag.Parse()
 
@@ -52,7 +54,13 @@ func main() {
 		dir = d
 	}
 
-	defaults := engine.Defaults{DownloadDir: *downloadDir, ListenPort: uint16(*listenPort), BindAddress: *bindAddress}
+	defaults := engine.Defaults{
+		DownloadDir:    *downloadDir,
+		ListenPort:     uint16(*listenPort),
+		BindAddress:    *bindAddress,
+		SeedRatioLimit: *ratioLimit,
+		SeedTimeLimit:  *seedTimeLimit,
+	}
 	if *downLimitKB > 0 {
 		defaults.DownLimit = ratelimit.New(int64(*downLimitKB) * 1024)
 	}
@@ -183,7 +191,7 @@ func displayFleet(e *engine.Engine, shutdownDone <-chan struct{}) {
 				private = "P "
 			}
 
-			fmt.Printf("%-24s %s%-16s %6.2f%% %6.2f/%6.2f MB %s peers:%-3d\033[K\n",
+			fmt.Printf("%-24s %s%-16s %6.2f%% %6.2f/%6.2f MB %s peers:%-3d ratio:%5.2f\033[K\n",
 				name,
 				private,
 				s.Stats.State,
@@ -192,6 +200,7 @@ func displayFleet(e *engine.Engine, shutdownDone <-chan struct{}) {
 				float64(s.Stats.TotalLength)/(1024*1024),
 				formatSpeed(speed),
 				s.Stats.PeerCount,
+				s.Stats.SeedRatio,
 			)
 		}
 		lastTime = now

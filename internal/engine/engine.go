@@ -69,6 +69,11 @@ type Defaults struct {
 	PickerStrategy picker.Strategy
 	DownLimit      *ratelimit.Limiter
 	UpLimit        *ratelimit.Limiter
+	// SeedRatioLimit and SeedTimeLimit apply to every torrent this Engine
+	// starts — see torrent.Config for what each does. Zero (the default)
+	// means unlimited, for both.
+	SeedRatioLimit float64
+	SeedTimeLimit  time.Duration
 }
 
 // Summary is a point-in-time view of one managed torrent, safe to read from
@@ -709,6 +714,8 @@ func (e *Engine) torrentConfig(downloadDir string) torrent.Config {
 		PickerStrategy: e.defaults.PickerStrategy,
 		DownLimit:      e.defaults.DownLimit,
 		UpLimit:        e.defaults.UpLimit,
+		SeedRatioLimit: e.defaults.SeedRatioLimit,
+		SeedTimeLimit:  e.defaults.SeedTimeLimit,
 	}
 	// Only assign when non-nil: cfg.DHT is a torrent.DHTClient interface, and
 	// assigning a nil *dht.DHT to it would leave the interface non-nil (it
