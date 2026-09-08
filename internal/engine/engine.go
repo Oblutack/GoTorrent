@@ -90,6 +90,9 @@ type Defaults struct {
 	// FirstLastPieceFirst applies to every torrent this Engine starts — see
 	// torrent.Config.FirstLastPieceFirst.
 	FirstLastPieceFirst bool
+	// SuperSeeding applies to every torrent this Engine starts — see
+	// torrent.Config.SuperSeeding.
+	SuperSeeding bool
 	// MaxActiveDownloads, MaxActiveSeeds, and MaxActiveTotal cap how many
 	// managed torrents may be Downloading, Seeding, or either at once — see
 	// queue.go. 0 (the default, for each independently) means unlimited.
@@ -976,6 +979,7 @@ func (e *Engine) torrentConfig(downloadDir string) torrent.Config {
 		SeedRatioLimit:       e.defaults.SeedRatioLimit,
 		SeedTimeLimit:        e.defaults.SeedTimeLimit,
 		FirstLastPieceFirst:  e.defaults.FirstLastPieceFirst,
+		SuperSeeding:         e.defaults.SuperSeeding,
 		UploadSlots:          e.defaults.UploadSlots,
 		ExcludeLANFromLimits: e.defaults.ExcludeLANFromLimits,
 		IPFilter:             e.ipFilter,

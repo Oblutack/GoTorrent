@@ -110,6 +110,7 @@ func runFleet() {
 	seedLimitAction := flag.String("seed-limit-action", "pause", `What to do beyond pausing when -ratio-limit/-seed-time-limit is reached: "pause", "remove", or "remove-delete-data"`)
 	sequential := flag.Bool("sequential", false, "Download pieces in order instead of rarest-first (useful for streaming)")
 	firstLastPiece := flag.Bool("first-last-piece-first", false, "Fetch each file's first and last piece early, so a partially-downloaded file can be previewed")
+	superSeeding := flag.Bool("super-seeding", false, "Advertise pieces one at a time while seeding (BEP 16), to spread a brand-new torrent's first copies across the swarm faster")
 	maxActiveDownloads := flag.Int("max-active-downloads", 0, "Maximum torrents actively downloading at once across the fleet (0 = unlimited)")
 	maxActiveSeeds := flag.Int("max-active-seeds", 0, "Maximum torrents actively seeding at once across the fleet (0 = unlimited)")
 	maxActiveTotal := flag.Int("max-active", 0, "Maximum torrents active (downloading or seeding) at once across the fleet (0 = unlimited)")
@@ -164,6 +165,7 @@ func runFleet() {
 		SeedTimeLimit:          *seedTimeLimit,
 		SeedLimitAction:        seedLimitActionValue,
 		FirstLastPieceFirst:    *firstLastPiece,
+		SuperSeeding:           *superSeeding,
 		MaxActiveDownloads:     *maxActiveDownloads,
 		MaxActiveSeeds:         *maxActiveSeeds,
 		MaxActiveTotal:         *maxActiveTotal,
