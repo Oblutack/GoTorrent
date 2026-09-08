@@ -83,6 +83,19 @@ type Defaults struct {
 	MaxActiveDownloads int
 	MaxActiveSeeds     int
 	MaxActiveTotal     int
+	// UploadSlots and ExcludeLANFromLimits apply to every torrent this
+	// Engine starts — see torrent.Config for what each does.
+	UploadSlots          int
+	ExcludeLANFromLimits bool
+	// AltDownLimit, AltUpLimit, and AltSchedule configure 3.3's alternative
+	// ("slow") speed schedule: while AltSchedule says the current time is
+	// in-window, DownLimit/UpLimit are set to these rates instead of their
+	// normal ones — see StartAltSpeedSchedule. AltSchedule nil (the
+	// default) disables the feature entirely; DownLimit/UpLimit are never
+	// touched.
+	AltDownLimit int64
+	AltUpLimit   int64
+	AltSchedule  *Schedule
 }
 
 // Summary is a point-in-time view of one managed torrent, safe to read from
@@ -135,6 +148,17 @@ type managedTorrent struct {
 	queuePos   int
 	forceStart bool
 	queueHeld  bool
+
+	// downLimit and upLimit are this torrent's own rate caps, created fresh
+	// (unlimited) in Add and appended to its torrent.Config.DownLimit/
+	// UpLimit alongside the engine-wide Defaults.DownLimit/UpLimit — see
+	// SetTorrentRateLimit. Changing them via *ratelimit.Limiter.SetLimit
+	// takes effect immediately for every connection this torrent already
+	// has open, since they're the same object each connection's
+	// peer.Limits holds a pointer to; no control-channel round trip to the
+	// torrent actor is needed.
+	downLimit *ratelimit.Limiter
+	upLimit   *ratelimit.Limiter
 }
 
 // displayNameFor picks the best name available for mt — see Summary.Name.
@@ -186,6 +210,13 @@ type Engine struct {
 	// nextQueuePos assigns each newly-Added torrent's initial queue
 	// position — see queue.go.
 	nextQueuePos int
+
+	// normalDownBps and normalUpBps are Defaults.DownLimit/UpLimit's rate as
+	// configured at New time, captured once so StartAltSpeedSchedule can
+	// restore it after a scheduled alt-speed window ends — see altspeed.go.
+	// Meaningless (and unused) unless Defaults.AltSchedule is set.
+	normalDownBps int64
+	normalUpBps   int64
 }
 
 // New creates an Engine whose manifest lives under stateDir. It does not load
@@ -194,11 +225,31 @@ func New(stateDir string, defaults Defaults) (*Engine, error) {
 	if stateDir == "" {
 		return nil, errors.New("engine: state directory is required")
 	}
-	return &Engine{
+	// AltSchedule needs an actual *ratelimit.Limiter to toggle between the
+	// normal and alt rate even if the caller never configured a normal cap
+	// — a nil DownLimit/UpLimit would otherwise leave StartAltSpeedSchedule
+	// with nothing to call SetLimit on during the alt window.
+	if defaults.AltSchedule != nil {
+		if defaults.DownLimit == nil {
+			defaults.DownLimit = ratelimit.Unlimited()
+		}
+		if defaults.UpLimit == nil {
+			defaults.UpLimit = ratelimit.Unlimited()
+		}
+	}
+
+	e := &Engine{
 		stateDir: stateDir,
 		defaults: defaults,
 		torrents: make(map[metainfo.Hash]*managedTorrent),
-	}, nil
+	}
+	if defaults.DownLimit != nil {
+		e.normalDownBps = defaults.DownLimit.Limit()
+	}
+	if defaults.UpLimit != nil {
+		e.normalUpBps = defaults.UpLimit.Limit()
+	}
+	return e, nil
 }
 
 // Add starts a torrent running under the engine's management from either a
@@ -246,6 +297,16 @@ func (e *Engine) Add(source, downloadDir string) (metainfo.Hash, error) {
 	cfg := e.torrentConfig(downloadDir)
 	cfg.Trackers = trackers
 
+	// Every torrent gets its own rate-cap pair, unlimited until
+	// SetTorrentRateLimit says otherwise, appended alongside the fleet-wide
+	// Defaults.DownLimit/UpLimit torrentConfig already added — both are
+	// waited on for every block, so a per-torrent cap composes with the
+	// process-wide one rather than replacing it. Cheap even when never
+	// used: an unlimited *ratelimit.Limiter's Wait returns immediately.
+	downLimit, upLimit := ratelimit.Unlimited(), ratelimit.Unlimited()
+	cfg.DownLimit = append(cfg.DownLimit, downLimit)
+	cfg.UpLimit = append(cfg.UpLimit, upLimit)
+
 	var tr *torrent.Torrent
 	var err error
 	if mi != nil {
@@ -257,7 +318,10 @@ func (e *Engine) Add(source, downloadDir string) (metainfo.Hash, error) {
 		return metainfo.Hash{}, fmt.Errorf("engine: creating torrent: %w", err)
 	}
 
-	mt := &managedTorrent{t: tr, source: source, downloadDir: downloadDir, displayName: dn, queuePos: e.nextQueuePos}
+	mt := &managedTorrent{
+		t: tr, source: source, downloadDir: downloadDir, displayName: dn,
+		queuePos: e.nextQueuePos, downLimit: downLimit, upLimit: upLimit,
+	}
 	e.nextQueuePos++
 	e.torrents[hash] = mt
 
@@ -746,18 +810,28 @@ func (e *Engine) Shutdown() {
 	wg.Wait()
 }
 
+// torrentConfig builds the Config every Add'd torrent starts with, minus
+// the per-torrent rate limiters — Add appends those itself once it has
+// created them (see managedTorrent.downLimit/upLimit), since this method
+// only knows about fleet-wide Defaults.
 func (e *Engine) torrentConfig(downloadDir string) torrent.Config {
 	cfg := torrent.Config{
-		DownloadDir:         downloadDir,
-		ResumeDir:           e.defaults.ResumeDir,
-		ListenPort:          e.defaults.ListenPort,
-		Allocation:          e.defaults.Allocation,
-		PickerStrategy:      e.defaults.PickerStrategy,
-		DownLimit:           e.defaults.DownLimit,
-		UpLimit:             e.defaults.UpLimit,
-		SeedRatioLimit:      e.defaults.SeedRatioLimit,
-		SeedTimeLimit:       e.defaults.SeedTimeLimit,
-		FirstLastPieceFirst: e.defaults.FirstLastPieceFirst,
+		DownloadDir:          downloadDir,
+		ResumeDir:            e.defaults.ResumeDir,
+		ListenPort:           e.defaults.ListenPort,
+		Allocation:           e.defaults.Allocation,
+		PickerStrategy:       e.defaults.PickerStrategy,
+		SeedRatioLimit:       e.defaults.SeedRatioLimit,
+		SeedTimeLimit:        e.defaults.SeedTimeLimit,
+		FirstLastPieceFirst:  e.defaults.FirstLastPieceFirst,
+		UploadSlots:          e.defaults.UploadSlots,
+		ExcludeLANFromLimits: e.defaults.ExcludeLANFromLimits,
+	}
+	if e.defaults.DownLimit != nil {
+		cfg.DownLimit = append(cfg.DownLimit, e.defaults.DownLimit)
+	}
+	if e.defaults.UpLimit != nil {
+		cfg.UpLimit = append(cfg.UpLimit, e.defaults.UpLimit)
 	}
 	// Only assign when non-nil: cfg.DHT is a torrent.DHTClient interface, and
 	// assigning a nil *dht.DHT to it would leave the interface non-nil (it
