@@ -8,7 +8,7 @@ import (
 
 func TestResolveMultiFile(t *testing.T) {
 	root := t.TempDir()
-	l, err := NewLayout(root, "MyTorrent", true)
+	l, err := NewLayout(root, "MyTorrent", true, LayoutOriginal)
 	if err != nil {
 		t.Fatalf("NewLayout: %v", err)
 	}
@@ -33,7 +33,7 @@ func TestResolveMultiFile(t *testing.T) {
 
 func TestResolveSingleFile(t *testing.T) {
 	root := t.TempDir()
-	l, err := NewLayout(root, "ubuntu.iso", false)
+	l, err := NewLayout(root, "ubuntu.iso", false, LayoutOriginal)
 	if err != nil {
 		t.Fatalf("NewLayout: %v", err)
 	}
@@ -52,7 +52,7 @@ func TestResolveSingleFile(t *testing.T) {
 // path outside Base even if something upstream is bypassed.
 func TestResolveRejectsEscapes(t *testing.T) {
 	root := t.TempDir()
-	l, err := NewLayout(root, "MyTorrent", true)
+	l, err := NewLayout(root, "MyTorrent", true, LayoutOriginal)
 	if err != nil {
 		t.Fatalf("NewLayout: %v", err)
 	}
@@ -84,7 +84,47 @@ func TestResolveRejectsEscapes(t *testing.T) {
 }
 
 func TestNewLayoutRejectsEmptyName(t *testing.T) {
-	if _, err := NewLayout(t.TempDir(), "", false); err == nil {
+	if _, err := NewLayout(t.TempDir(), "", false, LayoutOriginal); err == nil {
 		t.Fatal("NewLayout accepted an empty torrent name")
+	}
+}
+
+// TestContentLayoutSubfolderWrapsASingleFile proves LayoutSubfolder wraps
+// even a single-file torrent in <name>/, unlike the default.
+func TestContentLayoutSubfolderWrapsASingleFile(t *testing.T) {
+	root := t.TempDir()
+	l, err := NewLayout(root, "ubuntu.iso", false, LayoutSubfolder)
+	if err != nil {
+		t.Fatalf("NewLayout: %v", err)
+	}
+	got, err := l.Resolve(nil)
+	if err != nil {
+		t.Fatalf("Resolve(nil): %v", err)
+	}
+	want := filepath.Join(root, "ubuntu.iso", "ubuntu.iso")
+	if got != want {
+		t.Fatalf("Resolve(nil) = %q, want %q", got, want)
+	}
+}
+
+// TestContentLayoutNoSubfolderFlattensAMultiFileTorrent proves
+// LayoutNoSubfolder drops the wrapping <name>/ directory even for a
+// multi-file torrent, landing files directly under the download directory.
+func TestContentLayoutNoSubfolderFlattensAMultiFileTorrent(t *testing.T) {
+	root := t.TempDir()
+	l, err := NewLayout(root, "MyTorrent", true, LayoutNoSubfolder)
+	if err != nil {
+		t.Fatalf("NewLayout: %v", err)
+	}
+	if l.Base() != root {
+		t.Fatalf("Base() = %q, want the download directory %q unwrapped", l.Base(), root)
+	}
+	got, err := l.Resolve([]string{"data", "part1.bin"})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	want := filepath.Join(root, "data", "part1.bin")
+	if got != want {
+		t.Fatalf("Resolve = %q, want %q", got, want)
 	}
 }

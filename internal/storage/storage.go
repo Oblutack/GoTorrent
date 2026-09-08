@@ -55,10 +55,11 @@ type Storage struct {
 	skip  []bool
 	total int64
 
-	cache      *handleCache
-	allocation Allocation
-	dirMode    os.FileMode
-	fileMode   os.FileMode
+	cache         *handleCache
+	allocation    Allocation
+	contentLayout ContentLayout
+	dirMode       os.FileMode
+	fileMode      os.FileMode
 
 	mu        sync.Mutex
 	allocated bool
@@ -81,6 +82,12 @@ type Option func(*Storage)
 // WithAllocation selects sparse or full allocation.
 func WithAllocation(a Allocation) Option {
 	return func(s *Storage) { s.allocation = a }
+}
+
+// WithContentLayout selects whether this torrent's data gets a wrapping
+// <downloadDir>/<name>/ directory — see ContentLayout.
+func WithContentLayout(c ContentLayout) Option {
+	return func(s *Storage) { s.contentLayout = c }
 }
 
 // WithMaxOpenFiles bounds the open file handle cache.
@@ -114,13 +121,7 @@ func New(downloadDir string, mi *metainfo.MetaInfo, opts ...Option) (*Storage, e
 		return nil, metainfo.ErrNoMetadata
 	}
 
-	layout, err := NewLayout(downloadDir, mi.Info.Name, mi.Info.IsMultiFile())
-	if err != nil {
-		return nil, err
-	}
-
 	s := &Storage{
-		layout:     layout,
 		total:      mi.TotalLength,
 		cache:      newHandleCache(DefaultMaxOpenFiles),
 		allocation: Sparse,
@@ -130,6 +131,14 @@ func New(downloadDir string, mi *metainfo.MetaInfo, opts ...Option) (*Storage, e
 	for _, opt := range opts {
 		opt(s)
 	}
+
+	// Built after options are applied: WithContentLayout must be able to
+	// influence it.
+	layout, err := NewLayout(downloadDir, mi.Info.Name, mi.Info.IsMultiFile(), s.contentLayout)
+	if err != nil {
+		return nil, err
+	}
+	s.layout = layout
 
 	if mi.Info.IsMultiFile() {
 		var offset int64

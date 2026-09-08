@@ -71,6 +71,9 @@ type Config struct {
 	OurID [20]byte
 	// Allocation selects sparse or full file pre-allocation.
 	Allocation storage.Allocation
+	// ContentLayout selects whether this torrent's data gets a wrapping
+	// <DownloadDir>/<name>/ directory. Defaults to storage.LayoutOriginal.
+	ContentLayout storage.ContentLayout
 	// PickerStrategy selects piece ordering. Defaults to rarest-first.
 	PickerStrategy picker.Strategy
 	// DownLimit and UpLimit cap this torrent's aggregate transfer rate,
@@ -347,6 +350,31 @@ func (t *Torrent) InfoHash() metainfo.Hash { return t.infoHash }
 // Metadata returns the parsed .torrent info, or nil if it is not known yet.
 func (t *Torrent) Metadata() *metainfo.MetaInfo { return t.mi.Load() }
 
+// ContentPath is the on-disk root of this torrent's data: the file itself
+// for a single-file torrent, or the directory holding every file for a
+// multi-file one (see storage.Layout) — recomputed from metadata and
+// Config rather than read off the actor-owned storage field, so it is safe
+// to call from any goroutine at any time, not just ones the actor itself
+// spawned. Empty until metadata is known.
+func (t *Torrent) ContentPath() string {
+	mi := t.mi.Load()
+	if mi == nil {
+		return ""
+	}
+	layout, err := storage.NewLayout(t.cfg.DownloadDir, mi.Info.Name, mi.Info.IsMultiFile(), t.cfg.ContentLayout)
+	if err != nil {
+		return ""
+	}
+	if mi.Info.IsMultiFile() {
+		return layout.Base()
+	}
+	path, err := layout.Resolve(nil)
+	if err != nil {
+		return ""
+	}
+	return path
+}
+
 // State is the current lifecycle state.
 func (t *Torrent) State() State { return State(t.state.Load()) }
 
@@ -487,7 +515,10 @@ func (t *Torrent) openMetadata(mi *metainfo.MetaInfo) error {
 		skip[i] = pr == picker.PrioritySkip
 	}
 
-	st, err := storage.New(t.cfg.DownloadDir, mi, storage.WithAllocation(t.cfg.Allocation), storage.WithSkipFiles(skip))
+	st, err := storage.New(t.cfg.DownloadDir, mi,
+		storage.WithAllocation(t.cfg.Allocation),
+		storage.WithContentLayout(t.cfg.ContentLayout),
+		storage.WithSkipFiles(skip))
 	if err != nil {
 		return fmt.Errorf("opening storage: %w", err)
 	}
