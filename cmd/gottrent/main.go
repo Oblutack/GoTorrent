@@ -63,7 +63,25 @@ func parseContentLayout(s string) (storage.ContentLayout, error) {
 	}
 }
 
+// main dispatches to a subcommand (create, verify) if the first argument
+// names one, otherwise runs the ordinary fleet manager — kept as the
+// no-subcommand default so every existing invocation (bare -torrent flags)
+// keeps working unchanged.
 func main() {
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "create":
+			runCreate(os.Args[2:])
+			return
+		case "verify":
+			runVerify(os.Args[2:])
+			return
+		}
+	}
+	runFleet()
+}
+
+func runFleet() {
 	var sources torrentSources
 	flag.Var(&sources, "torrent", "A .torrent file path or a magnet: URI (repeat for multiple torrents)")
 	downloadDir := flag.String("dir", ".", "Default directory to save downloaded files")
