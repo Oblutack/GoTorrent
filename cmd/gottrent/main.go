@@ -109,6 +109,10 @@ func runFleet() {
 	flag.Var(catPaths, "category-path", `Default save path for a category, as "name=path" (repeat for multiple categories; no CLI flag adds a torrent under a category yet, see AddOptions)`)
 	watchDir := flag.String("watch-dir", "", "Directory to poll for .torrent files and auto-add (empty = disabled)")
 	onComplete := flag.String("on-complete", "", `Shell command to run the first time a torrent finishes seeding, with %N/%F/%D substituted for its name/content path/download directory (empty = disabled)`)
+	ipFilterPath := flag.String("ip-filter", "", "Path to an eMule ipfilter.dat or PeerGuardian .p2p blocklist file (empty = disabled)")
+	ipFilterURL := flag.String("ip-filter-url", "", "URL to auto-update the IP filter from, in addition to -ip-filter (empty = disabled)")
+	ipFilterFormat := flag.String("ip-filter-format", "", `Blocklist format: "dat" or "p2p" (empty = guess from -ip-filter/-ip-filter-url's extension)`)
+	ipFilterUpdateInterval := flag.Duration("ip-filter-update-interval", 0, "How often to re-fetch -ip-filter-url, e.g. 12h (0 = 24h default)")
 	verbose := flag.Bool("verbose", false, "Enable verbose logging")
 	flag.Parse()
 
@@ -129,22 +133,26 @@ func runFleet() {
 	}
 
 	defaults := engine.Defaults{
-		DownloadDir:          *downloadDir,
-		ListenPort:           uint16(*listenPort),
-		BindAddress:          *bindAddress,
-		SeedRatioLimit:       *ratioLimit,
-		SeedTimeLimit:        *seedTimeLimit,
-		FirstLastPieceFirst:  *firstLastPiece,
-		MaxActiveDownloads:   *maxActiveDownloads,
-		MaxActiveSeeds:       *maxActiveSeeds,
-		MaxActiveTotal:       *maxActiveTotal,
-		UploadSlots:          *uploadSlots,
-		ExcludeLANFromLimits: *excludeLAN,
-		AltDownLimit:         int64(*altDownLimitKB) * 1024,
-		AltUpLimit:           int64(*altUpLimitKB) * 1024,
-		ContentLayout:        contentLayout,
-		CategoryPaths:        catPaths,
-		OnComplete:           *onComplete,
+		DownloadDir:            *downloadDir,
+		ListenPort:             uint16(*listenPort),
+		BindAddress:            *bindAddress,
+		SeedRatioLimit:         *ratioLimit,
+		SeedTimeLimit:          *seedTimeLimit,
+		FirstLastPieceFirst:    *firstLastPiece,
+		MaxActiveDownloads:     *maxActiveDownloads,
+		MaxActiveSeeds:         *maxActiveSeeds,
+		MaxActiveTotal:         *maxActiveTotal,
+		UploadSlots:            *uploadSlots,
+		ExcludeLANFromLimits:   *excludeLAN,
+		AltDownLimit:           int64(*altDownLimitKB) * 1024,
+		AltUpLimit:             int64(*altUpLimitKB) * 1024,
+		ContentLayout:          contentLayout,
+		CategoryPaths:          catPaths,
+		OnComplete:             *onComplete,
+		IPFilterPath:           *ipFilterPath,
+		IPFilterURL:            *ipFilterURL,
+		IPFilterFormat:         *ipFilterFormat,
+		IPFilterUpdateInterval: *ipFilterUpdateInterval,
 	}
 	if *sequential {
 		defaults.PickerStrategy = picker.Sequential
@@ -166,6 +174,12 @@ func runFleet() {
 	e, err := engine.New(dir, defaults)
 	if err != nil {
 		logger.Error.Fatalf("Error creating engine: %v\n", err)
+	}
+
+	// Before Listen: closes the startup window where an inbound connection
+	// could arrive before a local -ip-filter file is actually loaded.
+	if err := e.StartIPFilter(context.Background()); err != nil {
+		logger.Error.Fatalf("Error loading -ip-filter: %v\n", err)
 	}
 
 	// actualPort is what every subsequent StartDHT/StartPortMapping/StartLSD
