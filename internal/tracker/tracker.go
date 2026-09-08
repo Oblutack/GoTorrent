@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/Oblutack/GoTorrent/internal/bencode"
+	"github.com/Oblutack/GoTorrent/internal/version"
 )
 
 const (
@@ -28,10 +29,6 @@ const (
 	maxPeersInResponse = 1000
 
 	defaultTimeout = 45 * time.Second
-
-	// peerIDPrefix identifies this client in the Azureus-style peer ID format:
-	// two letters for the client, four digits for the version.
-	peerIDPrefix = "-GT0001-"
 )
 
 // ErrTrackerFailure is returned when a tracker answers with a failure reason.
@@ -159,11 +156,23 @@ func (r *AnnounceRequest) BuildURL(announceURL string) (string, error) {
 	return base.String(), nil
 }
 
-// GeneratePeerID returns a fresh random peer ID with this client's prefix.
+// GeneratePeerID returns a fresh random peer ID with this client's
+// BEP 20 prefix (version.PeerIDPrefix).
 func GeneratePeerID() ([20]byte, error) {
+	return generatePeerID(version.PeerIDPrefix)
+}
+
+// GenerateAnonymousPeerID returns a fresh random peer ID with no
+// identifying prefix at all — every byte random, so nothing about it says
+// "GoTorrent". 3.7's anonymous mode uses this instead of GeneratePeerID.
+func GenerateAnonymousPeerID() ([20]byte, error) {
+	return generatePeerID("")
+}
+
+func generatePeerID(prefix string) ([20]byte, error) {
 	var id [20]byte
-	copy(id[:], peerIDPrefix)
-	if _, err := rand.Read(id[len(peerIDPrefix):]); err != nil {
+	copy(id[:], prefix)
+	if _, err := rand.Read(id[len(prefix):]); err != nil {
 		return id, fmt.Errorf("tracker: could not generate a peer ID: %w", err)
 	}
 	return id, nil
@@ -218,6 +227,7 @@ func (c *Client) announceHTTP(ctx context.Context, announceURL string, req Annou
 	if err != nil {
 		return nil, fmt.Errorf("tracker: could not build request: %w", err)
 	}
+	httpReq.Header.Set("User-Agent", version.UserAgent)
 
 	resp, err := c.http.Do(httpReq)
 	if err != nil {
