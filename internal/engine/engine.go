@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/Oblutack/GoTorrent/internal/dht"
+	"github.com/Oblutack/GoTorrent/internal/ipfilter"
 	"github.com/Oblutack/GoTorrent/internal/logger"
 	"github.com/Oblutack/GoTorrent/internal/lsd"
 	"github.com/Oblutack/GoTorrent/internal/metainfo"
@@ -109,6 +110,17 @@ type Defaults struct {
 	// %N expands to the torrent's name, %F to ContentPath(), %D to its
 	// download directory; %% is a literal percent sign.
 	OnComplete string
+	// IPFilterPath, IPFilterURL, IPFilterFormat, and IPFilterUpdateInterval
+	// configure the fleet-wide blocklist — see StartIPFilter (ipfilter.go).
+	// IPFilterFormat is "dat" (eMule) or "p2p" (PeerGuardian); empty
+	// auto-detects from the path/URL's extension, defaulting to "dat" if
+	// that fails. Both a local path and a URL may be set — the path loads
+	// once at startup, the URL re-fetches on IPFilterUpdateInterval
+	// (default 24h) on top of it.
+	IPFilterPath           string
+	IPFilterURL            string
+	IPFilterFormat         string
+	IPFilterUpdateInterval time.Duration
 	// CategoryPaths maps a category name (AddOptions.Category) to the
 	// download directory a torrent Added under that category uses when its
 	// own downloadDir argument is empty — checked before falling back to
@@ -252,6 +264,16 @@ type Engine struct {
 	// Meaningless (and unused) unless Defaults.AltSchedule is set.
 	normalDownBps int64
 	normalUpBps   int64
+
+	// ipFilter is one shared *ipfilter.Filter for the whole fleet — the
+	// same "one instance, several owners" reasoning as dhtNode/listener:
+	// blocking a range is a property of the process, not of one torrent.
+	// Always non-nil (New creates an empty one), so handleIncoming and
+	// torrentConfig never need a nil check; StartIPFilter (ipfilter.go)
+	// is what actually populates it. Reassigned only by StartIPFilter's
+	// own Load calls, never elsewhere, so reading the pointer itself needs
+	// no lock even though the Filter it points to guards its own ranges.
+	ipFilter *ipfilter.Filter
 }
 
 // New creates an Engine whose manifest lives under stateDir. It does not load
@@ -277,6 +299,7 @@ func New(stateDir string, defaults Defaults) (*Engine, error) {
 		stateDir: stateDir,
 		defaults: defaults,
 		torrents: make(map[metainfo.Hash]*managedTorrent),
+		ipFilter: ipfilter.New(),
 	}
 	if defaults.DownLimit != nil {
 		e.normalDownBps = defaults.DownLimit.Limit()
@@ -574,6 +597,10 @@ func (e *Engine) acceptLoop(ln net.Listener) {
 // already at its limit cannot even tie up a goroutine reading from it.
 func (e *Engine) handleIncoming(conn net.Conn) {
 	ip := remoteIP(conn)
+	if e.ipFilter.Blocked(net.ParseIP(ip)) {
+		conn.Close()
+		return
+	}
 	if !e.reserveInboundSlot(ip) {
 		logger.Logf("engine: %s already has %d inbound connections, closing this one\n", ip, maxInboundPerIP)
 		conn.Close()
@@ -895,6 +922,7 @@ func (e *Engine) torrentConfig(downloadDir string) torrent.Config {
 		FirstLastPieceFirst:  e.defaults.FirstLastPieceFirst,
 		UploadSlots:          e.defaults.UploadSlots,
 		ExcludeLANFromLimits: e.defaults.ExcludeLANFromLimits,
+		IPFilter:             e.ipFilter,
 	}
 	if e.defaults.DownLimit != nil {
 		cfg.DownLimit = append(cfg.DownLimit, e.defaults.DownLimit)
