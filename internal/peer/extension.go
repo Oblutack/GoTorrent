@@ -28,6 +28,10 @@ const localUtMetadataID = 1
 // handshake's "m" dict.
 const localUtPexID = 2
 
+// localUploadOnlyID is BEP 21 partial-seed advertising's counterpart to
+// localUtMetadataID.
+const localUploadOnlyID = 3
+
 // MetadataPieceSize is BEP 9's fixed chunk size for info-dictionary
 // transfer, same as a regular block. Exported so a caller assembling a
 // fetch (internal/torrent) can compute how many pieces a given
@@ -52,6 +56,11 @@ type extHandshakeWire struct {
 	M            map[string]int `bencode:"m"`
 	MetadataSize int            `bencode:"metadata_size,omitempty"`
 	V            string         `bencode:"v,omitempty"`
+	// UploadOnly is BEP 21's initial-state announcement, 1 or omitted
+	// (never explicit 0 — omitempty drops it, which is the same "not
+	// upload-only" default a peer assumes for a handshake with no key at
+	// all, matching how other clients send this).
+	UploadOnly int `bencode:"upload_only,omitempty"`
 }
 
 // utMetadataWire is the small bencoded header in front of every ut_metadata
@@ -79,11 +88,18 @@ type MetadataPiece struct {
 // reserved bit is a protocol violation most peers would simply ignore, but
 // there's no reason to find out.
 func (c *Client) sendExtendedHandshake() error {
-	hs := extHandshakeWire{M: map[string]int{"ut_metadata": localUtMetadataID, "ut_pex": localUtPexID}}
+	hs := extHandshakeWire{M: map[string]int{
+		"ut_metadata": localUtMetadataID,
+		"ut_pex":      localUtPexID,
+		"upload_only": localUploadOnlyID,
+	}}
 	if c.metadataBytes != nil {
 		if b := c.metadataBytes(); b != nil {
 			hs.MetadataSize = len(b)
 		}
+	}
+	if c.uploadOnly != nil && c.uploadOnly() {
+		hs.UploadOnly = 1
 	}
 	return c.sendExtendedMessage(0, hs, nil)
 }
@@ -138,6 +154,12 @@ func (c *Client) handleExtendedHandshake(body []byte) error {
 	}
 	if id, ok := hs.M["ut_pex"]; ok && id > 0 && id <= 255 {
 		c.peerUtPexID.Store(int32(id))
+	}
+	if id, ok := hs.M["upload_only"]; ok && id > 0 && id <= 255 {
+		c.peerUploadOnlyID.Store(int32(id))
+	}
+	if hs.UploadOnly != 0 {
+		c.peerUploadOnly.Store(true)
 	}
 	c.notify(Event{Kind: EventExtendedHandshake})
 	return nil
@@ -304,4 +326,55 @@ func encodeCompactPeerList(peers []tracker.PeerInfo) []byte {
 		buf = append(buf, entry...)
 	}
 	return buf
+}
+
+// --- upload_only (BEP 21) --------------------------------------------------
+
+// SupportsUploadOnly reports whether the peer's extended handshake (already
+// received) advertised upload_only support.
+func (c *Client) SupportsUploadOnly() bool { return c.peerUploadOnlyID.Load() != 0 }
+
+// PeerUploadOnly is the peer's most recently announced BEP 21 status —
+// false until they say otherwise (either the extended handshake's own
+// "upload_only" key, or a live update via SendUploadOnly).
+func (c *Client) PeerUploadOnly() bool { return c.peerUploadOnly.Load() }
+
+// SendUploadOnly announces a change in our own upload-only status (BEP 21):
+// true once we want nothing further from any peer — full seed, or every
+// file 3.2's priorities actually want is already complete. It is a no-op
+// (not an error) if the peer never advertised upload_only support, so a
+// caller can broadcast to every connected peer without checking
+// SupportsUploadOnly itself first — same shape as SendPEX.
+//
+// Unlike every other extended message in this file, the payload here is
+// not bencoded at all (BEP 21: a single raw byte) — sendExtendedRawMessage
+// exists just for this.
+func (c *Client) SendUploadOnly(uploadOnly bool) error {
+	id := int(c.peerUploadOnlyID.Load())
+	if id == 0 {
+		return nil
+	}
+	b := byte(0)
+	if uploadOnly {
+		b = 1
+	}
+	return c.sendExtendedRawMessage(id, []byte{b})
+}
+
+func (c *Client) handleUploadOnlyMessage(body []byte) error {
+	if len(body) < 1 {
+		return fmt.Errorf("malformed upload_only message: empty body")
+	}
+	c.peerUploadOnly.Store(body[0] != 0)
+	return nil
+}
+
+// sendExtendedRawMessage sends peerExtID with raw appended verbatim and
+// nothing bencoded in front of it — BEP 21's upload_only is the one
+// extension in this file whose payload isn't a bencoded dict.
+func (c *Client) sendExtendedRawMessage(peerExtID int, raw []byte) error {
+	payload := make([]byte, 1+len(raw))
+	payload[0] = byte(peerExtID)
+	copy(payload[1:], raw)
+	return c.SendMessage(MsgExtended, payload)
 }

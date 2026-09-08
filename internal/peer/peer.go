@@ -265,6 +265,11 @@ type Callbacks struct {
 	// answering a BEP 9 ut_metadata request — nil means we don't have
 	// metadata yet ourselves (e.g. we're mid-magnet too).
 	MetadataBytes func() []byte
+	// UploadOnly reports whether we currently want nothing further from
+	// peers (BEP 21) — true once seeding, or once every wanted file (3.2
+	// priorities) is complete even if the torrent as a whole isn't. Nil
+	// means never announce upload_only at all (advertised as false).
+	UploadOnly func() bool
 }
 
 // Client represents a connection to a single BitTorrent peer.
@@ -357,12 +362,21 @@ type Client struct {
 	peerMetadataSize atomic.Int64
 	// peerUtPexID mirrors peerUtMetadataID for BEP 11 ut_pex.
 	peerUtPexID atomic.Int32
+	// peerUploadOnlyID mirrors peerUtMetadataID for BEP 21 upload_only.
+	peerUploadOnlyID atomic.Int32
+	// peerUploadOnly is the peer's most recently announced BEP 21 status
+	// (via the extended handshake's own "upload_only" key, or a live
+	// upload_only message) — false until they say otherwise. Parsed and
+	// stored, but nothing in this client acts on it yet: same "received,
+	// validated, intentionally not acted on" shape as SuggestPiece (BEP 6).
+	peerUploadOnly atomic.Bool
 
 	// Dependencies injected from the owner for serving another peer's
 	// requests. See Callbacks.
 	hasPiece          func(index uint32) bool
 	readBlockFromDisk func(index, begin, length uint32) ([]byte, error)
 	metadataBytes     func() []byte
+	uploadOnly        func() bool
 }
 
 // DialFunc dials one outbound connection, matching net.Dialer.DialContext's
@@ -468,6 +482,7 @@ func newClient(conn net.Conn, torrent TorrentInfo, ourID [20]byte, peerHandshake
 		hasPiece:          callbacks.HasPiece,
 		readBlockFromDisk: callbacks.ReadBlock,
 		metadataBytes:     callbacks.MetadataBytes,
+		uploadOnly:        callbacks.UploadOnly,
 	}
 	c.torrentInfo.Store(&torrent)
 	c.amChoking.Store(true)   // we start by choking the peer
@@ -818,6 +833,8 @@ func (c *Client) handleMessage(msg *Message) bool {
 			err = c.handleUtMetadataMessage(body)
 		case int(extID) == localUtPexID:
 			err = c.handleUtPexMessage(body)
+		case int(extID) == localUploadOnlyID:
+			err = c.handleUploadOnlyMessage(body)
 		default:
 			// An extended id for something we didn't advertise support for —
 			// either a stale id from before a renegotiation, or the peer
