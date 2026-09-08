@@ -146,7 +146,7 @@ func TestHaveAllBeforeMetadataAppliesOnUpgrade(t *testing.T) {
 	}()
 
 	addr := ln.Addr().(*net.TCPAddr)
-	client, err := NewClient(mustPeerInfo(addr), magnetTorrent, [20]byte{}, Callbacks{}, Limits{})
+	client, err := NewClient(mustPeerInfo(addr), magnetTorrent, [20]byte{}, Callbacks{}, Limits{}, nil)
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -287,7 +287,7 @@ func TestServeRequestStaysSilentForNonFastPeer(t *testing.T) {
 	}()
 
 	addr := ln.Addr().(*net.TCPAddr)
-	client, err := NewClient(mustPeerInfo(addr), testTorrent, [20]byte{}, Callbacks{HasPiece: func(uint32) bool { return false }}, Limits{})
+	client, err := NewClient(mustPeerInfo(addr), testTorrent, [20]byte{}, Callbacks{HasPiece: func(uint32) bool { return false }}, Limits{}, nil)
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}

@@ -2,6 +2,7 @@ package peer
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -364,20 +365,33 @@ type Client struct {
 	metadataBytes     func() []byte
 }
 
+// DialFunc dials one outbound connection, matching net.Dialer.DialContext's
+// signature exactly so a *proxy.Dialer's method value can be passed
+// directly. A nil DialFunc passed to NewClient dials directly.
+type DialFunc func(ctx context.Context, network, addr string) (net.Conn, error)
+
 // NewClient attempts to connect to a peer and perform a handshake. A zero
 // Limits leaves both directions unlimited; a zero Callbacks means this
 // connection never serves anything to the peer (fine for a client that only
-// ever downloads).
+// ever downloads). dial is optional (nil dials directly with net.Dialer) —
+// 3.7's proxy support passes a *proxy.Dialer's DialContext method value so
+// outbound peer connections tunnel through a configured SOCKS5/HTTP proxy.
 func NewClient(
 	peerInfo tracker.PeerInfo,
 	torrent TorrentInfo,
 	ourID [20]byte,
 	callbacks Callbacks,
 	limits Limits,
+	dial DialFunc,
 ) (*Client, error) {
+	if dial == nil {
+		dial = (&net.Dialer{}).DialContext
+	}
 	address := net.JoinHostPort(peerInfo.IP.String(), strconv.Itoa(int(peerInfo.Port)))
 	logger.Logf("peer: attempting to connect to %s\n", address)
-	conn, err := net.DialTimeout("tcp", address, handshakeTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), handshakeTimeout)
+	defer cancel()
+	conn, err := dial(ctx, "tcp", address)
 	if err != nil {
 		return nil, fmt.Errorf("peer: failed to dial %s: %w", address, err)
 	}

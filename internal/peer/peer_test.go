@@ -82,6 +82,7 @@ func dialTestPeer(t *testing.T, callbacks Callbacks) (*Client, net.Conn) {
 		[20]byte{},
 		callbacks,
 		Limits{},
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)

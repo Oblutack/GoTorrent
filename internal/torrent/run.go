@@ -357,7 +357,7 @@ func (t *Torrent) connectAndPump(ctx context.Context, pi tracker.PeerInfo) {
 
 	client, err := peer.NewClient(pi, t.peerTorrentInfo(), t.cfg.OurID,
 		peer.Callbacks{HasPiece: t.hasPieceSafe, ReadBlock: t.readBlockSafe, MetadataBytes: t.metadataBytesSafe},
-		t.peerLimits(pi.Addr()))
+		t.peerLimits(pi.Addr()), t.cfg.ProxyDialer.DialContext)
 	if err != nil {
 		t.sendEvent(ctx, eventDialFailed{addr: pi.Addr()})
 		return

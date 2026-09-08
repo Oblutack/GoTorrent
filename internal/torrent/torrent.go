@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/Oblutack/GoTorrent/internal/metainfo"
 	"github.com/Oblutack/GoTorrent/internal/peer"
 	"github.com/Oblutack/GoTorrent/internal/picker"
+	"github.com/Oblutack/GoTorrent/internal/proxy"
 	"github.com/Oblutack/GoTorrent/internal/ratelimit"
 	"github.com/Oblutack/GoTorrent/internal/storage"
 	"github.com/Oblutack/GoTorrent/internal/tracker"
@@ -100,6 +102,15 @@ type Config struct {
 	// manages the same shared *ipfilter.Filter, the same "one instance,
 	// several owners" shape as DownLimit/UpLimit.
 	IPFilter *ipfilter.Filter
+	// ProxyDialer (3.7) tunnels every outbound peer connection through a
+	// configured SOCKS5/HTTP proxy — passed straight through to
+	// peer.NewClient. Nil (the default, and also what a nil *proxy.Dialer
+	// itself does) dials directly. The HTTP(S) tracker client is built
+	// from the same Dialer in newTorrent, so both share one proxy
+	// configuration; UDP trackers and DHT are not proxied (SOCKS5 UDP
+	// ASSOCIATE is a real protocol extension this client does not
+	// implement — a deliberate, documented gap).
+	ProxyDialer *proxy.Dialer
 	// Trackers seeds the announce loop before metadata is known — a magnet
 	// link's tr= parameters. Ignored once mi is set: from then on
 	// announceURLs reads mi.AnnounceURLs() instead. Meaningless for a
@@ -344,10 +355,20 @@ func newTorrent(hash metainfo.Hash, cfg Config) (*Torrent, error) {
 		chokerOpts = append(chokerOpts, choker.WithSlots(cfg.UploadSlots))
 	}
 
+	// HTTP(S) tracker announces go through the same proxy as peer
+	// connections (cfg.ProxyDialer, nil-safe — a nil Dialer here just
+	// leaves httpClient nil too, and tracker.NewClient(nil) already means
+	// "use a plain default client"). UDP trackers are not proxied — see
+	// Config.ProxyDialer's own doc comment.
+	var httpClient *http.Client
+	if cfg.ProxyDialer != nil {
+		httpClient = &http.Client{Transport: &http.Transport{DialContext: cfg.ProxyDialer.DialContext}}
+	}
+
 	t := &Torrent{
 		infoHash:      hash,
 		cfg:           cfg,
-		trackerClient: tracker.NewClient(nil),
+		trackerClient: tracker.NewClient(httpClient),
 		peers:         make(map[string]*peerConn),
 		dialing:       make(map[string]bool),
 		pexKnownPeers: make(map[string]tracker.PeerInfo),
