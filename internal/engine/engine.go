@@ -27,6 +27,7 @@ import (
 	"github.com/Oblutack/GoTorrent/internal/peer"
 	"github.com/Oblutack/GoTorrent/internal/picker"
 	"github.com/Oblutack/GoTorrent/internal/portmap"
+	"github.com/Oblutack/GoTorrent/internal/proxy"
 	"github.com/Oblutack/GoTorrent/internal/ratelimit"
 	"github.com/Oblutack/GoTorrent/internal/storage"
 	"github.com/Oblutack/GoTorrent/internal/torrent"
@@ -127,6 +128,33 @@ type Defaults struct {
 	// DownloadDir. Changing a torrent's category later (SetCategory) does
 	// not move its files; see MoveData for that.
 	CategoryPaths map[string]string
+	// ProxyType, ProxyAddress, ProxyUsername, ProxyPassword, and ProxyDNS
+	// configure the fleet-wide outbound proxy for peer connections and
+	// HTTP(S) tracker announces — see proxy.Config, which these map onto
+	// directly. ProxyType "" (the default) means no proxy: dial directly.
+	// UDP trackers and DHT are never proxied regardless of this setting —
+	// see torrent.Config.ProxyDialer's own doc comment.
+	ProxyType     string
+	ProxyAddress  string
+	ProxyUsername string
+	ProxyPassword string
+	ProxyDNS      bool
+	// AnonymousMode strips this client's identifying fingerprint (every
+	// torrent's peer ID loses version.PeerIDPrefix — see
+	// torrent.Config.AnonymousMode) and disables LSD (StartLSD becomes a
+	// no-op — a local-network broadcast unrelated to any proxy, and not
+	// something an anonymity-seeking user wants regardless). New refuses
+	// to even construct an Engine with AnonymousMode set and ProxyType
+	// empty — anonymity without an actually-configured proxy is a false
+	// promise this package won't make.
+	//
+	// DHT and PEX are deliberately left alone by this flag on its own: DHT
+	// is UDP and never proxied no matter what (see the same doc comment
+	// above), and PEX rides existing TCP peer connections, which are
+	// already proxied whenever a proxy is configured — so both already
+	// inherit whatever this setting implies rather than needing their own
+	// special case here.
+	AnonymousMode bool
 }
 
 // Summary is a point-in-time view of one managed torrent, safe to read from
@@ -274,6 +302,13 @@ type Engine struct {
 	// own Load calls, never elsewhere, so reading the pointer itself needs
 	// no lock even though the Filter it points to guards its own ranges.
 	ipFilter *ipfilter.Filter
+
+	// proxyDialer is one shared *proxy.Dialer for the whole fleet, built
+	// once from Defaults.Proxy* at New time (proxy configuration is not
+	// meant to change at runtime, unlike ipFilter's ranges) — nil when no
+	// proxy is configured, which is also what a nil *proxy.Dialer itself
+	// does, so torrentConfig never needs a nil check either way.
+	proxyDialer *proxy.Dialer
 }
 
 // New creates an Engine whose manifest lives under stateDir. It does not load
@@ -281,6 +316,9 @@ type Engine struct {
 func New(stateDir string, defaults Defaults) (*Engine, error) {
 	if stateDir == "" {
 		return nil, errors.New("engine: state directory is required")
+	}
+	if defaults.AnonymousMode && defaults.ProxyType == "" {
+		return nil, errors.New("engine: AnonymousMode requires a configured proxy (ProxyType); refusing to claim anonymity without one")
 	}
 	// AltSchedule needs an actual *ratelimit.Limiter to toggle between the
 	// normal and alt rate even if the caller never configured a normal cap
@@ -300,6 +338,13 @@ func New(stateDir string, defaults Defaults) (*Engine, error) {
 		defaults: defaults,
 		torrents: make(map[metainfo.Hash]*managedTorrent),
 		ipFilter: ipfilter.New(),
+		proxyDialer: proxy.NewDialer(proxy.Config{
+			Type:     defaults.ProxyType,
+			Address:  defaults.ProxyAddress,
+			Username: defaults.ProxyUsername,
+			Password: defaults.ProxyPassword,
+			ProxyDNS: defaults.ProxyDNS,
+		}),
 	}
 	if defaults.DownLimit != nil {
 		e.normalDownBps = defaults.DownLimit.Limit()
@@ -761,9 +806,11 @@ func (e *Engine) StartPortMapping(ctx context.Context, internalPort uint16) erro
 // external port: an LSD peer is on the same LAN by definition and connects
 // directly to this machine's local address, not through any NAT mapping.
 // A zero port means "don't start LSD" and is a no-op, matching Listen and
-// StartDHT's convention.
+// StartDHT's convention — as does Defaults.AnonymousMode: LSD is a
+// local-network broadcast unrelated to any configured proxy, and not
+// something an anonymity-seeking user wants regardless of port.
 func (e *Engine) StartLSD(ctx context.Context, internalPort uint16) error {
-	if internalPort == 0 {
+	if internalPort == 0 || e.defaults.AnonymousMode {
 		return nil
 	}
 	node, err := lsd.New()
@@ -923,6 +970,8 @@ func (e *Engine) torrentConfig(downloadDir string) torrent.Config {
 		UploadSlots:          e.defaults.UploadSlots,
 		ExcludeLANFromLimits: e.defaults.ExcludeLANFromLimits,
 		IPFilter:             e.ipFilter,
+		ProxyDialer:          e.proxyDialer,
+		AnonymousMode:        e.defaults.AnonymousMode,
 	}
 	if e.defaults.DownLimit != nil {
 		cfg.DownLimit = append(cfg.DownLimit, e.defaults.DownLimit)

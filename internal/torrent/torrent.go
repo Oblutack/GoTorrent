@@ -70,8 +70,14 @@ type Config struct {
 	// ListenPort is what we advertise to trackers and DHT peers, and (via
 	// Engine.Listen) actually accept inbound connections on.
 	ListenPort uint16
-	// OurID is this client's peer ID. GeneratePeerID() if left zero.
+	// OurID is this client's peer ID. If left zero, generated fresh —
+	// tracker.GeneratePeerID() normally, or tracker.GenerateAnonymousPeerID()
+	// (no identifying prefix) when AnonymousMode is set.
 	OurID [20]byte
+	// AnonymousMode selects GenerateAnonymousPeerID over GeneratePeerID for
+	// OurID (3.7) — see its own doc comment above. Meaningless if OurID is
+	// already non-zero.
+	AnonymousMode bool
 	// Allocation selects sparse or full file pre-allocation.
 	Allocation storage.Allocation
 	// ContentLayout selects whether this torrent's data gets a wrapping
@@ -336,7 +342,11 @@ func newTorrent(hash metainfo.Hash, cfg Config) (*Torrent, error) {
 		return nil, errors.New("torrent: DownloadDir is required")
 	}
 	if cfg.OurID == ([20]byte{}) {
-		id, err := tracker.GeneratePeerID()
+		generate := tracker.GeneratePeerID
+		if cfg.AnonymousMode {
+			generate = tracker.GenerateAnonymousPeerID
+		}
+		id, err := generate()
 		if err != nil {
 			return nil, err
 		}
@@ -384,6 +394,11 @@ func newTorrent(hash metainfo.Hash, cfg Config) (*Torrent, error) {
 
 // InfoHash is this torrent's identity. It never changes.
 func (t *Torrent) InfoHash() metainfo.Hash { return t.infoHash }
+
+// OurID is this client's peer ID for this torrent — Config.OurID as given,
+// or whatever newTorrent generated in its place. cfg is never mutated
+// after construction, so this is safe to call from any goroutine.
+func (t *Torrent) OurID() [20]byte { return t.cfg.OurID }
 
 // Metadata returns the parsed .torrent info, or nil if it is not known yet.
 func (t *Torrent) Metadata() *metainfo.MetaInfo { return t.mi.Load() }
