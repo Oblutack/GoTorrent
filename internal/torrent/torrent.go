@@ -112,6 +112,12 @@ type Config struct {
 	// time in StateSeeding (see Stats.SeedingDuration), checked continuously
 	// while Seeding. 0 (the default) means unlimited.
 	SeedTimeLimit time.Duration
+	// FirstLastPieceFirst raises the first and last piece of every non-skip
+	// file to picker.PriorityHigh, on top of whatever FilePriorities already
+	// set — 3.1's "makes media previewable" mode: a video file's start and
+	// end arrive early regardless of PickerStrategy, so a player pointed at
+	// the (still incomplete) file can open it and show something.
+	FirstLastPieceFirst bool
 }
 
 // peerConn is one connected peer plus the bookkeeping the actor needs that
@@ -484,7 +490,11 @@ func (t *Torrent) openMetadata(mi *metainfo.MetaInfo) error {
 	if err != nil {
 		return fmt.Errorf("creating picker: %w", err)
 	}
-	if err := pk.SetPriorities(piecePriorities(mi, t.filePriorities)); err != nil {
+	pp := piecePriorities(mi, t.filePriorities)
+	if t.cfg.FirstLastPieceFirst {
+		boostFirstAndLastPiece(mi, t.filePriorities, pp)
+	}
+	if err := pk.SetPriorities(pp); err != nil {
 		return fmt.Errorf("applying file priorities: %w", err)
 	}
 	t.pick = pk

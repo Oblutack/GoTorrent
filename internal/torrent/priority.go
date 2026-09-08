@@ -85,3 +85,28 @@ func piecePriorities(mi *metainfo.MetaInfo, filePriorities []picker.Priority) []
 	}
 	return out
 }
+
+// boostFirstAndLastPiece raises the first and last piece of every non-skip
+// file to PriorityHigh in place, on top of whatever piecePriorities already
+// computed — 3.1's "first-and-last-piece-first" (makes a video file's start
+// and end arrive early enough to preview while the rest is still coming
+// in). A file's own priority is never lowered by this — only ever raised —
+// and a skipped file's pieces are left alone entirely, same as everywhere
+// else priority is derived: skip means skip.
+func boostFirstAndLastPiece(mi *metainfo.MetaInfo, filePriorities []picker.Priority, priorities []picker.Priority) {
+	lengths := fileLengths(mi)
+	var offset int64
+	for i, length := range lengths {
+		if length > 0 && filePriorities[i] != picker.PrioritySkip {
+			first := int(offset / mi.Info.PieceLength)
+			last := int((offset + length - 1) / mi.Info.PieceLength)
+			if priorities[first] < picker.PriorityHigh {
+				priorities[first] = picker.PriorityHigh
+			}
+			if priorities[last] < picker.PriorityHigh {
+				priorities[last] = picker.PriorityHigh
+			}
+		}
+		offset += length
+	}
+}

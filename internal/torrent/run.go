@@ -213,7 +213,11 @@ func (t *Torrent) doSetFilePriority(fileIndex int, priority picker.Priority) err
 		}
 	}
 
-	if err := t.pick.SetPriorities(piecePriorities(mi, t.filePriorities)); err != nil {
+	pp := piecePriorities(mi, t.filePriorities)
+	if t.cfg.FirstLastPieceFirst {
+		boostFirstAndLastPiece(mi, t.filePriorities, pp)
+	}
+	if err := t.pick.SetPriorities(pp); err != nil {
 		return fmt.Errorf("torrent: applying file priorities: %w", err)
 	}
 

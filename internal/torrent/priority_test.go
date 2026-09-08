@@ -75,6 +75,45 @@ func TestPiecePrioritiesSingleFileTorrent(t *testing.T) {
 	assertPriorities(t, got, want)
 }
 
+// TestBoostFirstAndLastPieceRaisesOnlyTheEnds proves the boost touches
+// exactly a file's first and last piece, leaving everything in between
+// alone — a single file spanning five whole pieces, no straddling, so
+// there's no ambiguity about which piece is "the middle".
+func TestBoostFirstAndLastPieceRaisesOnlyTheEnds(t *testing.T) {
+	const pieceLength = 16384
+	mi, _ := buildTorrent(t, "boost", pieceLength, []fileSpec{{length: pieceLength * 5}})
+
+	got := piecePriorities(mi, nil)
+	boostFirstAndLastPiece(mi, normalizedFilePriorities(mi, nil), got)
+
+	want := []picker.Priority{
+		picker.PriorityHigh, picker.PriorityNormal, picker.PriorityNormal,
+		picker.PriorityNormal, picker.PriorityHigh,
+	}
+	assertPriorities(t, got, want)
+}
+
+// TestBoostFirstAndLastPieceLeavesSkippedFilesAlone proves a skipped file's
+// pieces are never raised to High just because they happen to be that
+// file's first/last piece — skip means skip, full stop.
+func TestBoostFirstAndLastPieceLeavesSkippedFilesAlone(t *testing.T) {
+	const pieceLength = 16384
+	mi, _ := buildTorrent(t, "boost-skip", pieceLength, []fileSpec{
+		{path: []string{"a.bin"}, length: pieceLength * 3},
+		{path: []string{"b.bin"}, length: pieceLength * 3},
+	})
+	filePriorities := []picker.Priority{picker.PrioritySkip, picker.PriorityNormal}
+
+	got := piecePriorities(mi, filePriorities)
+	boostFirstAndLastPiece(mi, normalizedFilePriorities(mi, filePriorities), got)
+
+	want := []picker.Priority{
+		picker.PrioritySkip, picker.PrioritySkip, picker.PrioritySkip,
+		picker.PriorityHigh, picker.PriorityNormal, picker.PriorityHigh,
+	}
+	assertPriorities(t, got, want)
+}
+
 func assertPriorities(t *testing.T, got, want []picker.Priority) {
 	t.Helper()
 	if len(got) != len(want) {
