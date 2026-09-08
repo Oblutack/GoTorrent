@@ -19,6 +19,7 @@ import (
 	"github.com/Oblutack/GoTorrent/internal/metainfo"
 	"github.com/Oblutack/GoTorrent/internal/picker"
 	"github.com/Oblutack/GoTorrent/internal/ratelimit"
+	"github.com/Oblutack/GoTorrent/internal/storage"
 )
 
 // torrentSources collects a flag that may be repeated, one -torrent per
@@ -27,6 +28,40 @@ type torrentSources []string
 
 func (p *torrentSources) String() string     { return strings.Join(*p, ",") }
 func (p *torrentSources) Set(v string) error { *p = append(*p, v); return nil }
+
+// categoryPaths collects repeated -category-path name=path flags into a
+// map, for engine.Defaults.CategoryPaths.
+type categoryPaths map[string]string
+
+func (p categoryPaths) String() string {
+	parts := make([]string, 0, len(p))
+	for k, v := range p {
+		parts = append(parts, k+"="+v)
+	}
+	return strings.Join(parts, ",")
+}
+
+func (p categoryPaths) Set(v string) error {
+	name, path, ok := strings.Cut(v, "=")
+	if !ok || name == "" || path == "" {
+		return fmt.Errorf(`invalid -category-path %q, want "name=path"`, v)
+	}
+	p[name] = path
+	return nil
+}
+
+func parseContentLayout(s string) (storage.ContentLayout, error) {
+	switch s {
+	case "original":
+		return storage.LayoutOriginal, nil
+	case "subfolder":
+		return storage.LayoutSubfolder, nil
+	case "no-subfolder":
+		return storage.LayoutNoSubfolder, nil
+	default:
+		return 0, fmt.Errorf(`%q is not one of "original", "subfolder", "no-subfolder"`, s)
+	}
+}
 
 func main() {
 	var sources torrentSources
@@ -51,8 +86,18 @@ func main() {
 	altDownLimitKB := flag.Uint("alt-down-limit", 0, "Download rate cap in KiB/s while -alt-schedule is active (0 = unlimited)")
 	altUpLimitKB := flag.Uint("alt-up-limit", 0, "Upload rate cap in KiB/s while -alt-schedule is active (0 = unlimited)")
 	altSchedule := flag.String("alt-schedule", "", `Weekly window to apply -alt-down-limit/-alt-up-limit instead of -down-limit/-up-limit, e.g. "22:00-06:00" or "Mon,Tue,Wed,Thu,Fri 09:00-17:00" (empty = disabled)`)
+	contentLayoutFlag := flag.String("content-layout", "original", `Directory layout for downloaded content: "original", "subfolder" (always wrap in a <name>/ directory), or "no-subfolder" (never wrap, even a multi-file torrent)`)
+	catPaths := make(categoryPaths)
+	flag.Var(catPaths, "category-path", `Default save path for a category, as "name=path" (repeat for multiple categories; no CLI flag adds a torrent under a category yet, see AddOptions)`)
+	watchDir := flag.String("watch-dir", "", "Directory to poll for .torrent files and auto-add (empty = disabled)")
+	onComplete := flag.String("on-complete", "", `Shell command to run the first time a torrent finishes seeding, with %N/%F/%D substituted for its name/content path/download directory (empty = disabled)`)
 	verbose := flag.Bool("verbose", false, "Enable verbose logging")
 	flag.Parse()
+
+	contentLayout, err := parseContentLayout(*contentLayoutFlag)
+	if err != nil {
+		logger.Error.Fatalf("Error parsing -content-layout: %v\n", err)
+	}
 
 	logger.Init(*verbose)
 
@@ -79,6 +124,9 @@ func main() {
 		ExcludeLANFromLimits: *excludeLAN,
 		AltDownLimit:         int64(*altDownLimitKB) * 1024,
 		AltUpLimit:           int64(*altUpLimitKB) * 1024,
+		ContentLayout:        contentLayout,
+		CategoryPaths:        catPaths,
+		OnComplete:           *onComplete,
 	}
 	if *sequential {
 		defaults.PickerStrategy = picker.Sequential
@@ -142,6 +190,9 @@ func main() {
 	e.StartQueue(context.Background())
 	// A no-op unless -alt-schedule was given.
 	e.StartAltSpeedSchedule(context.Background())
+	if *watchDir != "" {
+		e.StartWatchFolder(context.Background(), *watchDir)
+	}
 	// All three must be up before Load/Add so every torrent - reloaded from a
 	// previous run included - gets a working DHT peer source from the start.
 	if err := e.Load(); err != nil {
