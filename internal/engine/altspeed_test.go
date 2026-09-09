@@ -7,6 +7,7 @@ import (
 
 	"github.com/Oblutack/GoTorrent/internal/metainfo"
 	"github.com/Oblutack/GoTorrent/internal/ratelimit"
+	"github.com/Oblutack/GoTorrent/internal/torrent"
 )
 
 func mustParseSchedule(t *testing.T, s string) Schedule {
@@ -178,6 +179,9 @@ func TestTorrentRateLimitReadsBackWhatWasSet(t *testing.T) {
 	if _, err := e.Add(path, ""); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
+	if tr, ok := e.Get(hash); ok {
+		waitForState(t, tr, torrent.StateDownloading, 5*time.Second)
+	}
 
 	down, up, ok := e.TorrentRateLimit(hash)
 	if !ok {
@@ -226,9 +230,17 @@ func TestSetGlobalRateLimitWorksWithoutAnyConfiguredLimit(t *testing.T) {
 func TestSetGlobalRateLimitReachesAnAlreadyAddedTorrent(t *testing.T) {
 	e := newTestEngine(t)
 	torrentDir := t.TempDir()
-	path, _ := writeTorrentFile(t, torrentDir, "globallimited")
+	path, hash := writeTorrentFile(t, torrentDir, "globallimited")
 	if _, err := e.Add(path, ""); err != nil {
 		t.Fatalf("Add: %v", err)
+	}
+	// Let the torrent settle into Downloading before this test returns and
+	// e's Cleanup-registered Shutdown fires - returning immediately risks
+	// Shutdown's context cancellation racing this torrent's still in-flight
+	// storage.Allocate/Verify call, which on Windows can still be holding a
+	// file handle when TempDir's own cleanup tries to remove it.
+	if tr, ok := e.Get(hash); ok {
+		waitForState(t, tr, torrent.StateDownloading, 5*time.Second)
 	}
 
 	e.SetGlobalRateLimit(4096, 8192)
