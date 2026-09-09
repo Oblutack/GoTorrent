@@ -21,8 +21,10 @@ import (
 // PATCH /api/v1/session covers rate limits only, not the port/DHT/PEX/LSD
 // toggles ROADMAP.md's sketch also mentions — see PatchSessionRequest's own
 // doc comment for why those need their own design pass. The WebSocket
-// event stream needs new observer hooks on the torrent actor that don't
-// exist yet, and is the one piece of 4.2 still fully open.
+// event stream (WS /api/v1/events) is the one piece of 4.2 still fully
+// open, needing both new observer hooks on the torrent actor and a
+// hand-rolled RFC 6455 implementation (this project stays dependency-free,
+// and there is no WebSocket package in the standard library).
 func Routes(e *engine.Engine, userAgent, uploadDir string) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", HealthHandler(userAgent))
@@ -30,6 +32,9 @@ func Routes(e *engine.Engine, userAgent, uploadDir string) *http.ServeMux {
 	mux.HandleFunc("POST /api/v1/torrents", AddTorrentHandler(e, uploadDir))
 	mux.HandleFunc("GET /api/v1/torrents/{hash}", TorrentDetailHandler(e))
 	mux.HandleFunc("GET /api/v1/torrents/{hash}/files", FilesHandler(e))
+	mux.HandleFunc("GET /api/v1/torrents/{hash}/peers", PeersHandler(e))
+	mux.HandleFunc("GET /api/v1/torrents/{hash}/trackers", TrackersHandler(e))
+	mux.HandleFunc("GET /api/v1/torrents/{hash}/pieces", PiecesHandler(e))
 	mux.HandleFunc("POST /api/v1/torrents/{hash}/pause", PauseHandler(e))
 	mux.HandleFunc("POST /api/v1/torrents/{hash}/resume", ResumeHandler(e))
 	mux.HandleFunc("POST /api/v1/torrents/{hash}/verify", VerifyHandler(e))
