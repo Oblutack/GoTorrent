@@ -27,6 +27,7 @@ func Routes(e *engine.Engine, userAgent string) *http.ServeMux {
 	mux.HandleFunc("POST /api/v1/torrents/{hash}/resume", ResumeHandler(e))
 	mux.HandleFunc("POST /api/v1/torrents/{hash}/verify", VerifyHandler(e))
 	mux.HandleFunc("POST /api/v1/torrents/{hash}/reannounce", ReannounceHandler(e))
+	mux.HandleFunc("PATCH /api/v1/torrents/{hash}", PatchTorrentHandler(e))
 	mux.HandleFunc("DELETE /api/v1/torrents/{hash}", DeleteTorrentHandler(e))
 	mux.HandleFunc("GET /api/v1/session", SessionHandler(e))
 	return mux
