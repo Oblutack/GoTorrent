@@ -559,25 +559,45 @@ func (e *Engine) List() []Summary {
 
 	out := make([]Summary, 0, len(e.torrents))
 	for hash, mt := range e.torrents {
-		var private bool
-		if mi := mt.t.Metadata(); mi != nil {
-			private = mi.Info.Private
-		}
-		out = append(out, Summary{
-			InfoHash:      hash,
-			Source:        mt.source,
-			Name:          displayNameFor(mt),
-			DownloadDir:   mt.downloadDir,
-			Stats:         mt.t.Stats(),
-			Private:       private,
-			QueuePosition: mt.queuePos,
-			ForceStart:    mt.forceStart,
-			Category:      mt.category,
-			Tags:          append([]string(nil), mt.tags...),
-		})
+		out = append(out, summaryLocked(hash, mt))
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].InfoHash.String() < out[j].InfoHash.String() })
 	return out
+}
+
+// GetSummary is List's single-torrent counterpart, for a caller (4.2's
+// per-torrent detail route) that only needs one entry and would otherwise
+// have to either scan the whole fleet's List() output for a matching hash
+// or reconstruct Summary's engine-private fields (source, category, tags,
+// ...) itself from Get's *torrent.Torrent, which cannot see them at all.
+func (e *Engine) GetSummary(hash metainfo.Hash) (Summary, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	mt, ok := e.torrents[hash]
+	if !ok {
+		return Summary{}, false
+	}
+	return summaryLocked(hash, mt), true
+}
+
+// summaryLocked builds one Summary. Callers must already hold e.mu.
+func summaryLocked(hash metainfo.Hash, mt *managedTorrent) Summary {
+	var private bool
+	if mi := mt.t.Metadata(); mi != nil {
+		private = mi.Info.Private
+	}
+	return Summary{
+		InfoHash:      hash,
+		Source:        mt.source,
+		Name:          displayNameFor(mt),
+		DownloadDir:   mt.downloadDir,
+		Stats:         mt.t.Stats(),
+		Private:       private,
+		QueuePosition: mt.queuePos,
+		ForceStart:    mt.forceStart,
+		Category:      mt.category,
+		Tags:          append([]string(nil), mt.tags...),
+	}
 }
 
 // Listen opens a single TCP listener shared by every torrent this engine

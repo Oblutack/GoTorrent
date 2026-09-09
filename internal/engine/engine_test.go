@@ -136,6 +136,39 @@ func TestAddStartsAndListsTheTorrent(t *testing.T) {
 	}
 }
 
+// TestGetSummaryMatchesListEntry proves the single-torrent accessor and
+// List's per-entry construction stay in agreement, and that a hash nothing
+// manages reports ok=false rather than a zero Summary silently.
+func TestGetSummaryMatchesListEntry(t *testing.T) {
+	e := newTestEngine(t)
+	torrentDir := t.TempDir()
+	path, hash := writeTorrentFile(t, torrentDir, "one")
+
+	if _, err := e.Add(path, ""); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	tr, _ := e.Get(hash)
+	waitForState(t, tr, torrent.StateDownloading, 10*time.Second)
+
+	got, ok := e.GetSummary(hash)
+	if !ok {
+		t.Fatal("GetSummary did not find the added torrent")
+	}
+	if got.InfoHash != hash || got.Source != path {
+		t.Fatalf("GetSummary = %+v, want InfoHash=%s Source=%s", got, hash, path)
+	}
+
+	list := e.List()
+	if len(list) != 1 || list[0].InfoHash != got.InfoHash || list[0].Source != got.Source {
+		t.Fatalf("GetSummary disagrees with List(): %+v vs %+v", got, list[0])
+	}
+
+	var unmanaged metainfo.Hash
+	if _, ok := e.GetSummary(unmanaged); ok {
+		t.Fatal("GetSummary reported ok=true for an unmanaged hash")
+	}
+}
+
 // TestListReportsPrivateFlag proves Summary.Private reflects BEP 27's
 // info.private once metadata is known — a CLI/UI surface, not something any
 // behavior depends on (see Summary.Private's own doc comment for why: the
