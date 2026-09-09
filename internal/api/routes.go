@@ -20,11 +20,9 @@ import (
 //
 // PATCH /api/v1/session covers rate limits only, not the port/DHT/PEX/LSD
 // toggles ROADMAP.md's sketch also mentions — see PatchSessionRequest's own
-// doc comment for why those need their own design pass. The WebSocket
-// event stream (WS /api/v1/events) is the one piece of 4.2 still fully
-// open, needing both new observer hooks on the torrent actor and a
-// hand-rolled RFC 6455 implementation (this project stays dependency-free,
-// and there is no WebSocket package in the standard library).
+// doc comment for why those need their own design pass. GET /api/v1/events
+// is a WebSocket upgrade (internal/ws, hand-rolled RFC 6455), not an
+// ordinary JSON response — see EventsHandler.
 func Routes(e *engine.Engine, userAgent, uploadDir string) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", HealthHandler(userAgent))
@@ -43,5 +41,6 @@ func Routes(e *engine.Engine, userAgent, uploadDir string) *http.ServeMux {
 	mux.HandleFunc("DELETE /api/v1/torrents/{hash}", DeleteTorrentHandler(e))
 	mux.HandleFunc("GET /api/v1/session", SessionHandler(e))
 	mux.HandleFunc("PATCH /api/v1/session", PatchSessionHandler(e))
+	mux.HandleFunc("GET /api/v1/events", EventsHandler(e))
 	return mux
 }

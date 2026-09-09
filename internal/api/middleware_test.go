@@ -69,6 +69,34 @@ func TestRequireBearerTokenAcceptsCorrectToken(t *testing.T) {
 	}
 }
 
+// TestRequireBearerTokenAcceptsQueryParamToken proves the browser-WebSocket
+// fallback: a real browser's WebSocket constructor cannot set an
+// Authorization header on the handshake request at all, so GET
+// /api/v1/events has to accept the token via ?token= instead.
+func TestRequireBearerTokenAcceptsQueryParamToken(t *testing.T) {
+	h := RequireBearerToken("secret", nil)(okHandler())
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/events?token=secret", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 for the correct token via query param", rec.Code)
+	}
+}
+
+func TestRequireBearerTokenRejectsWrongQueryParamToken(t *testing.T) {
+	h := RequireBearerToken("secret", nil)(okHandler())
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/events?token=wrong", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 for a wrong query param token", rec.Code)
+	}
+}
+
 func TestRequireBearerTokenRejectsWrongOrMissingToken(t *testing.T) {
 	h := RequireBearerToken("secret", nil)(okHandler())
 

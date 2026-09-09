@@ -51,12 +51,17 @@ func AllowHosts(allowed []string) func(http.Handler) http.Handler {
 	}
 }
 
-// RequireBearerToken rejects any request whose Authorization header is not
-// exactly "Bearer <token>", comparing in constant time (crypto/subtle) so a
-// timing side-channel cannot help an attacker recover the token one byte at
-// a time. limiter, if non-nil, gates the check per source IP: an address
-// already serving out a lockout is rejected before the token comparison
-// even runs, and every failure/success is recorded back into it.
+// RequireBearerToken rejects any request whose token does not match,
+// comparing in constant time (crypto/subtle) so a timing side-channel
+// cannot help an attacker recover the token one byte at a time. The token
+// normally comes from an "Authorization: Bearer <token>" header; a
+// "?token=" query parameter is accepted too, since a browser's native
+// WebSocket constructor cannot set custom headers on the handshake
+// request at all — GET /api/v1/events has no other way to authenticate a
+// real browser client. limiter, if non-nil, gates the check per source
+// IP: an address already serving out a lockout is rejected before the
+// token comparison even runs, and every failure/success is recorded back
+// into it.
 func RequireBearerToken(token string, limiter *AuthFailureLimiter) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -67,10 +72,12 @@ func RequireBearerToken(token string, limiter *AuthFailureLimiter) func(http.Han
 				return
 			}
 
-			const prefix = "Bearer "
-			auth := r.Header.Get("Authorization")
-			ok := strings.HasPrefix(auth, prefix) &&
-				subtle.ConstantTimeCompare([]byte(auth[len(prefix):]), []byte(token)) == 1
+			presented := bearerFromHeader(r)
+			if presented == "" {
+				presented = r.URL.Query().Get("token")
+			}
+			ok := presented != "" &&
+				subtle.ConstantTimeCompare([]byte(presented), []byte(token)) == 1
 
 			if !ok {
 				if limiter != nil {
@@ -85,6 +92,17 @@ func RequireBearerToken(token string, limiter *AuthFailureLimiter) func(http.Han
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// bearerFromHeader extracts the token from a well-formed "Authorization:
+// Bearer <token>" header, or "" if the header is absent or malformed.
+func bearerFromHeader(r *http.Request) string {
+	const prefix = "Bearer "
+	auth := r.Header.Get("Authorization")
+	if !strings.HasPrefix(auth, prefix) {
+		return ""
+	}
+	return auth[len(prefix):]
 }
 
 // remoteHost strips the port off r.RemoteAddr, falling back to the whole
