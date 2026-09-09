@@ -176,18 +176,13 @@ func run() error {
 		return fmt.Errorf("loading API token: %w", err)
 	}
 
-	// A bare health endpoint for now - the real REST/WebSocket routes (4.2)
-	// attach to this same mux once they exist, behind the same security
-	// chain rather than a separately-secured set of routes.
-	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", api.HealthHandler(version.UserAgent))
 	handler := api.NewHandler(api.Config{
 		Token:              token,
 		AllowedHosts:       api.DefaultAllowedHosts(cfg.APIAddress),
 		MaxAuthFailures:    api.DefaultMaxAuthFailures,
 		AuthFailureWindow:  api.DefaultAuthFailureWindow,
 		AuthFailureLockout: api.DefaultAuthFailureLockout,
-	}, mux)
+	}, api.Routes(e, version.UserAgent))
 
 	apiConn := net.Listener(apiListener)
 	if cfg.TLSCertFile != "" || cfg.TLSKeyFile != "" {
