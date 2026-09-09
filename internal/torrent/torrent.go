@@ -332,6 +332,14 @@ type Torrent struct {
 	// onSeedLimitReached is set before Run and never touched again, same as
 	// onStateChange. See OnSeedLimitReached.
 	onSeedLimitReached func()
+
+	// onPeerConnected, onPeerDisconnected, and onPieceVerified are set
+	// before Run and never touched again, same as onStateChange. See their
+	// installer methods (OnPeerConnected/OnPeerDisconnected/
+	// OnPieceVerified).
+	onPeerConnected    func(addr string)
+	onPeerDisconnected func(addr string)
+	pieceVerifiedHook  func(index int)
 }
 
 // --- construction ------------------------------------------------------
@@ -472,6 +480,23 @@ func (t *Torrent) OnStateChange(fn func(State)) { t.onStateChange = fn }
 // this Torrent synchronously. Must be set before Run. Engine uses this to
 // implement remove/remove-and-delete-data as an action beyond pausing.
 func (t *Torrent) OnSeedLimitReached(fn func()) { t.onSeedLimitReached = fn }
+
+// OnPeerConnected and OnPeerDisconnected install callbacks fired from the
+// actor goroutine whenever a connection is registered into or removed from
+// t.peers (registerPeer/removePeer) — same contract as OnStateChange: must
+// not block or call back into this Torrent synchronously, must be set
+// before Run. 4.2's event stream uses these to report the live swarm
+// without a subscriber having to poll Peers() itself.
+func (t *Torrent) OnPeerConnected(fn func(addr string))    { t.onPeerConnected = fn }
+func (t *Torrent) OnPeerDisconnected(fn func(addr string)) { t.onPeerDisconnected = fn }
+
+// OnPieceVerified installs a callback fired from the actor goroutine every
+// time a piece passes verification (never for one that fails — see
+// onPieceVerified) — same contract as OnStateChange. 4.2's event stream
+// uses this as its piece-bitfield-delta signal: a subscriber already
+// holding the last-known bitfield just needs the index that changed, not a
+// full snapshot on every single piece.
+func (t *Torrent) OnPieceVerified(fn func(index int)) { t.pieceVerifiedHook = fn }
 
 func (t *Torrent) setState(next State) {
 	cur := t.State()

@@ -513,6 +513,9 @@ func (t *Torrent) sendEvent(ctx context.Context, ev any) {
 func (t *Torrent) registerPeer(pc *peerConn) {
 	delete(t.dialing, pc.addr)
 	t.peers[pc.addr] = pc
+	if t.onPeerConnected != nil {
+		t.onPeerConnected(pc.addr)
+	}
 }
 
 func (t *Torrent) removePeer(pc *peerConn) {
@@ -527,6 +530,9 @@ func (t *Torrent) removePeer(pc *peerConn) {
 	t.abandonMetadataFetch(pc)
 	if t.superSeed != nil {
 		delete(t.superSeed.assigned, pc.addr)
+	}
+	if t.onPeerDisconnected != nil {
+		t.onPeerDisconnected(pc.addr)
 	}
 }
 
@@ -694,6 +700,9 @@ func (t *Torrent) onPieceVerified(index int, ok bool, err error) {
 	t.pick.MarkVerified(index)
 	t.piecesVerifiedSinceCheckpoint++
 	t.publishHave(t.pick.Have())
+	if t.pieceVerifiedHook != nil {
+		t.pieceVerifiedHook(index)
+	}
 
 	for _, pc := range t.peers {
 		if err := pc.client.SendHave(uint32(index)); err != nil {
