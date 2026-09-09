@@ -18,9 +18,11 @@ import (
 // saveTorrentBytes for why that has to be a stable location, not a temp
 // directory.
 //
-// Mutating routes still open: session PATCH (limits, port, DHT/PEX/LSD
-// toggles). The WebSocket event stream needs new observer hooks on the
-// torrent actor that don't exist yet.
+// PATCH /api/v1/session covers rate limits only, not the port/DHT/PEX/LSD
+// toggles ROADMAP.md's sketch also mentions — see PatchSessionRequest's own
+// doc comment for why those need their own design pass. The WebSocket
+// event stream needs new observer hooks on the torrent actor that don't
+// exist yet, and is the one piece of 4.2 still fully open.
 func Routes(e *engine.Engine, userAgent, uploadDir string) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", HealthHandler(userAgent))
@@ -35,5 +37,6 @@ func Routes(e *engine.Engine, userAgent, uploadDir string) *http.ServeMux {
 	mux.HandleFunc("PATCH /api/v1/torrents/{hash}", PatchTorrentHandler(e))
 	mux.HandleFunc("DELETE /api/v1/torrents/{hash}", DeleteTorrentHandler(e))
 	mux.HandleFunc("GET /api/v1/session", SessionHandler(e))
+	mux.HandleFunc("PATCH /api/v1/session", PatchSessionHandler(e))
 	return mux
 }
