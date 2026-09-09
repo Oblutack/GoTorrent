@@ -316,6 +316,14 @@ type Engine struct {
 	// proxy is configured, which is also what a nil *proxy.Dialer itself
 	// does, so torrentConfig never needs a nil check either way.
 	proxyDialer *proxy.Dialer
+
+	// eventMu guards eventSubs/nextEventSubID — a separate lock from mu
+	// deliberately, since broadcast fires from arbitrary torrent-callback
+	// goroutines that must never contend with (or risk deadlocking behind)
+	// the heavier fleet-management lock. See events.go.
+	eventMu        sync.Mutex
+	eventSubs      map[int]chan Event
+	nextEventSubID int
 }
 
 // New creates an Engine whose manifest lives under stateDir. It does not load
@@ -476,12 +484,27 @@ func (e *Engine) AddWithOptions(source, downloadDir string, opts AddOptions) (me
 	tr.OnStateChange(func(s torrent.State) {
 		go e.reevaluateQueue()
 		go e.dispatchCompletionHook(hash, s)
+		// broadcast only touches eventMu and non-blocking channel sends —
+		// it never calls back into tr, so unlike the two goroutines above
+		// it needs no go of its own to stay safe on the actor goroutine.
+		e.broadcast(Event{Kind: EventTorrentStateChanged, InfoHash: hash, State: s})
 	})
 	// Same constraint as OnStateChange above — must not block or call back
 	// into tr synchronously, since it fires from the actor's own tick
 	// goroutine. A no-op when SeedLimitAction is the default (Pause): the
 	// pause itself already happened inside the actor before this fires.
 	tr.OnSeedLimitReached(func() { go e.applySeedLimitAction(hash) })
+	tr.OnPeerConnected(func(addr string) {
+		e.broadcast(Event{Kind: EventPeerConnected, InfoHash: hash, PeerAddr: addr})
+	})
+	tr.OnPeerDisconnected(func(addr string) {
+		e.broadcast(Event{Kind: EventPeerDisconnected, InfoHash: hash, PeerAddr: addr})
+	})
+	tr.OnPieceVerified(func(index int) {
+		e.broadcast(Event{Kind: EventPieceVerified, InfoHash: hash, PieceIndex: index})
+	})
+
+	e.broadcast(Event{Kind: EventTorrentAdded, InfoHash: hash})
 
 	go func() {
 		if err := tr.Run(context.Background()); err != nil {
@@ -529,6 +552,7 @@ func (e *Engine) Remove(hash metainfo.Hash) error {
 		return fmt.Errorf("engine: persisting manifest: %w", err)
 	}
 	e.mu.Unlock()
+	e.broadcast(Event{Kind: EventTorrentRemoved, InfoHash: hash})
 
 	// Stop blocks on the torrent's own shutdown; it must not be called while
 	// holding e.mu; List/Get calls a Remove-in-progress torrent would
