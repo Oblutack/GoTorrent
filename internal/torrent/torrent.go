@@ -250,6 +250,13 @@ type Torrent struct {
 	// already specified.
 	extraTrackers atomic.Pointer[[]string]
 
+	// trackerStatus is per-URL announce results (4.2's GET .../trackers
+	// route) — written by announceOne (its own spawned goroutine) and read
+	// by any caller of TrackerStatuses, same publish-once-read-many shape
+	// as extraTrackers/haveSnapshot above. Nil until the first announce
+	// attempt of any kind.
+	trackerStatus atomic.Pointer[map[string]TrackerStatus]
+
 	state atomic.Int32 // State, readable from any goroutine
 
 	// --- actor-owned: touched only from run() in run.go ---
@@ -555,6 +562,17 @@ func (t *Torrent) Stats() Stats {
 	case <-t.done:
 	}
 	return s
+}
+
+// HaveBitfield returns the verified-pieces bitfield (4.2's GET .../pieces
+// route) — the exact same read-only snapshot hasPieceSafe already answers
+// upload requests from, just exposed directly rather than one bit at a
+// time. Safe to call from any goroutine; nil only before any metadata has
+// ever been known (haveSnapshot is seeded with an empty, non-nil Bitfield
+// at construction, so in practice this is never nil once a Torrent exists
+// — the check is here purely so a caller never needs to assume that).
+func (t *Torrent) HaveBitfield() *bitfield.Bitfield {
+	return t.haveSnapshot.Load()
 }
 
 // --- lifecycle -----------------------------------------------------------

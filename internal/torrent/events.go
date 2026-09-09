@@ -25,6 +25,7 @@ const (
 	ctrlAddTracker
 	ctrlReannounce
 	ctrlStats
+	ctrlPeers
 )
 
 type controlMsg struct {
@@ -43,6 +44,8 @@ type controlMsg struct {
 	errReply chan error
 	// statsReply receives the actor-owned half of a Stats snapshot.
 	statsReply chan Stats
+	// peersReply receives Peers' result.
+	peersReply chan []PeerSnapshot
 }
 
 // The event types below all arrive on Torrent.events. They are a closed set

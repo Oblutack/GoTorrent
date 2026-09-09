@@ -268,7 +268,9 @@ func (t *Torrent) announceOne(ctx context.Context, url string, event tracker.Eve
 		Event:      event,
 		NumWant:    50,
 	}
-	return t.trackerClient.Announce(ctx, url, req)
+	resp, err := t.trackerClient.Announce(ctx, url, req)
+	t.recordTrackerResult(url, resp, err)
+	return resp, err
 }
 
 // supportedAnnounceURLs keeps only the schemes tracker.Client.Announce

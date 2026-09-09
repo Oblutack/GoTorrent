@@ -95,6 +95,9 @@ func (t *Torrent) handleControl(msg controlMsg) {
 
 	case ctrlReannounce:
 		msg.errReply <- t.doReannounce()
+
+	case ctrlPeers:
+		msg.peersReply <- t.peersSnapshot()
 	}
 }
 
