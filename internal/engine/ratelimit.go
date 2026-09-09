@@ -41,3 +41,35 @@ func (e *Engine) TorrentRateLimit(hash metainfo.Hash) (downBytesPerSec, upBytesP
 	}
 	return mt.downLimit.Limit(), mt.upLimit.Limit(), true
 }
+
+// SetGlobalRateLimit changes the fleet-wide cap every managed torrent's
+// Defaults.DownLimit/UpLimit composes with, in bytes/sec (0 or negative
+// means unlimited, same convention as SetTorrentRateLimit). New guarantees
+// a real *ratelimit.Limiter always exists for both directions, so this
+// works even on an Engine that started with no cap configured at all — a
+// caller (4.2's session PATCH route) does not need to have been started
+// with -down-limit/-up-limit for this to take effect.
+//
+// Also updates the "normal" rate StartAltSpeedSchedule restores to outside
+// its alt window, so a rate set here is the new normal rather than being
+// silently overwritten by the next scheduler tick — the same reasoning
+// SetTorrentRateLimit doesn't need, since per-torrent caps aren't part of
+// the alt-schedule's own domain at all.
+func (e *Engine) SetGlobalRateLimit(downBytesPerSec, upBytesPerSec int64) {
+	e.mu.Lock()
+	down, up := e.defaults.DownLimit, e.defaults.UpLimit
+	e.normalDownBps = downBytesPerSec
+	e.normalUpBps = upBytesPerSec
+	e.mu.Unlock()
+	down.SetLimit(downBytesPerSec)
+	up.SetLimit(upBytesPerSec)
+}
+
+// GlobalRateLimit is SetGlobalRateLimit's read-side counterpart, for the
+// same partial-update reason TorrentRateLimit exists.
+func (e *Engine) GlobalRateLimit() (downBytesPerSec, upBytesPerSec int64) {
+	e.mu.Lock()
+	down, up := e.defaults.DownLimit, e.defaults.UpLimit
+	e.mu.Unlock()
+	return down.Limit(), up.Limit()
+}

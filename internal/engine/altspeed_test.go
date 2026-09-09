@@ -200,3 +200,44 @@ func TestTorrentRateLimitReadsBackWhatWasSet(t *testing.T) {
 		t.Fatal("TorrentRateLimit reported ok=true for an unmanaged hash")
 	}
 }
+
+// TestSetGlobalRateLimitWorksWithoutAnyConfiguredLimit proves the point of
+// New always synthesizing a real *ratelimit.Limiter: an Engine started
+// with no -down-limit/-up-limit and no AltSchedule still has something
+// SetGlobalRateLimit can act on.
+func TestSetGlobalRateLimitWorksWithoutAnyConfiguredLimit(t *testing.T) {
+	e := newTestEngine(t) // no DownLimit/UpLimit/AltSchedule in Defaults
+
+	down, up := e.GlobalRateLimit()
+	if down != 0 || up != 0 {
+		t.Fatalf("fresh Engine's global limit = (%d, %d), want (0, 0) unlimited", down, up)
+	}
+
+	e.SetGlobalRateLimit(1000, 2000)
+	down, up = e.GlobalRateLimit()
+	if down != 1000 || up != 2000 {
+		t.Fatalf("GlobalRateLimit after SetGlobalRateLimit = (%d, %d), want (1000, 2000)", down, up)
+	}
+}
+
+// TestSetGlobalRateLimitReachesAnAlreadyAddedTorrent proves the fleet-wide
+// limiter set here is the same live object every managed torrent's
+// connections already wait on, not just a value this Engine remembers.
+func TestSetGlobalRateLimitReachesAnAlreadyAddedTorrent(t *testing.T) {
+	e := newTestEngine(t)
+	torrentDir := t.TempDir()
+	path, _ := writeTorrentFile(t, torrentDir, "globallimited")
+	if _, err := e.Add(path, ""); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	e.SetGlobalRateLimit(4096, 8192)
+
+	cfg := e.torrentConfig(t.TempDir())
+	if len(cfg.DownLimit) == 0 || cfg.DownLimit[len(cfg.DownLimit)-1].Limit() != 4096 {
+		t.Fatalf("torrentConfig's DownLimit does not reflect SetGlobalRateLimit: %+v", cfg.DownLimit)
+	}
+	if len(cfg.UpLimit) == 0 || cfg.UpLimit[len(cfg.UpLimit)-1].Limit() != 8192 {
+		t.Fatalf("torrentConfig's UpLimit does not reflect SetGlobalRateLimit: %+v", cfg.UpLimit)
+	}
+}

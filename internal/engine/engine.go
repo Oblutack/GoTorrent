@@ -327,17 +327,19 @@ func New(stateDir string, defaults Defaults) (*Engine, error) {
 	if defaults.AnonymousMode && defaults.ProxyType == "" {
 		return nil, errors.New("engine: AnonymousMode requires a configured proxy (ProxyType); refusing to claim anonymity without one")
 	}
-	// AltSchedule needs an actual *ratelimit.Limiter to toggle between the
-	// normal and alt rate even if the caller never configured a normal cap
-	// — a nil DownLimit/UpLimit would otherwise leave StartAltSpeedSchedule
-	// with nothing to call SetLimit on during the alt window.
-	if defaults.AltSchedule != nil {
-		if defaults.DownLimit == nil {
-			defaults.DownLimit = ratelimit.Unlimited()
-		}
-		if defaults.UpLimit == nil {
-			defaults.UpLimit = ratelimit.Unlimited()
-		}
+	// A real *ratelimit.Limiter always exists for both directions, even if
+	// the caller never configured a cap — originally this only happened
+	// when AltSchedule was set (it needs something to SetLimit on during
+	// the alt window), but SetGlobalRateLimit needs exactly the same thing
+	// for a caller (4.2's session PATCH route) that wants to impose a
+	// fleet-wide cap on an already-running Engine that started with none.
+	// Costs nothing when never used: an unlimited *ratelimit.Limiter's
+	// Wait returns immediately, the same as no limiter in the slice at all.
+	if defaults.DownLimit == nil {
+		defaults.DownLimit = ratelimit.Unlimited()
+	}
+	if defaults.UpLimit == nil {
+		defaults.UpLimit = ratelimit.Unlimited()
 	}
 
 	e := &Engine{
