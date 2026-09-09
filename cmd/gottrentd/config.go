@@ -64,7 +64,14 @@ type Config struct {
 	// a localhost-bound API is not yet a secure one, but it is at least not
 	// reachable from the network by default.
 	APIAddress string `json:"apiAddress"`
-	Verbose    bool   `json:"verbose"`
+	// TLSCertFile and TLSKeyFile enable TLS on the API listener when both
+	// are set (4.3's "optional TLS for remote binding") - empty (the
+	// default) serves plain HTTP, appropriate for the default loopback
+	// bind where the Host allowlist and bearer token are the actual
+	// defenses, not transport encryption a same-box client doesn't need.
+	TLSCertFile string `json:"tlsCertFile"`
+	TLSKeyFile  string `json:"tlsKeyFile"`
+	Verbose     bool   `json:"verbose"`
 }
 
 // defaultConfig mirrors cmd/gottrent's own flag defaults field for field,

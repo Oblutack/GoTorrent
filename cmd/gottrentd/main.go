@@ -1,25 +1,29 @@
-// Command gottrentd is the headless daemon half of 4.1: it runs the same
-// engine.Engine every gottrent invocation does, but as a long-lived
+// Command gottrentd is the headless daemon half of Phase 4: it runs the
+// same engine.Engine every gottrent invocation does, but as a long-lived
 // background process configured from a JSON file rather than a one-shot
-// -torrent list, with a control-API address reserved at startup as this
-// process's single-instance lock. The REST/WebSocket API itself (4.2) and
-// its auth/CORS/Host-allowlist hardening (4.3) are not built yet - today
-// that address only serves a bare health check, which is also the
-// listener a later gottrentd version's API mux attaches to.
+// -torrent list. The control-API address is reserved at startup both as
+// this process's single-instance lock and as where 4.3's security chain
+// (bearer token, Host-header allowlist, brute-force lockout, optional TLS
+// - see internal/api) already applies to the one route that exists today,
+// a bare health check. The real REST/WebSocket routes (4.2) attach to the
+// same mux, behind the same chain, once they exist.
 package main
 
 import (
 	"context"
+	"crypto/tls"
 	"flag"
 	"fmt"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/Oblutack/GoTorrent/internal/api"
 	"github.com/Oblutack/GoTorrent/internal/bootstrap"
 	"github.com/Oblutack/GoTorrent/internal/engine"
 	"github.com/Oblutack/GoTorrent/internal/logger"
@@ -95,6 +99,8 @@ func run() error {
 	proxyDNS := flag.Bool("proxy-dns", false, "Resolve hostnames through the SOCKS5 proxy itself instead of locally (meaningless for -proxy-type=http)")
 	anonymousMode := flag.Bool("anonymous-mode", false, "Strip the client fingerprint from the peer ID and disable LSD; requires -proxy-type to also be set")
 	apiAddress := flag.String("api-address", "", `Address the control API listens on, as "host:port" (default 127.0.0.1:6880); also this process's single-instance lock`)
+	tlsCertFile := flag.String("tls-cert", "", "TLS certificate file for the API listener (requires -tls-key too; empty = plain HTTP)")
+	tlsKeyFile := flag.String("tls-key", "", "TLS private key file for the API listener (requires -tls-cert too)")
 	verbose := flag.Bool("verbose", false, "Enable verbose logging")
 	flag.Parse()
 
@@ -127,6 +133,7 @@ func run() error {
 		ipFilterUpdateInterval: ipFilterUpdateInterval,
 		proxyType:              proxyType, proxyAddress: proxyAddress, proxyUsername: proxyUsername, proxyPassword: proxyPassword,
 		proxyDNS: proxyDNS, anonymousMode: anonymousMode, apiAddress: apiAddress, verbose: verbose,
+		tlsCertFile: tlsCertFile, tlsKeyFile: tlsKeyFile,
 		catPaths: catPaths,
 	})
 
@@ -164,17 +171,36 @@ func run() error {
 	}
 	logger.Logf("gottrentd %s: engine started, peer port %d, API listening on %s\n", version.UserAgent, actualPort, apiListener.Addr())
 
+	token, err := api.LoadOrCreateToken(filepath.Join(filepath.Dir(path), "api-token"))
+	if err != nil {
+		return fmt.Errorf("loading API token: %w", err)
+	}
+
 	// A bare health endpoint for now - the real REST/WebSocket routes (4.2)
-	// and their auth/CORS/Host-allowlist middleware (4.3) attach to this
-	// same listener once they exist, rather than opening a second one.
+	// attach to this same mux once they exist, behind the same security
+	// chain rather than a separately-secured set of routes.
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		fmt.Fprintf(w, "gottrentd %s ok\n", version.UserAgent)
-	})
-	server := &http.Server{Handler: mux}
+	mux.HandleFunc("/healthz", api.HealthHandler(version.UserAgent))
+	handler := api.NewHandler(api.Config{
+		Token:              token,
+		AllowedHosts:       api.DefaultAllowedHosts(cfg.APIAddress),
+		MaxAuthFailures:    api.DefaultMaxAuthFailures,
+		AuthFailureWindow:  api.DefaultAuthFailureWindow,
+		AuthFailureLockout: api.DefaultAuthFailureLockout,
+	}, mux)
+
+	apiConn := net.Listener(apiListener)
+	if cfg.TLSCertFile != "" || cfg.TLSKeyFile != "" {
+		tlsConfig, err := api.LoadTLSConfig(cfg.TLSCertFile, cfg.TLSKeyFile)
+		if err != nil {
+			return fmt.Errorf("loading TLS config: %w", err)
+		}
+		apiConn = tls.NewListener(apiListener, tlsConfig)
+	}
+
+	server := &http.Server{Handler: handler}
 	serveErr := make(chan error, 1)
-	go func() { serveErr <- server.Serve(apiListener) }()
+	go func() { serveErr <- server.Serve(apiConn) }()
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
@@ -215,7 +241,7 @@ type flagValues struct {
 	proxyType, proxyAddress, proxyUsername, proxyPassword                       *string
 	proxyDNS, anonymousMode, verbose                                            *bool
 	maxActiveDownloads, maxActiveSeeds, maxActiveTotal, uploadSlots             *int
-	apiAddress                                                                  *string
+	apiAddress, tlsCertFile, tlsKeyFile                                         *string
 	catPaths                                                                    categoryPaths
 }
 
@@ -342,6 +368,12 @@ func mergeFlags(cfg *Config, explicit map[string]bool, f flagValues) {
 	}
 	if explicit["api-address"] {
 		cfg.APIAddress = *f.apiAddress
+	}
+	if explicit["tls-cert"] {
+		cfg.TLSCertFile = *f.tlsCertFile
+	}
+	if explicit["tls-key"] {
+		cfg.TLSKeyFile = *f.tlsKeyFile
 	}
 	if explicit["verbose"] {
 		cfg.Verbose = *f.verbose
