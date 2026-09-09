@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Oblutack/GoTorrent/internal/bootstrap"
 	"github.com/Oblutack/GoTorrent/internal/engine"
 	"github.com/Oblutack/GoTorrent/internal/logger"
 	"github.com/Oblutack/GoTorrent/internal/metainfo"
@@ -148,15 +149,6 @@ func runFleet() {
 
 	logger.Init(*verbose)
 
-	dir := *stateDir
-	if dir == "" {
-		d, err := engine.DefaultStateDir()
-		if err != nil {
-			logger.Error.Fatalf("Error resolving state directory: %v\n", err)
-		}
-		dir = d
-	}
-
 	defaults := engine.Defaults{
 		DownloadDir:            *downloadDir,
 		ListenPort:             uint16(*listenPort),
@@ -204,64 +196,16 @@ func runFleet() {
 		defaults.AltSchedule = &sched
 	}
 
-	e, err := engine.New(dir, defaults)
+	e, _, err := bootstrap.Engine(context.Background(), bootstrap.Options{
+		StateDir:   *stateDir,
+		ListenPort: uint16(*listenPort),
+		RandomPort: *randomPort,
+		NoPortMap:  *noPortMap,
+		WatchDir:   *watchDir,
+		Defaults:   defaults,
+	})
 	if err != nil {
-		logger.Error.Fatalf("Error creating engine: %v\n", err)
-	}
-
-	// Before Listen: closes the startup window where an inbound connection
-	// could arrive before a local -ip-filter file is actually loaded.
-	if err := e.StartIPFilter(context.Background()); err != nil {
-		logger.Error.Fatalf("Error loading -ip-filter: %v\n", err)
-	}
-
-	// actualPort is what every subsequent StartDHT/StartPortMapping/StartLSD
-	// call below (and torrentConfig, on every Add) advertises. It starts as
-	// the requested -port and, with -random-port, becomes whatever the OS
-	// actually assigned once Listen has bound it.
-	actualPort := uint16(*listenPort)
-	if *randomPort {
-		p, err := e.ListenRandomPort(context.Background())
-		if err != nil {
-			logger.Warning.Printf("Not accepting inbound connections: %v\n", err)
-		} else {
-			actualPort = p
-			logger.Logf("Listening on random port %d\n", actualPort)
-		}
-	} else if err := e.Listen(context.Background()); err != nil {
-		logger.Warning.Printf("Not accepting inbound connections: %v\n", err)
-	}
-
-	if !*noPortMap {
-		// Before StartDHT/Load: a successful mapping updates the port every
-		// subsequently-built torrent advertises to trackers and DHT peers, so
-		// it needs to land before anything reads that value.
-		if err := e.StartPortMapping(context.Background(), actualPort); err != nil {
-			logger.Logf("Not mapping a port automatically (%v) - inbound connections need the port forwarded by hand unless this machine is already reachable\n", err)
-		}
-	}
-	if err := e.StartDHT(context.Background(), actualPort); err != nil {
-		logger.Warning.Printf("Not starting DHT: %v\n", err)
-	}
-	// LSD always advertises the internal port, never StartPortMapping's
-	// rewritten external one - an LSD peer is on the same LAN and connects
-	// directly, not through any NAT mapping.
-	if err := e.StartLSD(context.Background(), actualPort); err != nil {
-		logger.Warning.Printf("Not starting local service discovery: %v\n", err)
-	}
-	// Reactive queue enforcement is always on (every Add'd torrent's own
-	// OnStateChange callback triggers it); this just adds the periodic
-	// safety-net pass, and can start any time before or after Load/Add.
-	e.StartQueue(context.Background())
-	// A no-op unless -alt-schedule was given.
-	e.StartAltSpeedSchedule(context.Background())
-	if *watchDir != "" {
-		e.StartWatchFolder(context.Background(), *watchDir)
-	}
-	// All three must be up before Load/Add so every torrent - reloaded from a
-	// previous run included - gets a working DHT peer source from the start.
-	if err := e.Load(); err != nil {
-		logger.Error.Fatalf("Error loading fleet manifest: %v\n", err)
+		logger.Error.Fatalf("Error starting engine: %v\n", err)
 	}
 
 	for _, src := range sources {
