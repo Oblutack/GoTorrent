@@ -158,8 +158,16 @@ func run() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	resolvedStateDir := cfg.StateDir
+	if resolvedStateDir == "" {
+		resolvedStateDir, err = engine.DefaultStateDir()
+		if err != nil {
+			return fmt.Errorf("resolving default state directory: %w", err)
+		}
+	}
+
 	e, actualPort, err := bootstrap.Engine(ctx, bootstrap.Options{
-		StateDir:   cfg.StateDir,
+		StateDir:   resolvedStateDir,
 		ListenPort: cfg.ListenPort,
 		RandomPort: cfg.RandomPort,
 		NoPortMap:  cfg.NoPortMap,
@@ -182,7 +190,7 @@ func run() error {
 		MaxAuthFailures:    api.DefaultMaxAuthFailures,
 		AuthFailureWindow:  api.DefaultAuthFailureWindow,
 		AuthFailureLockout: api.DefaultAuthFailureLockout,
-	}, api.Routes(e, version.UserAgent))
+	}, api.Routes(e, version.UserAgent, filepath.Join(resolvedStateDir, "torrents")))
 
 	apiConn := net.Listener(apiListener)
 	if cfg.TLSCertFile != "" || cfg.TLSKeyFile != "" {
