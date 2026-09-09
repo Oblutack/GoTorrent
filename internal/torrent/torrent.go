@@ -827,6 +827,12 @@ func (t *Torrent) Resume() error { return t.sendControl(ctrlResume) }
 // Recheck forces a full re-verification of the data on disk.
 func (t *Torrent) Recheck() error { return t.sendControl(ctrlRecheck) }
 
+// Reannounce forces an immediate tracker announce on every tier rather than
+// waiting out whatever interval announceLoop is currently idling on.
+// Returns an error if the torrent is not currently in a state where
+// anything would be announcing at all (Paused, most notably).
+func (t *Torrent) Reannounce() error { return t.sendControl(ctrlReannounce) }
+
 // Stop shuts the torrent down for good: peers are disconnected, a final
 // checkpoint is written, and Run returns. It is safe to call more than once,
 // from any goroutine, and even before Run has been given a chance to start —

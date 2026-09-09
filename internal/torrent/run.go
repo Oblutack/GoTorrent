@@ -92,6 +92,9 @@ func (t *Torrent) handleControl(msg controlMsg) {
 
 	case ctrlAddTracker:
 		msg.errReply <- t.doAddTracker(msg.trackerURL)
+
+	case ctrlReannounce:
+		msg.errReply <- t.doReannounce()
 	}
 }
 
@@ -266,6 +269,23 @@ func (t *Torrent) doAddTracker(url string) error {
 	if t.State().Active() {
 		t.restartAnnounceLoop(tracker.EventNone)
 	}
+	return nil
+}
+
+// doReannounce forces an immediate tracker announce on every tier, the same
+// restartAnnounceLoop nudge doAddTracker already uses to pick up a new
+// tracker without waiting out the current interval — this is that same
+// mechanism exposed directly, for a caller (4.2's reannounce route) that
+// just wants a fresh announce right now, e.g. after a manual "find more
+// peers" request. A no-op error, not a silent no-op, when nothing would
+// actually be announcing (Paused, or FetchingMetadata/CheckingFiles/
+// Downloading/Seeding never entered): the caller asked for something that
+// cannot happen right now and should be told, not left guessing.
+func (t *Torrent) doReannounce() error {
+	if !t.State().Active() {
+		return fmt.Errorf("torrent: cannot reannounce while %s", t.State())
+	}
+	t.restartAnnounceLoop(tracker.EventNone)
 	return nil
 }
 
