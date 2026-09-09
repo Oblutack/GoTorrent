@@ -27,3 +27,17 @@ func (e *Engine) SetTorrentRateLimit(hash metainfo.Hash, downBytesPerSec, upByte
 	mt.upLimit.SetLimit(upBytesPerSec)
 	return nil
 }
+
+// TorrentRateLimit is SetTorrentRateLimit's read-side counterpart — needed
+// by a caller (4.2's PATCH route) that wants to change just one direction
+// and has to know the other's current value first, since SetTorrentRateLimit
+// always sets both at once.
+func (e *Engine) TorrentRateLimit(hash metainfo.Hash) (downBytesPerSec, upBytesPerSec int64, ok bool) {
+	e.mu.Lock()
+	mt, ok := e.torrents[hash]
+	e.mu.Unlock()
+	if !ok {
+		return 0, 0, false
+	}
+	return mt.downLimit.Limit(), mt.upLimit.Limit(), true
+}

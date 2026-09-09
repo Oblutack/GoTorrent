@@ -170,3 +170,33 @@ func TestSetTorrentRateLimitRejectsUnknownHash(t *testing.T) {
 		t.Fatal("SetTorrentRateLimit on an unmanaged hash: want an error")
 	}
 }
+
+func TestTorrentRateLimitReadsBackWhatWasSet(t *testing.T) {
+	e := newTestEngine(t)
+	torrentDir := t.TempDir()
+	path, hash := writeTorrentFile(t, torrentDir, "readback")
+	if _, err := e.Add(path, ""); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	down, up, ok := e.TorrentRateLimit(hash)
+	if !ok {
+		t.Fatal("TorrentRateLimit did not find the added torrent")
+	}
+	if down != 0 || up != 0 {
+		t.Fatalf("fresh torrent's limits = (%d, %d), want (0, 0) unlimited", down, up)
+	}
+
+	if err := e.SetTorrentRateLimit(hash, 5000, 6000); err != nil {
+		t.Fatalf("SetTorrentRateLimit: %v", err)
+	}
+	down, up, ok = e.TorrentRateLimit(hash)
+	if !ok || down != 5000 || up != 6000 {
+		t.Fatalf("TorrentRateLimit after SetTorrentRateLimit = (%d, %d, %v), want (5000, 6000, true)", down, up, ok)
+	}
+
+	var bogus metainfo.Hash
+	if _, _, ok := e.TorrentRateLimit(bogus); ok {
+		t.Fatal("TorrentRateLimit reported ok=true for an unmanaged hash")
+	}
+}
