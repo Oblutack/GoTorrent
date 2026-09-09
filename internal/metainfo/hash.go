@@ -25,6 +25,24 @@ func (h Hash) IsZero() bool {
 	return h == Hash{}
 }
 
+// MarshalText and UnmarshalText make Hash encode as its familiar 40-char
+// hex string in JSON (a bare [20]byte would otherwise serialize as an
+// array of 20 numbers — encoding/json's []byte-to-base64 special case only
+// applies to slices, not fixed-size arrays) and usable as a JSON object
+// key, which requires exactly this interface rather than MarshalJSON.
+func (h Hash) MarshalText() ([]byte, error) {
+	return []byte(h.String()), nil
+}
+
+func (h *Hash) UnmarshalText(text []byte) error {
+	parsed, err := ParseHash(string(text))
+	if err != nil {
+		return err
+	}
+	*h = parsed
+	return nil
+}
+
 // ParseHash decodes a 40-character hex infohash.
 func ParseHash(s string) (Hash, error) {
 	var h Hash

@@ -2,6 +2,7 @@ package metainfo
 
 import (
 	"crypto/sha1"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -361,5 +362,46 @@ func TestHash(t *testing.T) {
 		if _, err := ParseHash(bad); err == nil {
 			t.Fatalf("ParseHash(%q) returned no error", bad)
 		}
+	}
+}
+
+// TestHashJSON proves Hash round-trips through encoding/json as its hex
+// string, both as an ordinary field value and as a map key - the latter
+// only works via encoding.TextMarshaler, not MarshalJSON, which is why
+// this checks both shapes rather than just one.
+func TestHashJSON(t *testing.T) {
+	h, err := ParseHash("0102030405060708090a0b0c0d0e0f1011121314")
+	if err != nil {
+		t.Fatalf("ParseHash: %v", err)
+	}
+
+	data, err := json.Marshal(h)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if got := string(data); got != `"0102030405060708090a0b0c0d0e0f1011121314"` {
+		t.Fatalf("Marshal(h) = %s, want a quoted hex string", got)
+	}
+
+	var back Hash
+	if err := json.Unmarshal(data, &back); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if back != h {
+		t.Fatalf("round-tripped hash = %v, want %v", back, h)
+	}
+
+	m := map[Hash]int{h: 42}
+	mdata, err := json.Marshal(m)
+	if err != nil {
+		t.Fatalf("Marshal(map[Hash]int): %v", err)
+	}
+	if string(mdata) != `{"0102030405060708090a0b0c0d0e0f1011121314":42}` {
+		t.Fatalf("Marshal(map[Hash]int) = %s", mdata)
+	}
+
+	var badHash Hash
+	if err := json.Unmarshal([]byte(`"not-40-hex-chars"`), &badHash); err == nil {
+		t.Fatal("Unmarshal accepted an invalid hex string, want an error")
 	}
 }
