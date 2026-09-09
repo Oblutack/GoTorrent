@@ -30,6 +30,31 @@ func (p Priority) String() string {
 	}
 }
 
+// MarshalText and UnmarshalText make Priority read and write as its
+// lowercase name ("skip"/"low"/"normal"/"high") in JSON — the 4.2 control
+// API's file-priority endpoints are the first consumer, on both directions
+// (reporting a file's current priority, and accepting one in a request
+// body to change it).
+func (p Priority) MarshalText() ([]byte, error) {
+	return []byte(p.String()), nil
+}
+
+func (p *Priority) UnmarshalText(text []byte) error {
+	switch string(text) {
+	case "skip":
+		*p = PrioritySkip
+	case "low":
+		*p = PriorityLow
+	case "normal":
+		*p = PriorityNormal
+	case "high":
+		*p = PriorityHigh
+	default:
+		return fmt.Errorf("picker: %q is not one of \"skip\", \"low\", \"normal\", \"high\"", text)
+	}
+	return nil
+}
+
 // priorityTiers is every non-skip priority, highest first — the order
 // nextPiece walks them in.
 var priorityTiers = [...]Priority{PriorityHigh, PriorityNormal, PriorityLow}

@@ -5,6 +5,29 @@ import (
 	"time"
 )
 
+func TestPriorityTextRoundTrip(t *testing.T) {
+	for _, p := range []Priority{PrioritySkip, PriorityLow, PriorityNormal, PriorityHigh} {
+		text, err := p.MarshalText()
+		if err != nil {
+			t.Fatalf("MarshalText(%v): %v", p, err)
+		}
+		var back Priority
+		if err := back.UnmarshalText(text); err != nil {
+			t.Fatalf("UnmarshalText(%q): %v", text, err)
+		}
+		if back != p {
+			t.Fatalf("round-tripped %v through %q, got %v", p, text, back)
+		}
+	}
+}
+
+func TestPriorityUnmarshalTextRejectsUnknown(t *testing.T) {
+	var p Priority
+	if err := p.UnmarshalText([]byte("urgent")); err == nil {
+		t.Fatal("UnmarshalText accepted an unknown priority name, want an error")
+	}
+}
+
 func TestSetPrioritiesRejectsWrongLength(t *testing.T) {
 	p := newTestPicker(t, 4, nil)
 	if err := p.SetPriorities([]Priority{PriorityNormal, PriorityNormal}); err == nil {
