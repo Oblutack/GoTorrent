@@ -100,3 +100,26 @@ func TestStateMarshalTextMatchesString(t *testing.T) {
 		}
 	}
 }
+
+func TestStateTextRoundTrip(t *testing.T) {
+	for s := StateAdded; s <= StateError; s++ {
+		text, err := s.MarshalText()
+		if err != nil {
+			t.Fatalf("State(%d).MarshalText: %v", s, err)
+		}
+		var back State
+		if err := back.UnmarshalText(text); err != nil {
+			t.Fatalf("UnmarshalText(%q): %v", text, err)
+		}
+		if back != s {
+			t.Fatalf("round-tripped %v through %q, got %v", s, text, back)
+		}
+	}
+}
+
+func TestStateUnmarshalTextRejectsUnknown(t *testing.T) {
+	var s State
+	if err := s.UnmarshalText([]byte("Bogus")); err == nil {
+		t.Fatal("UnmarshalText accepted an unknown state name, want an error")
+	}
+}

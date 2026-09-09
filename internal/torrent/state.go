@@ -83,6 +83,32 @@ func (s State) MarshalText() ([]byte, error) {
 	return []byte(s.String()), nil
 }
 
+// UnmarshalText is MarshalText's inverse, so a State round-trips through
+// JSON - needed by any client (including this project's own API tests)
+// that decodes a response containing one, not just ones that construct a
+// State to send.
+func (s *State) UnmarshalText(text []byte) error {
+	switch string(text) {
+	case "Added":
+		*s = StateAdded
+	case "FetchingMetadata":
+		*s = StateFetchingMetadata
+	case "CheckingFiles":
+		*s = StateCheckingFiles
+	case "Downloading":
+		*s = StateDownloading
+	case "Seeding":
+		*s = StateSeeding
+	case "Paused":
+		*s = StatePaused
+	case "Error":
+		*s = StateError
+	default:
+		return fmt.Errorf("torrent: %q is not a known state", text)
+	}
+	return nil
+}
+
 // transitions is the complete allowed-edge table. Anything not listed here —
 // including every state's edge to itself — is rejected by setState, which is
 // what makes the diagram in the package comment an enforced invariant instead
