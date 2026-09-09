@@ -88,3 +88,15 @@ func TestStateString(t *testing.T) {
 		}
 	}
 }
+
+func TestStateMarshalTextMatchesString(t *testing.T) {
+	for s := StateAdded; s <= StateError; s++ {
+		text, err := s.MarshalText()
+		if err != nil {
+			t.Fatalf("State(%d).MarshalText: %v", s, err)
+		}
+		if string(text) != s.String() {
+			t.Errorf("State(%d).MarshalText() = %q, want %q", s, text, s.String())
+		}
+	}
+}

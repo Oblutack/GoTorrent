@@ -76,6 +76,13 @@ func (s State) String() string {
 	}
 }
 
+// MarshalText makes State encode as its String() name in JSON ("Seeding")
+// rather than the bare int32 it's stored as - the 4.2 control API is the
+// first consumer, and a caller should never have to know these numbers.
+func (s State) MarshalText() ([]byte, error) {
+	return []byte(s.String()), nil
+}
+
 // transitions is the complete allowed-edge table. Anything not listed here —
 // including every state's edge to itself — is rejected by setState, which is
 // what makes the diagram in the package comment an enforced invariant instead
