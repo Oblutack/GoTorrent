@@ -13,15 +13,21 @@ import (
 // as 4.3 grows more hardening, and neither should have to know about the
 // other's internals to do that.
 //
-// Read-only today (list, detail, files, session); the mutating routes in
-// ROADMAP.md's 4.2 table (add, pause/resume/verify/reannounce, patch,
-// delete, session PATCH) and the WebSocket event stream are not built yet.
+// Mutating routes still open: add (POST /api/v1/torrents), the whole-
+// torrent PATCH (category/limits/queue/save path), and session PATCH
+// (limits, port, DHT/PEX/LSD toggles). The WebSocket event stream needs
+// new observer hooks on the torrent actor that don't exist yet.
 func Routes(e *engine.Engine, userAgent string) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", HealthHandler(userAgent))
 	mux.HandleFunc("GET /api/v1/torrents", ListTorrentsHandler(e))
 	mux.HandleFunc("GET /api/v1/torrents/{hash}", TorrentDetailHandler(e))
 	mux.HandleFunc("GET /api/v1/torrents/{hash}/files", FilesHandler(e))
+	mux.HandleFunc("POST /api/v1/torrents/{hash}/pause", PauseHandler(e))
+	mux.HandleFunc("POST /api/v1/torrents/{hash}/resume", ResumeHandler(e))
+	mux.HandleFunc("POST /api/v1/torrents/{hash}/verify", VerifyHandler(e))
+	mux.HandleFunc("POST /api/v1/torrents/{hash}/reannounce", ReannounceHandler(e))
+	mux.HandleFunc("DELETE /api/v1/torrents/{hash}", DeleteTorrentHandler(e))
 	mux.HandleFunc("GET /api/v1/session", SessionHandler(e))
 	return mux
 }
