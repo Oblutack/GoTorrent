@@ -1,4 +1,5 @@
 using System.Net;
+using GoTorrent.Hub.Core.Engine;
 using GoTorrent.Hub.Infrastructure.Engine;
 using GoTorrent.Hub.Tests.Infrastructure;
 
@@ -98,5 +99,40 @@ public sealed class EngineClientTests
 
         Assert.NotNull(handler.LastRequest);
         Assert.Equal("http://engine.local/api/v1/torrents", handler.LastRequest!.RequestUri!.ToString());
+    }
+
+    [Fact]
+    public async Task AddTorrentAsync_DeserializesARealGottrentdResponse()
+    {
+        var handler = new FakeHttpMessageHandler(
+            HttpStatusCode.Created,
+            """{"infoHash":"0102030405060708090a0b0c0d0e0f1011121314"}""");
+        var client = new EngineClient(new HttpClient(handler) { BaseAddress = new Uri("http://engine.local/") });
+
+        var result = await client.AddTorrentAsync(
+            new AddTorrentRequest(Magnet: "magnet:?xt=urn:btih:abc", null, null, null, null),
+            CancellationToken.None);
+
+        Assert.Equal("0102030405060708090a0b0c0d0e0f1011121314", result.InfoHash);
+    }
+
+    [Fact]
+    public async Task AddTorrentAsync_ThrowsDuplicateExceptionOn409()
+    {
+        var handler = new FakeHttpMessageHandler(HttpStatusCode.Conflict, """{"error":"already added"}""");
+        var client = new EngineClient(new HttpClient(handler) { BaseAddress = new Uri("http://engine.local/") });
+
+        await Assert.ThrowsAsync<EngineDuplicateTorrentException>(() =>
+            client.AddTorrentAsync(new AddTorrentRequest(Magnet: "magnet:?xt=urn:btih:abc", null, null, null, null), CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task AddTorrentAsync_ThrowsOnOtherFailureStatus()
+    {
+        var handler = new FakeHttpMessageHandler(HttpStatusCode.BadRequest, """{"error":"bad request"}""");
+        var client = new EngineClient(new HttpClient(handler) { BaseAddress = new Uri("http://engine.local/") });
+
+        await Assert.ThrowsAsync<HttpRequestException>(() =>
+            client.AddTorrentAsync(new AddTorrentRequest(null, null, null, null, null), CancellationToken.None));
     }
 }

@@ -38,9 +38,30 @@ public sealed class StubEngineClient : IEngineClient
         TotalUploaded: 200,
         TotalPeerCount: 0);
 
+    /// <summary>Every request handed to <see cref="AddTorrentAsync"/>, in call order.</summary>
+    public List<AddTorrentRequest> AddedTorrents { get; } = [];
+
+    /// <summary>
+    /// When set, <see cref="AddTorrentAsync"/> throws this instead of
+    /// succeeding — for tests proving a caller handles
+    /// <see cref="EngineDuplicateTorrentException"/> (or any other
+    /// failure) correctly.
+    /// </summary>
+    public Exception? AddTorrentFailure { get; set; }
+
     public Task<IReadOnlyList<TorrentSummary>> ListTorrentsAsync(CancellationToken cancellationToken) =>
         Task.FromResult<IReadOnlyList<TorrentSummary>>([SampleTorrent]);
 
     public Task<SessionStats> GetSessionAsync(CancellationToken cancellationToken) =>
         Task.FromResult(SampleSession);
+
+    public Task<AddTorrentResult> AddTorrentAsync(AddTorrentRequest request, CancellationToken cancellationToken)
+    {
+        if (AddTorrentFailure is not null)
+        {
+            return Task.FromException<AddTorrentResult>(AddTorrentFailure);
+        }
+        AddedTorrents.Add(request);
+        return Task.FromResult(new AddTorrentResult(SampleTorrent.InfoHash));
+    }
 }

@@ -15,4 +15,12 @@ public interface IEngineClient
     Task<IReadOnlyList<TorrentSummary>> ListTorrentsAsync(CancellationToken cancellationToken);
 
     Task<SessionStats> GetSessionAsync(CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Adds a torrent via magnet or URL. Throws
+    /// <see cref="EngineDuplicateTorrentException"/> if gottrentd already
+    /// manages that infohash (its 409 Conflict) rather than a generic HTTP
+    /// failure, since callers often need to treat that case specially.
+    /// </summary>
+    Task<AddTorrentResult> AddTorrentAsync(AddTorrentRequest request, CancellationToken cancellationToken);
 }

@@ -1,3 +1,4 @@
+using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using GoTorrent.Hub.Core.Engine;
@@ -33,5 +34,20 @@ public sealed class EngineClient(HttpClient httpClient) : IEngineClient
         var stats = await httpClient.GetFromJsonAsync<SessionStats>(
             "api/v1/session", JsonOptions, cancellationToken);
         return stats ?? throw new InvalidOperationException("gottrentd returned an empty session response.");
+    }
+
+    public async Task<AddTorrentResult> AddTorrentAsync(AddTorrentRequest request, CancellationToken cancellationToken)
+    {
+        var response = await httpClient.PostAsJsonAsync("api/v1/torrents", request, JsonOptions, cancellationToken);
+
+        if (response.StatusCode == HttpStatusCode.Conflict)
+        {
+            var body = await response.Content.ReadAsStringAsync(cancellationToken);
+            throw new EngineDuplicateTorrentException(body);
+        }
+        response.EnsureSuccessStatusCode();
+
+        var result = await response.Content.ReadFromJsonAsync<AddTorrentResult>(JsonOptions, cancellationToken);
+        return result ?? throw new InvalidOperationException("gottrentd returned an empty add-torrent response.");
     }
 }
