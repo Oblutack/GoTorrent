@@ -1,5 +1,6 @@
 using GoTorrent.Hub.Api.BackgroundServices;
 using GoTorrent.Hub.Infrastructure.Engine;
+using GoTorrent.Hub.Infrastructure.History;
 using GoTorrent.Hub.Infrastructure.Nodes;
 using GoTorrent.Hub.Infrastructure.Persistence;
 using GoTorrent.Hub.Infrastructure.Rss;
@@ -22,6 +23,8 @@ builder.Services.AddEngineClient(builder.Configuration);
 builder.Services.AddRssRules(builder.Configuration);
 builder.Services.AddHostedService<RssFeedPollingService>();
 builder.Services.AddNodeAggregation();
+builder.Services.AddHistory(builder.Configuration);
+builder.Services.AddHostedService<HistoryRecordingService>();
 
 // gottrentd itself is the thing actually worth reporting on here - if the
 // Hub can't reach its one configured engine node, that's exactly the
