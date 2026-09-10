@@ -13,7 +13,7 @@ public sealed class NodesControllerTests(GoTorrentHubApiFactory factory) : IClas
     [Fact]
     public async Task Create_ThenGet_RoundTrips()
     {
-        using var client = factory.CreateClient();
+        using var client = await factory.CreateAuthenticatedClientAsync();
 
         var createResponse = await client.PostAsJsonAsync("/api/v1/nodes", MakeCreateRequest());
         createResponse.EnsureSuccessStatusCode();
@@ -31,7 +31,7 @@ public sealed class NodesControllerTests(GoTorrentHubApiFactory factory) : IClas
     [Fact]
     public async Task Create_ResponseNeverIncludesTheToken()
     {
-        using var client = factory.CreateClient();
+        using var client = await factory.CreateAuthenticatedClientAsync();
 
         var createResponse = await client.PostAsJsonAsync("/api/v1/nodes", MakeCreateRequest("no-token-leak"));
         createResponse.EnsureSuccessStatusCode();
@@ -44,7 +44,7 @@ public sealed class NodesControllerTests(GoTorrentHubApiFactory factory) : IClas
     [Fact]
     public async Task Create_RejectsANonHttpBaseAddress()
     {
-        using var client = factory.CreateClient();
+        using var client = await factory.CreateAuthenticatedClientAsync();
 
         var response = await client.PostAsJsonAsync(
             "/api/v1/nodes", MakeCreateRequest() with { BaseAddress = "not-a-url" });
@@ -55,7 +55,7 @@ public sealed class NodesControllerTests(GoTorrentHubApiFactory factory) : IClas
     [Fact]
     public async Task Create_RejectsAMissingToken()
     {
-        using var client = factory.CreateClient();
+        using var client = await factory.CreateAuthenticatedClientAsync();
 
         var response = await client.PostAsJsonAsync(
             "/api/v1/nodes", MakeCreateRequest() with { Token = "" });
@@ -66,7 +66,7 @@ public sealed class NodesControllerTests(GoTorrentHubApiFactory factory) : IClas
     [Fact]
     public async Task Get_UnknownIdReturns404()
     {
-        using var client = factory.CreateClient();
+        using var client = await factory.CreateAuthenticatedClientAsync();
 
         var response = await client.GetAsync($"/api/v1/nodes/{Guid.NewGuid()}");
 
@@ -76,7 +76,7 @@ public sealed class NodesControllerTests(GoTorrentHubApiFactory factory) : IClas
     [Fact]
     public async Task List_IncludesACreatedNode()
     {
-        using var client = factory.CreateClient();
+        using var client = await factory.CreateAuthenticatedClientAsync();
         var createResponse = await client.PostAsJsonAsync("/api/v1/nodes", MakeCreateRequest("list-test-node"));
         var created = await createResponse.Content.ReadFromJsonAsync<NodeResponse>();
 
@@ -90,7 +90,7 @@ public sealed class NodesControllerTests(GoTorrentHubApiFactory factory) : IClas
     [Fact]
     public async Task Update_ThenGet_ReflectsTheChange()
     {
-        using var client = factory.CreateClient();
+        using var client = await factory.CreateAuthenticatedClientAsync();
         var createResponse = await client.PostAsJsonAsync("/api/v1/nodes", MakeCreateRequest("update-test-node"));
         var created = await createResponse.Content.ReadFromJsonAsync<NodeResponse>();
 
@@ -106,7 +106,7 @@ public sealed class NodesControllerTests(GoTorrentHubApiFactory factory) : IClas
     [Fact]
     public async Task Update_UnknownIdReturns404()
     {
-        using var client = factory.CreateClient();
+        using var client = await factory.CreateAuthenticatedClientAsync();
 
         var response = await client.PutAsJsonAsync(
             $"/api/v1/nodes/{Guid.NewGuid()}",
@@ -118,7 +118,7 @@ public sealed class NodesControllerTests(GoTorrentHubApiFactory factory) : IClas
     [Fact]
     public async Task Delete_RemovesTheNode()
     {
-        using var client = factory.CreateClient();
+        using var client = await factory.CreateAuthenticatedClientAsync();
         var createResponse = await client.PostAsJsonAsync("/api/v1/nodes", MakeCreateRequest("delete-test-node"));
         var created = await createResponse.Content.ReadFromJsonAsync<NodeResponse>();
 
@@ -132,7 +132,7 @@ public sealed class NodesControllerTests(GoTorrentHubApiFactory factory) : IClas
     [Fact]
     public async Task GetAggregatedTorrents_IncludesACreatedNodesTorrents()
     {
-        using var client = factory.CreateClient();
+        using var client = await factory.CreateAuthenticatedClientAsync();
         var createResponse = await client.PostAsJsonAsync("/api/v1/nodes", MakeCreateRequest("aggregate-test-node"));
         var created = await createResponse.Content.ReadFromJsonAsync<NodeResponse>();
 
@@ -146,7 +146,7 @@ public sealed class NodesControllerTests(GoTorrentHubApiFactory factory) : IClas
     [Fact]
     public async Task GetStatuses_ReportsACreatedNodeAsReachable()
     {
-        using var client = factory.CreateClient();
+        using var client = await factory.CreateAuthenticatedClientAsync();
         var createResponse = await client.PostAsJsonAsync("/api/v1/nodes", MakeCreateRequest("status-test-node"));
         var created = await createResponse.Content.ReadFromJsonAsync<NodeResponse>();
 

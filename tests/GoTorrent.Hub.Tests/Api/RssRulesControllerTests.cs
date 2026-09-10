@@ -14,7 +14,7 @@ public sealed class RssRulesControllerTests(GoTorrentHubApiFactory factory)
     [Fact]
     public async Task Create_ThenGet_RoundTrips()
     {
-        using var client = factory.CreateClient();
+        using var client = await factory.CreateAuthenticatedClientAsync();
 
         var createResponse = await client.PostAsJsonAsync("/api/v1/rssrules", MakeCreateRequest());
         createResponse.EnsureSuccessStatusCode();
@@ -32,7 +32,7 @@ public sealed class RssRulesControllerTests(GoTorrentHubApiFactory factory)
     [Fact]
     public async Task Create_RejectsAnInvalidRegexPattern()
     {
-        using var client = factory.CreateClient();
+        using var client = await factory.CreateAuthenticatedClientAsync();
 
         var response = await client.PostAsJsonAsync(
             "/api/v1/rssrules", MakeCreateRequest() with { TitlePattern = "(unterminated[" });
@@ -43,7 +43,7 @@ public sealed class RssRulesControllerTests(GoTorrentHubApiFactory factory)
     [Fact]
     public async Task Get_UnknownIdReturns404()
     {
-        using var client = factory.CreateClient();
+        using var client = await factory.CreateAuthenticatedClientAsync();
 
         var response = await client.GetAsync($"/api/v1/rssrules/{Guid.NewGuid()}");
 
@@ -53,7 +53,7 @@ public sealed class RssRulesControllerTests(GoTorrentHubApiFactory factory)
     [Fact]
     public async Task List_IncludesACreatedRule()
     {
-        using var client = factory.CreateClient();
+        using var client = await factory.CreateAuthenticatedClientAsync();
         var createResponse = await client.PostAsJsonAsync("/api/v1/rssrules", MakeCreateRequest("list-test-rule"));
         var created = await createResponse.Content.ReadFromJsonAsync<RssRule>();
 
@@ -67,7 +67,7 @@ public sealed class RssRulesControllerTests(GoTorrentHubApiFactory factory)
     [Fact]
     public async Task Update_ThenGet_ReflectsTheChange()
     {
-        using var client = factory.CreateClient();
+        using var client = await factory.CreateAuthenticatedClientAsync();
         var createResponse = await client.PostAsJsonAsync("/api/v1/rssrules", MakeCreateRequest("update-test-rule"));
         var created = await createResponse.Content.ReadFromJsonAsync<RssRule>();
 
@@ -84,7 +84,7 @@ public sealed class RssRulesControllerTests(GoTorrentHubApiFactory factory)
     [Fact]
     public async Task Update_UnknownIdReturns404()
     {
-        using var client = factory.CreateClient();
+        using var client = await factory.CreateAuthenticatedClientAsync();
 
         var response = await client.PutAsJsonAsync(
             $"/api/v1/rssrules/{Guid.NewGuid()}",
@@ -96,7 +96,7 @@ public sealed class RssRulesControllerTests(GoTorrentHubApiFactory factory)
     [Fact]
     public async Task Delete_RemovesTheRule()
     {
-        using var client = factory.CreateClient();
+        using var client = await factory.CreateAuthenticatedClientAsync();
         var createResponse = await client.PostAsJsonAsync("/api/v1/rssrules", MakeCreateRequest("delete-test-rule"));
         var created = await createResponse.Content.ReadFromJsonAsync<RssRule>();
 

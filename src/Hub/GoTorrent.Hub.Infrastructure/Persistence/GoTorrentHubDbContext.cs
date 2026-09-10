@@ -2,6 +2,8 @@ using GoTorrent.Hub.Core.History;
 using GoTorrent.Hub.Core.Nodes;
 using GoTorrent.Hub.Core.Rss;
 using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.Identity;
+using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
 
 namespace GoTorrent.Hub.Infrastructure.Persistence;
@@ -11,14 +13,23 @@ namespace GoTorrent.Hub.Infrastructure.Persistence;
 /// gottrentd persists (its manifest/resume data are the Go engine's own
 /// business): this is state that outlives, and is meaningless to, any one
 /// engine node — RSS rules, registered nodes, history/analytics, and
-/// (once built) Identity. SQLite for dev (see
-/// DependencyInjection.AddRssRules); nothing here uses a SQLite-specific
-/// type mapping, so swapping to Npgsql later is a provider change, not a
-/// schema rewrite.
+/// Identity. SQLite for dev (see DependencyInjection.AddRssRules);
+/// nothing here uses a SQLite-specific type mapping, so swapping to
+/// Npgsql later is a provider change, not a schema rewrite.
 /// </summary>
+/// <remarks>
+/// <see cref="IdentityUserContext{TUser,TKey}"/>, not the full
+/// <see cref="IdentityDbContext{TUser,TKey}"/> — this Hub has no concept
+/// of roles (see <c>AddIdentityAndJwt</c>'s own reasoning: every
+/// authenticated user has the same access, a deliberate v1 scope
+/// decision, not an oversight), and <c>AddIdentityCore</c> (used instead
+/// of the full <c>AddIdentity</c>, since this is a pure API with no
+/// cookie/UI sign-in) doesn't register role support either — the two
+/// stay matched.
+/// </remarks>
 public sealed class GoTorrentHubDbContext(
     DbContextOptions<GoTorrentHubDbContext> options,
-    IDataProtectionProvider dataProtectionProvider) : DbContext(options)
+    IDataProtectionProvider dataProtectionProvider) : IdentityUserContext<IdentityUser<Guid>, Guid>(options)
 {
     public DbSet<RssRule> RssRules => Set<RssRule>();
 
@@ -32,6 +43,11 @@ public sealed class GoTorrentHubDbContext(
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
+        // Must run first - this is what actually configures AspNetUsers
+        // and friends; skipping it silently produces a model with no
+        // Identity tables at all.
+        base.OnModelCreating(modelBuilder);
+
         modelBuilder.Entity<RssRule>(entity =>
         {
             entity.HasKey(r => r.Id);

@@ -1,3 +1,6 @@
+using System.Net.Http.Headers;
+using System.Net.Http.Json;
+using GoTorrent.Hub.Api.Controllers;
 using GoTorrent.Hub.Core.Engine;
 using GoTorrent.Hub.Core.Nodes;
 using GoTorrent.Hub.Infrastructure.Persistence;
@@ -28,10 +31,48 @@ public sealed class GoTorrentHubApiFactory : WebApplicationFactory<Program>
     // reasoning SqliteDbContextFixture documents for the non-Api tests.
     private readonly SqliteConnection _connection = new("Data Source=:memory:");
 
+    // A fixed bootstrap account every test class using this factory can
+    // authenticate as - CreateAuthenticatedClientAsync registers it on
+    // first use (each factory instance is a fresh, isolated database) and
+    // just logs in on every call after that.
+    public const string TestUserName = "smoke-test-user";
+    public const string TestPassword = "P@ssw0rd1234!";
+
     public GoTorrentHubApiFactory() => _connection.Open();
+
+    /// <summary>
+    /// A client carrying a real bearer token from the real
+    /// /api/v1/auth/register + /api/v1/auth/login round trip - every
+    /// controller test needs this now that every route but AuthController's
+    /// own requires authorization. Proves the full auth flow works, not
+    /// just that a hand-minted token would satisfy the JWT bearer handler.
+    /// </summary>
+    public async Task<HttpClient> CreateAuthenticatedClientAsync()
+    {
+        var client = CreateClient();
+
+        var login = await client.PostAsJsonAsync("/api/v1/auth/login", new LoginRequest(TestUserName, TestPassword));
+        if (login.StatusCode != System.Net.HttpStatusCode.OK)
+        {
+            var register = await client.PostAsJsonAsync("/api/v1/auth/register", new RegisterRequest(TestUserName, TestPassword));
+            register.EnsureSuccessStatusCode();
+            login = await client.PostAsJsonAsync("/api/v1/auth/login", new LoginRequest(TestUserName, TestPassword));
+        }
+        login.EnsureSuccessStatusCode();
+
+        var body = await login.Content.ReadFromJsonAsync<LoginResponse>();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", body!.AccessToken);
+        return client;
+    }
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
+        // Program.cs validates Jwt:SigningKey at startup (ValidateOnStart)
+        // - appsettings.json's own placeholder is deliberately empty (a
+        // real secret must never be committed), so the test host needs
+        // its own, same as a real deployment would via user-secrets.
+        builder.UseSetting("Jwt:SigningKey", "test-only-signing-key-at-least-32-bytes-long!!");
+
         builder.ConfigureServices(services =>
         {
             // Registered after the app's own AddEngineClient/AddRssRules

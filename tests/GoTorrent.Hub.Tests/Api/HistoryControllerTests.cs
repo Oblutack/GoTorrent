@@ -41,7 +41,7 @@ public sealed class HistoryControllerTests(GoTorrentHubApiFactory factory) : ICl
             Downloaded = 123,
             Uploaded = 456,
         });
-        using var client = factory.CreateClient();
+        using var client = await factory.CreateAuthenticatedClientAsync();
 
         var response = await client.GetAsync("/api/v1/history/completed");
         response.EnsureSuccessStatusCode();
@@ -53,7 +53,7 @@ public sealed class HistoryControllerTests(GoTorrentHubApiFactory factory) : ICl
     [Fact]
     public async Task GetCompleted_RejectsATakeAboveTheLimit()
     {
-        using var client = factory.CreateClient();
+        using var client = await factory.CreateAuthenticatedClientAsync();
 
         var response = await client.GetAsync("/api/v1/history/completed?take=5000");
 
@@ -72,7 +72,7 @@ public sealed class HistoryControllerTests(GoTorrentHubApiFactory factory) : ICl
             Downloaded = 1000,
             Uploaded = 2000,
         });
-        using var client = factory.CreateClient();
+        using var client = await factory.CreateAuthenticatedClientAsync();
 
         var response = await client.GetAsync("/api/v1/history/summary");
         response.EnsureSuccessStatusCode();
@@ -93,7 +93,7 @@ public sealed class HistoryControllerTests(GoTorrentHubApiFactory factory) : ICl
             CapturedAt = DateTimeOffset.UtcNow,
             TorrentCount = 3,
         });
-        using var client = factory.CreateClient();
+        using var client = await factory.CreateAuthenticatedClientAsync();
 
         var response = await client.GetAsync($"/api/v1/history/snapshots?nodeId={nodeId}");
         response.EnsureSuccessStatusCode();
@@ -114,7 +114,7 @@ public sealed class HistoryControllerTests(GoTorrentHubApiFactory factory) : ICl
             NodeName = "node-old",
             CapturedAt = DateTimeOffset.UtcNow.AddDays(-30),
         });
-        using var client = factory.CreateClient();
+        using var client = await factory.CreateAuthenticatedClientAsync();
 
         var response = await client.GetAsync($"/api/v1/history/snapshots?nodeId={nodeId}");
         response.EnsureSuccessStatusCode();
