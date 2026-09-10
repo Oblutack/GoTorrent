@@ -32,3 +32,13 @@ test_folder/
 test_folder
 ubuntu-25.04-desktop-amd64.iso
 downloads/
+
+# .NET (Phase 5/6 - GoTorrent.Hub, GoTorrent.Desktop)
+bin/
+obj/
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+appsettings.*.local.json
