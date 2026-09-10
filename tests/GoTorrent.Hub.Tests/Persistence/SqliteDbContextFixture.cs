@@ -1,4 +1,5 @@
 using GoTorrent.Hub.Infrastructure.Persistence;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 
@@ -18,6 +19,14 @@ public sealed class SqliteDbContextFixture : IDisposable
 {
     private readonly SqliteConnection _connection = new("Data Source=:memory:");
 
+    // One in-memory key ring for the fixture's whole lifetime - encrypting
+    // EngineNode.Token with one CreateContext() call and decrypting it
+    // with another only works if every context built from this fixture
+    // shares the same Data Protection keys. Ephemeral (never touches
+    // disk) is exactly right for a test double: real, working encryption
+    // with no key-file cleanup burden.
+    private readonly IDataProtectionProvider _dataProtectionProvider = new EphemeralDataProtectionProvider();
+
     public SqliteDbContextFixture()
     {
         _connection.Open();
@@ -30,7 +39,7 @@ public sealed class SqliteDbContextFixture : IDisposable
         var options = new DbContextOptionsBuilder<GoTorrentHubDbContext>()
             .UseSqlite(_connection)
             .Options;
-        return new GoTorrentHubDbContext(options);
+        return new GoTorrentHubDbContext(options, _dataProtectionProvider);
     }
 
     public void Dispose() => _connection.Dispose();

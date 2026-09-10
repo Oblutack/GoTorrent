@@ -1,5 +1,7 @@
 using GoTorrent.Hub.Core.Engine;
+using GoTorrent.Hub.Core.Nodes;
 using GoTorrent.Hub.Infrastructure.Persistence;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Data.Sqlite;
@@ -37,6 +39,16 @@ public sealed class GoTorrentHubApiFactory : WebApplicationFactory<Program>
             // this factory gets a chance to touch it), so these are what
             // DI actually resolves.
             services.AddScoped<IEngineClient, StubEngineClient>();
+            services.AddScoped<IEngineClientFactory, StubEngineClientFactory>();
+
+            // Real Data Protection, but ephemeral (in-memory keys, never
+            // touches this machine's real key ring) - the default
+            // file-system-backed provider AddNodeAggregation registers
+            // would otherwise write key files under the test process's
+            // profile, which is unnecessary state for a test run and can
+            // fail outright on a locked-down CI runner.
+            services.RemoveAll<IDataProtectionProvider>();
+            services.AddSingleton<IDataProtectionProvider>(new EphemeralDataProtectionProvider());
 
             services.RemoveAll<DbContextOptions<GoTorrentHubDbContext>>();
             services.AddDbContext<GoTorrentHubDbContext>(options => options.UseSqlite(_connection));
