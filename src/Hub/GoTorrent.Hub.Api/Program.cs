@@ -1,7 +1,10 @@
 using GoTorrent.Hub.Api.BackgroundServices;
+using GoTorrent.Hub.Api.Hubs;
 using GoTorrent.Hub.Core.Auth;
+using GoTorrent.Hub.Core.Events;
 using GoTorrent.Hub.Infrastructure.Auth;
 using GoTorrent.Hub.Infrastructure.Engine;
+using GoTorrent.Hub.Infrastructure.Events;
 using GoTorrent.Hub.Infrastructure.History;
 using GoTorrent.Hub.Infrastructure.Nodes;
 using GoTorrent.Hub.Infrastructure.Persistence;
@@ -32,6 +35,18 @@ builder.Services.AddNodeAggregation();
 builder.Services.AddHistory(builder.Configuration);
 builder.Services.AddHostedService<HistoryRecordingService>();
 builder.Services.AddIdentityAndJwt(builder.Configuration);
+builder.Services.AddNodeEventStream();
+builder.Services.AddSignalR();
+builder.Services.AddSingleton<INodeEventBroadcaster, SignalRNodeEventBroadcaster>();
+builder.Services.AddSingleton<NodeEventFanOutCoordinator>();
+builder.Services.AddHostedService<NodeEventFanOutService>();
+builder.Services.AddOptions<NodeEventFanOutOptions>()
+    .Bind(builder.Configuration.GetSection(NodeEventFanOutOptions.SectionName));
+// NodeEventFanOutCoordinator lives in Core, which has no dependency on
+// the Options package - same reasoning, same "bind normally here, hand
+// the resolved value across as a plain singleton" pattern HistoryOptions
+// already established for HistoryRecorder.
+builder.Services.AddSingleton(sp => sp.GetRequiredService<IOptions<NodeEventFanOutOptions>>().Value);
 
 // TokenValidationParameters is built from the same IOptions<JwtOptions>
 // AddIdentityAndJwt already bound and validated (ValidateOnStart) -
@@ -60,6 +75,27 @@ builder.Services.AddOptions<JwtBearerOptions>(JwtBearerDefaults.AuthenticationSc
             ValidateIssuerSigningKey = true,
             IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(opts.SigningKey)),
             ClockSkew = TimeSpan.FromMinutes(1),
+        };
+        // A browser's native WebSocket constructor can't set the
+        // Authorization header on the handshake request at all - the
+        // exact same gap internal/api's RequireBearerToken works around
+        // on the Go side with its own ?token= fallback. SignalR's JS
+        // client already knows to send the token this way for exactly
+        // this reason; this is what makes the server side accept it.
+        // Scoped to /hubs specifically so a token leaking into a query
+        // string (browser history, server logs) stays limited to the
+        // one kind of connection that has no other way to send it.
+        bearerOptions.Events = new JwtBearerEvents
+        {
+            OnMessageReceived = context =>
+            {
+                var accessToken = context.Request.Query["access_token"];
+                if (!string.IsNullOrEmpty(accessToken) && context.HttpContext.Request.Path.StartsWithSegments("/hubs"))
+                {
+                    context.Token = accessToken;
+                }
+                return Task.CompletedTask;
+            },
         };
     });
 builder.Services.AddAuthorization();
@@ -101,6 +137,7 @@ app.UseAuthorization();
 // without credentials, and it leaks nothing beyond "the process is up
 // and can/can't reach its engine."
 app.MapControllers().RequireAuthorization();
+app.MapHub<GoTorrentEventsHub>("/hubs/events").RequireAuthorization();
 app.MapHealthChecks("/health");
 
 app.Run();

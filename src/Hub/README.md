@@ -65,9 +65,25 @@ GoTorrent.sln
    endpoint has no place on a Hub that might be reachable from outside
    the LAN.
 
+## Live events
+
+Connect a SignalR client (any language SignalR supports) to
+`/hubs/events` with the same bearer token as everything else — for a
+browser client that can't set an `Authorization` header on the
+connection, SignalR's client already knows to send the token as an
+`?access_token=` query parameter instead, and the Hub accepts that too.
+Every message is `NodeEvent`, one per event any registered node's own
+`gottrentd` produces (torrent added/removed/state-changed, peer
+connected/disconnected, piece verified, a `sessionStats` snapshot once a
+second), tagged with which node it came from:
+
+```json
+{ "nodeId": "...", "nodeName": "...", "event": { "kind": "torrentStateChanged", "infoHash": "...", "state": "Seeding", "time": "..." } }
+```
+
 ## Status
 
-Four of ROADMAP.md's 5.2 features are done:
+All five of ROADMAP.md's 5.2 features are done:
 
 - **Torrents/session proxy** — `GET /api/v1/torrents`, `GET /api/v1/session`,
   proxied from the one node configured via `Engine:*` — proof the
@@ -89,5 +105,11 @@ Four of ROADMAP.md's 5.2 features are done:
   `/api/v1/auth/*` and `/health`. No roles (every account has the same
   access) and no refresh-token flow — both real, deliberately
   out-of-scope simplifications for now, not oversights.
+- **SignalR fan-out** — one `/hubs/events` connection relaying every
+  registered node's own live WebSocket event stream, instead of a client
+  opening its own raw connection per node. `NodeEventFanOutService`
+  keeps exactly one subscription running per enabled node, restarting
+  one that drops without affecting the others.
 
-SignalR fan-out (ROADMAP.md's 5.2) is the one feature left to build.
+Phase 5.2 is complete; Identity + JWT and SignalR fan-out both landed the
+same day as the rest.
