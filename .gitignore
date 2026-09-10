@@ -42,3 +42,6 @@ obj/
 *.userosscache
 *.sln.docstates
 appsettings.*.local.json
+*.db
+*.db-shm
+*.db-wal

@@ -1,4 +1,8 @@
+using GoTorrent.Hub.Api.BackgroundServices;
 using GoTorrent.Hub.Infrastructure.Engine;
+using GoTorrent.Hub.Infrastructure.Persistence;
+using GoTorrent.Hub.Infrastructure.Rss;
+using Microsoft.EntityFrameworkCore;
 using Scalar.AspNetCore;
 using Serilog;
 
@@ -14,6 +18,8 @@ builder.Host.UseSerilog((context, configuration) =>
 builder.Services.AddControllers();
 builder.Services.AddOpenApi();
 builder.Services.AddEngineClient(builder.Configuration);
+builder.Services.AddRssRules(builder.Configuration);
+builder.Services.AddHostedService<RssFeedPollingService>();
 
 // gottrentd itself is the thing actually worth reporting on here - if the
 // Hub can't reach its one configured engine node, that's exactly the
@@ -22,6 +28,15 @@ builder.Services.AddHealthChecks()
     .AddCheck<GoTorrent.Hub.Api.HealthChecks.EngineHealthCheck>("engine");
 
 var app = builder.Build();
+
+// The Hub's own database (RSS rules today) - applying migrations on
+// startup is a deliberate, documented choice for a project at this stage
+// (no separate deploy/migrate step exists yet), not something to carry
+// unexamined into a real multi-instance production setup later.
+using (var scope = app.Services.CreateScope())
+{
+    await scope.ServiceProvider.GetRequiredService<GoTorrentHubDbContext>().Database.MigrateAsync();
+}
 
 app.UseSerilogRequestLogging();
 
