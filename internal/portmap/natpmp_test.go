@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"net"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -26,8 +27,12 @@ type fakeNATPMPGateway struct {
 
 	externalIP net.IP
 	// refuseResult, if non-zero, makes every mapping request fail with this
-	// result code instead of succeeding — for testing error handling.
-	refuseResult uint16
+	// result code instead of succeeding — for testing error handling. An
+	// atomic since serve()'s handler goroutines are already running by the
+	// time a test sets this (newFakeNATPMPGateway starts serve() before
+	// returning), and a plain field write here raced those reads under
+	// go test -race.
+	refuseResult atomic.Uint32
 }
 
 func newFakeNATPMPGateway(t *testing.T, externalIP net.IP) *fakeNATPMPGateway {
@@ -79,8 +84,8 @@ func (g *fakeNATPMPGateway) handle(req []byte, addr *net.UDPAddr) {
 
 		resp := make([]byte, 16)
 		resp[1] = opcode | 0x80
-		if g.refuseResult != 0 {
-			binary.BigEndian.PutUint16(resp[2:4], g.refuseResult)
+		if refuse := g.refuseResult.Load(); refuse != 0 {
+			binary.BigEndian.PutUint16(resp[2:4], uint16(refuse))
 			g.conn.WriteToUDP(resp, addr)
 			return
 		}
@@ -124,7 +129,7 @@ func TestNATPMPAddMapping(t *testing.T) {
 
 func TestNATPMPAddMappingSurfacesRefusal(t *testing.T) {
 	gw := newFakeNATPMPGateway(t, net.IPv4(203, 0, 113, 9))
-	gw.refuseResult = 3 // "network failure", per RFC 6886's result codes
+	gw.refuseResult.Store(3) // "network failure", per RFC 6886's result codes
 	m := testMapper(t, gw)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

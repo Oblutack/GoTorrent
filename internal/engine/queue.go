@@ -147,27 +147,38 @@ func (e *Engine) reevaluateQueue() {
 		e.mu.Unlock()
 		return // unlimited: skip the Stats() round trips below entirely
 	}
+	// entry captures every managedTorrent-owned field this pass needs while
+	// e.mu is still held - queuePos/forceStart/queueHeld are plain fields
+	// mutated under e.mu by SetQueuePosition/SetForceStart/setQueueHeld from
+	// other goroutines, so reading them off mt after unlocking (the previous
+	// shape of this snapshot) was an unsynchronized read racing those
+	// writers. Only *torrent.Torrent itself is safe to keep as a live
+	// pointer here, since its own State()/Stats() are already safe to call
+	// from any goroutine.
 	type entry struct {
-		hash metainfo.Hash
-		mt   *managedTorrent
+		hash       metainfo.Hash
+		t          *torrent.Torrent
+		queuePos   int
+		forceStart bool
+		queueHeld  bool
 	}
 	entries := make([]entry, 0, len(e.torrents))
 	for hash, mt := range e.torrents {
-		entries = append(entries, entry{hash, mt})
+		entries = append(entries, entry{hash: hash, t: mt.t, queuePos: mt.queuePos, forceStart: mt.forceStart, queueHeld: mt.queueHeld})
 	}
 	e.mu.Unlock()
 
 	var downloading, seeding []queueCandidate
 	for _, en := range entries {
-		st := en.mt.t.State()
-		if st == torrent.StatePaused && !en.mt.queueHeld {
+		st := en.t.State()
+		if st == torrent.StatePaused && !en.queueHeld {
 			continue
 		}
 		if st != torrent.StateDownloading && st != torrent.StateSeeding && st != torrent.StatePaused {
 			continue // FetchingMetadata/CheckingFiles/Error: not ours to act on
 		}
-		stats := en.mt.t.Stats()
-		c := queueCandidate{hash: en.hash, t: en.mt.t, queuePos: en.mt.queuePos, forceStart: en.mt.forceStart, paused: st == torrent.StatePaused}
+		stats := en.t.Stats()
+		c := queueCandidate{hash: en.hash, t: en.t, queuePos: en.queuePos, forceStart: en.forceStart, paused: st == torrent.StatePaused}
 		if stats.Left == 0 {
 			seeding = append(seeding, c)
 		} else {
