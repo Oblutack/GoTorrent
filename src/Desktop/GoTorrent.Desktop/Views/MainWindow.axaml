@@ -1,0 +1,57 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:GoTorrent.Desktop.ViewModels"
+        xmlns:conv="using:Avalonia.Data.Converters"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d" d:DesignWidth="900" d:DesignHeight="500"
+        x:Class="GoTorrent.Desktop.Views.MainWindow"
+        x:DataType="vm:MainViewModel"
+        Icon="/Assets/avalonia-logo.ico"
+        Title="GoTorrent">
+
+    <Design.DataContext>
+        <vm:MainViewModel />
+    </Design.DataContext>
+
+    <Grid RowDefinitions="Auto,*,Auto" Margin="12">
+
+        <!-- Connect form: shown until a gottrentd connection is configured. -->
+        <StackPanel Grid.Row="0" Spacing="6" IsVisible="{Binding !IsConnected}" Margin="0,0,0,12">
+            <TextBlock Text="Connect to gottrentd" FontWeight="Bold" />
+            <TextBox PlaceholderText="Base address, e.g. http://127.0.0.1:6880/" Text="{Binding BaseAddressInput}" />
+            <TextBox PlaceholderText="Bearer token" Text="{Binding TokenInput}" />
+            <Button Content="Connect" Command="{Binding ConnectCommand}" HorizontalAlignment="Left" />
+            <TextBlock Text="{Binding ConnectionError}" Foreground="Red" IsVisible="{Binding ConnectionError, Converter={x:Static conv:ObjectConverters.IsNotNull}}" />
+        </StackPanel>
+
+        <!-- Session summary: shown once connected. -->
+        <TextBlock Grid.Row="0"
+                    IsVisible="{Binding IsConnected}"
+                    Text="{Binding Session.TorrentCount, StringFormat='{}{0} torrents'}"
+                    Margin="0,0,0,8" />
+
+        <DataGrid Grid.Row="1"
+                  IsVisible="{Binding IsConnected}"
+                  ItemsSource="{Binding Torrents}"
+                  IsReadOnly="True"
+                  GridLinesVisibility="Horizontal"
+                  AutoGenerateColumns="False">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="3*" />
+                <DataGridTextColumn Header="State" Binding="{Binding State}" Width="*" />
+                <DataGridTextColumn Header="Progress" Binding="{Binding ProgressFraction, StringFormat='{}{0:P0}'}" Width="*" />
+                <DataGridTextColumn Header="Downloaded" Binding="{Binding Downloaded}" Width="*" />
+                <DataGridTextColumn Header="Uploaded" Binding="{Binding Uploaded}" Width="*" />
+                <DataGridTextColumn Header="Peers" Binding="{Binding PeerCount}" Width="60" />
+            </DataGrid.Columns>
+        </DataGrid>
+
+        <TextBlock Grid.Row="2"
+                    Text="{Binding ConnectionError}"
+                    Foreground="Red"
+                    Margin="0,8,0,0"
+                    IsVisible="{Binding ConnectionError, Converter={x:Static conv:ObjectConverters.IsNotNull}}" />
+    </Grid>
+
+</Window>

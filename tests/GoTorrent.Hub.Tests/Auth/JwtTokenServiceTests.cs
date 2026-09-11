@@ -24,7 +24,11 @@ public sealed class JwtTokenServiceTests
     public void CreateToken_ProducesATokenValidAgainstTheSameParameters()
     {
         var options = MakeOptions();
-        var time = new FixedTimeProvider(new DateTimeOffset(2026, 9, 10, 12, 0, 0, TimeSpan.Zero));
+        // Must be real "now", not a fixed calendar date - ValidateToken
+        // below checks the token's expiry against actual wall-clock
+        // time, so a hardcoded past date makes this test a time bomb
+        // (it passed the day it was written, then failed forever after).
+        var time = new FixedTimeProvider(DateTimeOffset.UtcNow);
         var service = new JwtTokenService(Options.Create(options), time);
         var user = new IdentityUser<Guid> { Id = Guid.NewGuid(), UserName = "alice" };
 
@@ -54,7 +58,10 @@ public sealed class JwtTokenServiceTests
 
         Assert.Equal(user.Id.ToString(), principal.FindFirst(JwtRegisteredClaimNames.Sub)?.Value);
         Assert.Equal("alice", principal.FindFirst(JwtRegisteredClaimNames.UniqueName)?.Value);
-        Assert.Equal(expiresAt.UtcDateTime, validatedToken.ValidTo);
+        // JWT's exp claim is second-precision (a JSON NumericDate) - it
+        // never carries the sub-second ticks expiresAt itself has.
+        var expectedValidTo = new DateTime(expiresAt.UtcDateTime.Ticks - (expiresAt.UtcDateTime.Ticks % TimeSpan.TicksPerSecond), DateTimeKind.Utc);
+        Assert.Equal(expectedValidTo, validatedToken.ValidTo);
     }
 
     [Fact]
