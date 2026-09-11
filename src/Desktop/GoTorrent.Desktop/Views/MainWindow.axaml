@@ -4,7 +4,7 @@
         xmlns:conv="using:Avalonia.Data.Converters"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
-        mc:Ignorable="d" d:DesignWidth="900" d:DesignHeight="500"
+        mc:Ignorable="d" d:DesignWidth="900" d:DesignHeight="600"
         x:Class="GoTorrent.Desktop.Views.MainWindow"
         x:DataType="vm:MainViewModel"
         Icon="/Assets/avalonia-logo.ico"
@@ -25,39 +25,109 @@
             <TextBlock Text="{Binding ConnectionError}" Foreground="Red" IsVisible="{Binding ConnectionError, Converter={x:Static conv:ObjectConverters.IsNotNull}}" />
         </StackPanel>
 
-        <!-- Session summary + add-torrent button: shown once connected. -->
-        <Grid Grid.Row="0" IsVisible="{Binding IsConnected}" ColumnDefinitions="*,Auto" Margin="0,0,0,8">
+        <!-- Session summary + toolbar: shown once connected. -->
+        <Grid Grid.Row="0" IsVisible="{Binding IsConnected}" ColumnDefinitions="*,Auto,Auto" Margin="0,0,0,8">
             <TextBlock Grid.Column="0"
                         VerticalAlignment="Center"
                         Text="{Binding Session.TorrentCount, StringFormat='{}{0} torrents'}" />
-            <Button Grid.Column="1" Content="Add Torrent..." Click="OnAddTorrentClick" />
+            <Button Grid.Column="1" Content="Preferences..." Click="OnPreferencesClick" Margin="0,0,6,0" />
+            <Button Grid.Column="2" Content="Add Torrent..." Click="OnAddTorrentClick" />
         </Grid>
 
-        <DataGrid Grid.Row="1"
-                  IsVisible="{Binding IsConnected}"
-                  ItemsSource="{Binding Torrents}"
-                  SelectedItem="{Binding SelectedTorrent}"
-                  IsReadOnly="True"
-                  GridLinesVisibility="Horizontal"
-                  AutoGenerateColumns="False">
-            <DataGrid.ContextMenu>
-                <ContextMenu>
-                    <MenuItem Header="Pause" Command="{Binding PauseSelectedCommand}" />
-                    <MenuItem Header="Resume" Command="{Binding ResumeSelectedCommand}" />
-                    <Separator />
-                    <MenuItem Header="Delete" Command="{Binding DeleteSelectedCommand}" />
-                    <MenuItem Header="Delete with Data" Command="{Binding DeleteSelectedWithDataCommand}" />
-                </ContextMenu>
-            </DataGrid.ContextMenu>
-            <DataGrid.Columns>
-                <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="3*" />
-                <DataGridTextColumn Header="State" Binding="{Binding State}" Width="*" />
-                <DataGridTextColumn Header="Progress" Binding="{Binding ProgressFraction, StringFormat='{}{0:P0}'}" Width="*" />
-                <DataGridTextColumn Header="Downloaded" Binding="{Binding Downloaded}" Width="*" />
-                <DataGridTextColumn Header="Uploaded" Binding="{Binding Uploaded}" Width="*" />
-                <DataGridTextColumn Header="Peers" Binding="{Binding PeerCount}" Width="60" />
-            </DataGrid.Columns>
-        </DataGrid>
+        <!-- Torrent list + detail pane: shown once connected. -->
+        <Grid Grid.Row="1" IsVisible="{Binding IsConnected}" RowDefinitions="2*,Auto,3*">
+            <DataGrid Grid.Row="0"
+                      Name="TorrentsGrid"
+                      ItemsSource="{Binding Torrents}"
+                      SelectedItem="{Binding SelectedTorrent}"
+                      SelectionChanged="OnTorrentSelectionChanged"
+                      IsReadOnly="True"
+                      GridLinesVisibility="Horizontal"
+                      AutoGenerateColumns="False">
+                <DataGrid.ContextMenu>
+                    <ContextMenu>
+                        <MenuItem Header="Pause" Command="{Binding PauseSelectedCommand}" />
+                        <MenuItem Header="Resume" Command="{Binding ResumeSelectedCommand}" />
+                        <Separator />
+                        <MenuItem Header="Delete" Command="{Binding DeleteSelectedCommand}" />
+                        <MenuItem Header="Delete with Data" Command="{Binding DeleteSelectedWithDataCommand}" />
+                    </ContextMenu>
+                </DataGrid.ContextMenu>
+                <DataGrid.Columns>
+                    <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="3*" />
+                    <DataGridTextColumn Header="State" Binding="{Binding State}" Width="*" />
+                    <DataGridTextColumn Header="Progress" Binding="{Binding ProgressFraction, StringFormat='{}{0:P0}'}" Width="*" />
+                    <DataGridTextColumn Header="Downloaded" Binding="{Binding Downloaded}" Width="*" />
+                    <DataGridTextColumn Header="Uploaded" Binding="{Binding Uploaded}" Width="*" />
+                    <DataGridTextColumn Header="Peers" Binding="{Binding PeerCount}" Width="60" />
+                </DataGrid.Columns>
+            </DataGrid>
+
+            <GridSplitter Grid.Row="1" Height="6" HorizontalAlignment="Stretch" Background="Gray" ResizeDirection="Rows" />
+
+            <TabControl Grid.Row="2" IsVisible="{Binding SelectedTorrent, Converter={x:Static conv:ObjectConverters.IsNotNull}}">
+                <TabItem Header="General">
+                    <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto" Margin="8" RowSpacing="4" ColumnSpacing="8">
+                        <TextBlock Grid.Row="0" Grid.Column="0" FontWeight="Bold" Text="Name" />
+                        <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding DetailTorrent.Name}" />
+                        <TextBlock Grid.Row="1" Grid.Column="0" FontWeight="Bold" Text="Info Hash" />
+                        <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding DetailTorrent.InfoHash}" />
+                        <TextBlock Grid.Row="2" Grid.Column="0" FontWeight="Bold" Text="State" />
+                        <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding DetailTorrent.State}" />
+                        <TextBlock Grid.Row="3" Grid.Column="0" FontWeight="Bold" Text="Size" />
+                        <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding DetailTorrent.TotalLength}" />
+                        <TextBlock Grid.Row="4" Grid.Column="0" FontWeight="Bold" Text="Downloaded / Uploaded" />
+                        <TextBlock Grid.Row="4" Grid.Column="1">
+                            <Run Text="{Binding DetailTorrent.Downloaded}" /><Run Text=" / " /><Run Text="{Binding DetailTorrent.Uploaded}" />
+                        </TextBlock>
+                        <TextBlock Grid.Row="5" Grid.Column="0" FontWeight="Bold" Text="Ratio" />
+                        <TextBlock Grid.Row="5" Grid.Column="1" Text="{Binding DetailTorrent.SeedRatio, StringFormat='{}{0:F2}'}" />
+                        <TextBlock Grid.Row="6" Grid.Column="0" FontWeight="Bold" Text="Peers" />
+                        <TextBlock Grid.Row="6" Grid.Column="1" Text="{Binding DetailTorrent.PeerCount}" />
+                        <TextBlock Grid.Row="7" Grid.Column="0" FontWeight="Bold" Text="Save Path" />
+                        <TextBlock Grid.Row="7" Grid.Column="1" Text="{Binding DetailTorrent.DownloadDir}" />
+                        <TextBlock Grid.Row="8" Grid.Column="0" FontWeight="Bold" Text="Content Path" />
+                        <TextBlock Grid.Row="8" Grid.Column="1" Text="{Binding DetailTorrent.ContentPath}" />
+                        <TextBlock Grid.Row="9" Grid.Column="0" FontWeight="Bold" Text="Source" />
+                        <TextBlock Grid.Row="9" Grid.Column="1" Text="{Binding DetailTorrent.Source}" />
+                        <TextBlock Grid.Row="10" Grid.Column="0" FontWeight="Bold" Text="Category" />
+                        <TextBlock Grid.Row="10" Grid.Column="1" Text="{Binding DetailTorrent.Category}" />
+                        <TextBlock Grid.Row="11" Grid.Column="0" FontWeight="Bold" Text="Private" />
+                        <TextBlock Grid.Row="11" Grid.Column="1" Text="{Binding DetailTorrent.Private}" />
+                    </Grid>
+                </TabItem>
+                <TabItem Header="Files">
+                    <DataGrid ItemsSource="{Binding DetailFiles}" IsReadOnly="True" GridLinesVisibility="Horizontal" AutoGenerateColumns="False">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Name" Binding="{Binding DisplayPath}" Width="3*" />
+                            <DataGridTextColumn Header="Size" Binding="{Binding Length}" Width="*" />
+                            <DataGridTextColumn Header="Priority" Binding="{Binding Priority}" Width="*" />
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </TabItem>
+                <TabItem Header="Peers">
+                    <DataGrid ItemsSource="{Binding DetailPeers}" IsReadOnly="True" GridLinesVisibility="Horizontal" AutoGenerateColumns="False">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Address" Binding="{Binding Addr}" Width="2*" />
+                            <DataGridTextColumn Header="Outbound" Binding="{Binding Outbound}" Width="*" />
+                            <DataGridTextColumn Header="Downloaded" Binding="{Binding Downloaded}" Width="*" />
+                            <DataGridTextColumn Header="Uploaded" Binding="{Binding Uploaded}" Width="*" />
+                            <DataGridTextColumn Header="Progress" Binding="{Binding Progress, StringFormat='{}{0:P0}'}" Width="*" />
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </TabItem>
+                <TabItem Header="Trackers">
+                    <DataGrid ItemsSource="{Binding DetailTrackers}" IsReadOnly="True" GridLinesVisibility="Horizontal" AutoGenerateColumns="False">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="URL" Binding="{Binding Url}" Width="3*" />
+                            <DataGridTextColumn Header="Seeders" Binding="{Binding Seeders}" Width="*" />
+                            <DataGridTextColumn Header="Leechers" Binding="{Binding Leechers}" Width="*" />
+                            <DataGridTextColumn Header="Last Error" Binding="{Binding LastError}" Width="2*" />
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </TabItem>
+            </TabControl>
+        </Grid>
 
         <TextBlock Grid.Row="2"
                     Text="{Binding ConnectionError}"

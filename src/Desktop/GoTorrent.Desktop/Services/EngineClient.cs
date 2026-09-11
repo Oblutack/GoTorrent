@@ -86,6 +86,45 @@ public sealed class EngineClient : IEngineClient, IDisposable
         await EnsureSuccessAsync(response, cancellationToken);
     }
 
+    public async Task<TorrentDetail> GetTorrentDetailAsync(string infoHash, CancellationToken cancellationToken)
+    {
+        using var response = await _http.GetAsync($"api/v1/torrents/{infoHash}", cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        var detail = await response.Content.ReadFromJsonAsync<TorrentDetail>(JsonOptions, cancellationToken);
+        return detail ?? throw new InvalidOperationException("gottrentd returned an empty torrent detail response.");
+    }
+
+    public async Task<IReadOnlyList<FileEntry>> GetFilesAsync(string infoHash, CancellationToken cancellationToken)
+    {
+        var files = await _http.GetFromJsonAsync<List<FileEntry>>($"api/v1/torrents/{infoHash}/files", JsonOptions, cancellationToken);
+        return files ?? [];
+    }
+
+    public async Task<IReadOnlyList<PeerEntry>> GetPeersAsync(string infoHash, CancellationToken cancellationToken)
+    {
+        var peers = await _http.GetFromJsonAsync<List<PeerEntry>>($"api/v1/torrents/{infoHash}/peers", JsonOptions, cancellationToken);
+        return peers ?? [];
+    }
+
+    public async Task<IReadOnlyList<TrackerEntry>> GetTrackersAsync(string infoHash, CancellationToken cancellationToken)
+    {
+        var trackers = await _http.GetFromJsonAsync<List<TrackerEntry>>($"api/v1/torrents/{infoHash}/trackers", JsonOptions, cancellationToken);
+        return trackers ?? [];
+    }
+
+    public Task<SessionLimits> GetSessionLimitsAsync(CancellationToken cancellationToken) =>
+        SetSessionLimitsAsync(downLimitKB: null, upLimitKB: null, cancellationToken);
+
+    public async Task<SessionLimits> SetSessionLimitsAsync(long? downLimitKB, long? upLimitKB, CancellationToken cancellationToken)
+    {
+        var body = new PatchSessionRequest { DownLimitKB = downLimitKB, UpLimitKB = upLimitKB };
+        var request = new HttpRequestMessage(HttpMethod.Patch, "api/v1/session") { Content = JsonContent.Create(body, options: JsonOptions) };
+        using var response = await _http.SendAsync(request, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        var limits = await response.Content.ReadFromJsonAsync<SessionLimits>(JsonOptions, cancellationToken);
+        return limits ?? throw new InvalidOperationException("gottrentd returned an empty session-limits response.");
+    }
+
     private static async Task<string> ReadInfoHashOrThrowAsync(HttpResponseMessage response, CancellationToken cancellationToken)
     {
         await EnsureSuccessAsync(response, cancellationToken);
@@ -122,6 +161,12 @@ public sealed class EngineClient : IEngineClient, IDisposable
     private sealed record AddResponse(string InfoHash);
 
     private sealed record ErrorBody(string Error);
+
+    private sealed class PatchSessionRequest
+    {
+        public long? DownLimitKB { get; set; }
+        public long? UpLimitKB { get; set; }
+    }
 
     public void Dispose() => _http.Dispose();
 }

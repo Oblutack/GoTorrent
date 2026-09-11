@@ -39,6 +39,18 @@ public partial class MainViewModel : ViewModelBase
     [ObservableProperty]
     public partial string? AddTorrentError { get; set; }
 
+    [ObservableProperty]
+    public partial TorrentDetail? DetailTorrent { get; set; }
+
+    [ObservableProperty]
+    public partial ObservableCollection<FileEntry> DetailFiles { get; set; } = [];
+
+    [ObservableProperty]
+    public partial ObservableCollection<PeerEntry> DetailPeers { get; set; } = [];
+
+    [ObservableProperty]
+    public partial ObservableCollection<TrackerEntry> DetailTrackers { get; set; } = [];
+
     public MainViewModel() : this(options => new EngineClient(options), new FileSettingsStore())
     {
     }
@@ -102,6 +114,40 @@ public partial class MainViewModel : ViewModelBase
             SelectedTorrent = selectedHash is null ? null : Torrents.FirstOrDefault(t => t.InfoHash == selectedHash);
             Session = await _client.GetSessionAsync(CancellationToken.None);
             ConnectionError = null;
+        }
+        catch (Exception ex)
+        {
+            ConnectionError = ex.Message;
+        }
+        await LoadSelectedDetailAsync();
+    }
+
+    /// <summary>
+    /// Fetches the detail pane's four tabs for whatever torrent is
+    /// currently selected. Called after every auto-refresh tick (so the
+    /// detail pane stays live while a torrent is selected) and directly
+    /// from the View when the user picks a different row, for an instant
+    /// update instead of waiting out the rest of the 2s interval.
+    /// Clears the detail pane rather than erroring when nothing is
+    /// selected - that's a normal state, not a failure.
+    /// </summary>
+    public async Task LoadSelectedDetailAsync()
+    {
+        if (_client is null || SelectedTorrent is null)
+        {
+            DetailTorrent = null;
+            DetailFiles = [];
+            DetailPeers = [];
+            DetailTrackers = [];
+            return;
+        }
+        var hash = SelectedTorrent.InfoHash;
+        try
+        {
+            DetailTorrent = await _client.GetTorrentDetailAsync(hash, CancellationToken.None);
+            DetailFiles = new ObservableCollection<FileEntry>(await _client.GetFilesAsync(hash, CancellationToken.None));
+            DetailPeers = new ObservableCollection<PeerEntry>(await _client.GetPeersAsync(hash, CancellationToken.None));
+            DetailTrackers = new ObservableCollection<TrackerEntry>(await _client.GetTrackersAsync(hash, CancellationToken.None));
         }
         catch (Exception ex)
         {
@@ -183,6 +229,19 @@ public partial class MainViewModel : ViewModelBase
             return false;
         }
     }
+
+    /// <summary>
+    /// Reads the fleet-wide rate limits currently in effect. Used by the
+    /// preferences dialog's code-behind (no ViewModel of its own, same
+    /// reasoning as the add-torrent dialog) to populate its fields on open.
+    /// </summary>
+    public Task<SessionLimits> GetSessionLimitsAsync() =>
+        _client is null ? Task.FromResult(new SessionLimits(0, 0)) : _client.GetSessionLimitsAsync(CancellationToken.None);
+
+    public Task<SessionLimits> SetSessionLimitsAsync(long? downLimitKB, long? upLimitKB) =>
+        _client is null
+            ? throw new InvalidOperationException("Not connected to gottrentd.")
+            : _client.SetSessionLimitsAsync(downLimitKB, upLimitKB, CancellationToken.None);
 
     /// <summary>
     /// Starts the periodic auto-refresh - a real Avalonia UI-thread

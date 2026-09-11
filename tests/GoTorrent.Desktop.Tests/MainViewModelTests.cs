@@ -24,6 +24,29 @@ public sealed class MainViewModelTests
         QueuePosition: 0,
         ForceStart: false);
 
+    private static TorrentDetail MakeDetail(string name) => new(
+        InfoHash: "0102030405060708090a0b0c0d0e0f1011121314",
+        Name: name,
+        State: "Downloading",
+        Downloaded: 100,
+        Uploaded: 0,
+        Left: 900,
+        TotalLength: 1000,
+        NumPieces: 10,
+        HavePieces: 1,
+        PeerCount: 2,
+        SeedRatio: 0,
+        Private: false,
+        Category: null,
+        Tags: null,
+        QueuePosition: 0,
+        ForceStart: false,
+        Source: "magnet",
+        DownloadDir: "/downloads",
+        ContentPath: "/downloads/" + name,
+        InEndgame: false,
+        SeedingDurationSeconds: 0);
+
     private static (MainViewModel ViewModel, FakeEngineClient Client, FakeSettingsStore Settings) MakeViewModel()
     {
         var client = new FakeEngineClient();
@@ -230,6 +253,95 @@ public sealed class MainViewModelTests
         await viewModel.PauseSelectedCommand.ExecuteAsync(null);
 
         Assert.Empty(client.PausedHashes);
+    }
+
+    [Fact]
+    public async Task LoadSelectedDetailAsync_WithNoSelectionClearsTheDetailPane()
+    {
+        var (viewModel, _, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+
+        await viewModel.LoadSelectedDetailAsync();
+
+        Assert.Null(viewModel.DetailTorrent);
+        Assert.Empty(viewModel.DetailFiles);
+        Assert.Empty(viewModel.DetailPeers);
+        Assert.Empty(viewModel.DetailTrackers);
+    }
+
+    [Fact]
+    public async Task LoadSelectedDetailAsync_WithASelectionPopulatesAllFourTabs()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        var torrent = MakeTorrent("ubuntu.iso");
+        client.Torrents.Add(torrent);
+        await viewModel.RefreshAsync();
+        viewModel.SelectedTorrent = viewModel.Torrents[0];
+        client.Detail = MakeDetail("ubuntu.iso");
+        client.Files.Add(new FileEntry(["ubuntu.iso"], 1000, "normal"));
+        client.Peers.Add(new PeerEntry("127.0.0.1:6881", true, 100, 0, false, true, false, true, 0.1));
+        client.Trackers.Add(new TrackerEntry("udp://tracker.example/announce", DateTimeOffset.UtcNow, null, 5, 1));
+
+        await viewModel.LoadSelectedDetailAsync();
+
+        Assert.Equal(torrent.InfoHash, client.DetailRequestedHashes.Last());
+        Assert.Equal("ubuntu.iso", viewModel.DetailTorrent!.Name);
+        Assert.Single(viewModel.DetailFiles);
+        Assert.Single(viewModel.DetailPeers);
+        Assert.Single(viewModel.DetailTrackers);
+    }
+
+    [Fact]
+    public async Task RefreshAsync_ReloadsTheDetailPaneForTheSelectedTorrent()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        var torrent = MakeTorrent("ubuntu.iso");
+        client.Torrents.Add(torrent);
+        client.Detail = MakeDetail("ubuntu.iso");
+        await viewModel.RefreshAsync();
+        viewModel.SelectedTorrent = viewModel.Torrents[0];
+
+        await viewModel.RefreshAsync();
+
+        Assert.NotNull(viewModel.DetailTorrent);
+        Assert.Equal("ubuntu.iso", viewModel.DetailTorrent!.Name);
+    }
+
+    [Fact]
+    public async Task GetSessionLimitsAsync_ReadsTheCurrentLimits()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        client.SessionLimits = new SessionLimits(500, 100);
+
+        var limits = await viewModel.GetSessionLimitsAsync();
+
+        Assert.Equal(500, limits.DownLimitKB);
+        Assert.Equal(100, limits.UpLimitKB);
+    }
+
+    [Fact]
+    public async Task SetSessionLimitsAsync_UpdatesTheLimits()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+
+        var limits = await viewModel.SetSessionLimitsAsync(downLimitKB: 200, upLimitKB: null);
+
+        Assert.Equal(200, limits.DownLimitKB);
+        Assert.Equal(200, client.SessionLimits.DownLimitKB);
     }
 
     [Fact]
