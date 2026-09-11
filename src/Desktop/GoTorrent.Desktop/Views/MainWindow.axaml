@@ -2,9 +2,10 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vm="using:GoTorrent.Desktop.ViewModels"
         xmlns:conv="using:Avalonia.Data.Converters"
+        xmlns:controls="using:GoTorrent.Desktop.Controls"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
-        mc:Ignorable="d" d:DesignWidth="900" d:DesignHeight="600"
+        mc:Ignorable="d" d:DesignWidth="900" d:DesignHeight="640"
         x:Class="GoTorrent.Desktop.Views.MainWindow"
         x:DataType="vm:MainViewModel"
         Icon="/Assets/avalonia-logo.ico"
@@ -14,7 +15,7 @@
         <vm:MainViewModel />
     </Design.DataContext>
 
-    <Grid RowDefinitions="Auto,*,Auto" Margin="12">
+    <Grid RowDefinitions="Auto,Auto,*,Auto" Margin="12">
 
         <!-- Connect form: shown until a gottrentd connection is configured. -->
         <StackPanel Grid.Row="0" Spacing="6" IsVisible="{Binding !IsConnected}" Margin="0,0,0,12">
@@ -34,8 +35,19 @@
             <Button Grid.Column="2" Content="Add Torrent..." Click="OnAddTorrentClick" />
         </Grid>
 
+        <!-- Fleet-wide speed graph, live off the WS sessionStats stream: shown once connected. -->
+        <Grid Grid.Row="1" IsVisible="{Binding IsConnected}" ColumnDefinitions="Auto,*" Margin="0,0,0,8" Height="60">
+            <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,10,0" MinWidth="110">
+                <TextBlock Foreground="DodgerBlue" FontSize="11" Text="{Binding LatestDownloadRateKBps, StringFormat='{}↓ {0:F0} KiB/s'}" />
+                <TextBlock Foreground="OrangeRed" FontSize="11" Text="{Binding LatestUploadRateKBps, StringFormat='{}↑ {0:F0} KiB/s'}" />
+            </StackPanel>
+            <Border Grid.Column="1" Background="Black" BorderBrush="Gray" BorderThickness="1">
+                <controls:SpeedGraphControl DownloadSamples="{Binding DownloadRateHistory}" UploadSamples="{Binding UploadRateHistory}" />
+            </Border>
+        </Grid>
+
         <!-- Torrent list + detail pane: shown once connected. -->
-        <Grid Grid.Row="1" IsVisible="{Binding IsConnected}" RowDefinitions="2*,Auto,3*">
+        <Grid Grid.Row="2" IsVisible="{Binding IsConnected}" RowDefinitions="2*,Auto,3*">
             <DataGrid Grid.Row="0"
                       Name="TorrentsGrid"
                       ItemsSource="{Binding Torrents}"
@@ -126,10 +138,20 @@
                         </DataGrid.Columns>
                     </DataGrid>
                 </TabItem>
+                <TabItem Header="Pieces">
+                    <Grid RowDefinitions="Auto,*" Margin="8">
+                        <TextBlock Grid.Row="0"
+                                    Text="{Binding PieceHave.Count, StringFormat='{}{0} pieces'}"
+                                    Margin="0,0,0,6" />
+                        <Border Grid.Row="1" Background="Black" BorderBrush="Gray" BorderThickness="1">
+                            <controls:PieceMapControl Pieces="{Binding PieceHave}" />
+                        </Border>
+                    </Grid>
+                </TabItem>
             </TabControl>
         </Grid>
 
-        <TextBlock Grid.Row="2"
+        <TextBlock Grid.Row="3"
                     Text="{Binding ConnectionError}"
                     Foreground="Red"
                     Margin="0,8,0,0"

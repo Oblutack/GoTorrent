@@ -55,6 +55,15 @@ public sealed class MainViewModelTests
         return (viewModel, client, settings);
     }
 
+    private static (MainViewModel ViewModel, FakeEngineClient Client, FixedTimeProvider Clock) MakeViewModelWithClock()
+    {
+        var client = new FakeEngineClient();
+        var settings = new FakeSettingsStore();
+        var clock = new FixedTimeProvider(DateTimeOffset.UtcNow);
+        var viewModel = new MainViewModel(_ => client, settings, new FakeEventStream(), clock);
+        return (viewModel, client, clock);
+    }
+
     [Fact]
     public void Connect_WithAValidAddress_Succeeds()
     {
@@ -342,6 +351,97 @@ public sealed class MainViewModelTests
 
         Assert.Equal(200, limits.DownLimitKB);
         Assert.Equal(200, client.SessionLimits.DownLimitKB);
+    }
+
+    [Fact]
+    public async Task LoadSelectedDetailAsync_PopulatesThePieceMapFromTheBitfield()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        var torrent = MakeTorrent("ubuntu.iso");
+        client.Torrents.Add(torrent);
+        await viewModel.RefreshAsync();
+        viewModel.SelectedTorrent = viewModel.Torrents[0];
+        client.Detail = MakeDetail(torrent.Name);
+        // 10 pieces, bitfield 0b10110000 -> pieces 0, 2, 3 have.
+        client.Pieces = new PiecesInfo(NumPieces: 10, HaveCount: 3, Bitfield: [0b1011_0000, 0b0000_0000]);
+
+        await viewModel.LoadSelectedDetailAsync();
+
+        Assert.Equal(10, viewModel.PieceHave.Count);
+        Assert.True(viewModel.PieceHave[0]);
+        Assert.False(viewModel.PieceHave[1]);
+        Assert.True(viewModel.PieceHave[2]);
+        Assert.True(viewModel.PieceHave[3]);
+        Assert.False(viewModel.PieceHave[4]);
+    }
+
+    [Fact]
+    public async Task HandleEvent_PieceVerifiedForTheSelectedTorrent_MarksThatPieceHave()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        var torrent = MakeTorrent("ubuntu.iso");
+        client.Torrents.Add(torrent);
+        await viewModel.RefreshAsync();
+        viewModel.SelectedTorrent = viewModel.Torrents[0];
+        client.Detail = MakeDetail(torrent.Name);
+        client.Pieces = new PiecesInfo(NumPieces: 4, HaveCount: 0, Bitfield: [0b0000_0000]);
+        await viewModel.LoadSelectedDetailAsync();
+
+        viewModel.HandleEvent(new WsEvent("pieceVerified", DateTimeOffset.UtcNow, torrent.InfoHash, null, null, PieceIndex: 2, Session: null));
+
+        Assert.True(viewModel.PieceHave[2]);
+        Assert.False(viewModel.PieceHave[0]);
+    }
+
+    [Fact]
+    public async Task HandleEvent_PieceVerifiedForADifferentTorrent_IsIgnored()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        var torrent = MakeTorrent("ubuntu.iso");
+        client.Torrents.Add(torrent);
+        await viewModel.RefreshAsync();
+        viewModel.SelectedTorrent = viewModel.Torrents[0];
+        client.Detail = MakeDetail(torrent.Name);
+        client.Pieces = new PiecesInfo(NumPieces: 4, HaveCount: 0, Bitfield: [0b0000_0000]);
+        await viewModel.LoadSelectedDetailAsync();
+
+        viewModel.HandleEvent(new WsEvent("pieceVerified", DateTimeOffset.UtcNow, "deadbeef00000000000000000000000000000000", null, null, PieceIndex: 2, Session: null));
+
+        Assert.False(viewModel.PieceHave[2]);
+    }
+
+    [Fact]
+    public void HandleEvent_TwoSessionStatsMessagesOneSecondApart_RecordsAKnownRate()
+    {
+        var (viewModel, _, clock) = MakeViewModelWithClock();
+
+        viewModel.HandleEvent(new WsEvent("sessionStats", clock.Now, null, null, null, null, new SessionStats(0, 0, 0, 0, 0, TotalDownloaded: 1024, TotalUploaded: 512, 0)));
+        clock.Now = clock.Now.AddSeconds(1);
+        viewModel.HandleEvent(new WsEvent("sessionStats", clock.Now, null, null, null, null, new SessionStats(0, 0, 0, 0, 0, TotalDownloaded: 3072, TotalUploaded: 512, 0)));
+
+        // (3072 - 1024) bytes over 1s = 2048 B/s = 2 KiB/s.
+        Assert.Equal(2, viewModel.LatestDownloadRateKBps);
+        Assert.Equal(0, viewModel.LatestUploadRateKBps);
+        Assert.Equal(2, Assert.Single(viewModel.DownloadRateHistory));
+    }
+
+    [Fact]
+    public void HandleEvent_FirstSessionStatsMessage_RecordsNoSampleYet()
+    {
+        var (viewModel, _, clock) = MakeViewModelWithClock();
+
+        viewModel.HandleEvent(new WsEvent("sessionStats", clock.Now, null, null, null, null, new SessionStats(0, 0, 0, 0, 0, TotalDownloaded: 1024, TotalUploaded: 0, 0)));
+
+        Assert.Empty(viewModel.DownloadRateHistory);
     }
 
     [Fact]

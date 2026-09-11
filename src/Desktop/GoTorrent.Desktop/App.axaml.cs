@@ -23,6 +23,7 @@ public partial class App : Application
                 DataContext = mainViewModel,
             };
             mainViewModel.StartAutoRefresh();
+            mainViewModel.StartLiveEvents();
         }
 
         base.OnFrameworkInitializationCompleted();

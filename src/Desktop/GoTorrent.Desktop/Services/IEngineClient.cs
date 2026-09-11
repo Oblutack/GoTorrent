@@ -32,6 +32,8 @@ public interface IEngineClient
 
     Task<IReadOnlyList<TrackerEntry>> GetTrackersAsync(string infoHash, CancellationToken cancellationToken);
 
+    Task<PiecesInfo> GetPiecesAsync(string infoHash, CancellationToken cancellationToken);
+
     /// <summary>Reads the fleet-wide rate limits currently in effect (an empty PATCH body changes nothing, just reports them back).</summary>
     Task<SessionLimits> GetSessionLimitsAsync(CancellationToken cancellationToken);
 

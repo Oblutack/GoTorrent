@@ -112,6 +112,12 @@ public sealed class EngineClient : IEngineClient, IDisposable
         return trackers ?? [];
     }
 
+    public async Task<PiecesInfo> GetPiecesAsync(string infoHash, CancellationToken cancellationToken)
+    {
+        var pieces = await _http.GetFromJsonAsync<PiecesInfo>($"api/v1/torrents/{infoHash}/pieces", JsonOptions, cancellationToken);
+        return pieces ?? new PiecesInfo(0, 0, []);
+    }
+
     public Task<SessionLimits> GetSessionLimitsAsync(CancellationToken cancellationToken) =>
         SetSessionLimitsAsync(downLimitKB: null, upLimitKB: null, cancellationToken);
 

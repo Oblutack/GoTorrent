@@ -24,6 +24,7 @@ public sealed class FakeEngineClient : IEngineClient
     public List<TrackerEntry> Trackers { get; set; } = [];
     public SessionLimits SessionLimits { get; set; } = new(0, 0);
     public List<string> DetailRequestedHashes { get; } = [];
+    public PiecesInfo Pieces { get; set; } = new(0, 0, []);
 
     public Task<IReadOnlyList<TorrentSummary>> ListTorrentsAsync(CancellationToken cancellationToken) =>
         Failure is not null
@@ -107,6 +108,9 @@ public sealed class FakeEngineClient : IEngineClient
         Failure is not null
             ? Task.FromException<IReadOnlyList<TrackerEntry>>(Failure)
             : Task.FromResult<IReadOnlyList<TrackerEntry>>(Trackers);
+
+    public Task<PiecesInfo> GetPiecesAsync(string infoHash, CancellationToken cancellationToken) =>
+        Failure is not null ? Task.FromException<PiecesInfo>(Failure) : Task.FromResult(Pieces);
 
     public Task<SessionLimits> GetSessionLimitsAsync(CancellationToken cancellationToken) =>
         Failure is not null ? Task.FromException<SessionLimits>(Failure) : Task.FromResult(SessionLimits);
