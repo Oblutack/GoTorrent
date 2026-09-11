@@ -25,18 +25,30 @@
             <TextBlock Text="{Binding ConnectionError}" Foreground="Red" IsVisible="{Binding ConnectionError, Converter={x:Static conv:ObjectConverters.IsNotNull}}" />
         </StackPanel>
 
-        <!-- Session summary: shown once connected. -->
-        <TextBlock Grid.Row="0"
-                    IsVisible="{Binding IsConnected}"
-                    Text="{Binding Session.TorrentCount, StringFormat='{}{0} torrents'}"
-                    Margin="0,0,0,8" />
+        <!-- Session summary + add-torrent button: shown once connected. -->
+        <Grid Grid.Row="0" IsVisible="{Binding IsConnected}" ColumnDefinitions="*,Auto" Margin="0,0,0,8">
+            <TextBlock Grid.Column="0"
+                        VerticalAlignment="Center"
+                        Text="{Binding Session.TorrentCount, StringFormat='{}{0} torrents'}" />
+            <Button Grid.Column="1" Content="Add Torrent..." Click="OnAddTorrentClick" />
+        </Grid>
 
         <DataGrid Grid.Row="1"
                   IsVisible="{Binding IsConnected}"
                   ItemsSource="{Binding Torrents}"
+                  SelectedItem="{Binding SelectedTorrent}"
                   IsReadOnly="True"
                   GridLinesVisibility="Horizontal"
                   AutoGenerateColumns="False">
+            <DataGrid.ContextMenu>
+                <ContextMenu>
+                    <MenuItem Header="Pause" Command="{Binding PauseSelectedCommand}" />
+                    <MenuItem Header="Resume" Command="{Binding ResumeSelectedCommand}" />
+                    <Separator />
+                    <MenuItem Header="Delete" Command="{Binding DeleteSelectedCommand}" />
+                    <MenuItem Header="Delete with Data" Command="{Binding DeleteSelectedWithDataCommand}" />
+                </ContextMenu>
+            </DataGrid.ContextMenu>
             <DataGrid.Columns>
                 <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="3*" />
                 <DataGridTextColumn Header="State" Binding="{Binding State}" Width="*" />

@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Linq;
 using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -31,6 +32,12 @@ public partial class MainViewModel : ViewModelBase
 
     [ObservableProperty]
     public partial string TokenInput { get; set; } = string.Empty;
+
+    [ObservableProperty]
+    public partial TorrentSummary? SelectedTorrent { get; set; }
+
+    [ObservableProperty]
+    public partial string? AddTorrentError { get; set; }
 
     public MainViewModel() : this(options => new EngineClient(options), new FileSettingsStore())
     {
@@ -86,13 +93,94 @@ public partial class MainViewModel : ViewModelBase
         try
         {
             var torrents = await _client.ListTorrentsAsync(CancellationToken.None);
+            var selectedHash = SelectedTorrent?.InfoHash;
             Torrents = new ObservableCollection<TorrentSummary>(torrents);
+            // Replacing the collection on every 2s auto-refresh tick resets
+            // the DataGrid's SelectedItem to null - re-locate the same
+            // torrent by hash so a context-menu action started right
+            // before a refresh still has something to act on.
+            SelectedTorrent = selectedHash is null ? null : Torrents.FirstOrDefault(t => t.InfoHash == selectedHash);
             Session = await _client.GetSessionAsync(CancellationToken.None);
             ConnectionError = null;
         }
         catch (Exception ex)
         {
             ConnectionError = ex.Message;
+        }
+    }
+
+    [RelayCommand]
+    private Task PauseSelectedAsync() => RunTorrentActionAsync(client => client.PauseAsync(SelectedTorrent!.InfoHash, CancellationToken.None));
+
+    [RelayCommand]
+    private Task ResumeSelectedAsync() => RunTorrentActionAsync(client => client.ResumeAsync(SelectedTorrent!.InfoHash, CancellationToken.None));
+
+    [RelayCommand]
+    private Task DeleteSelectedAsync() => RunTorrentActionAsync(client => client.DeleteAsync(SelectedTorrent!.InfoHash, deleteData: false, CancellationToken.None));
+
+    [RelayCommand]
+    private Task DeleteSelectedWithDataAsync() => RunTorrentActionAsync(client => client.DeleteAsync(SelectedTorrent!.InfoHash, deleteData: true, CancellationToken.None));
+
+    private async Task RunTorrentActionAsync(Func<IEngineClient, Task> action)
+    {
+        if (_client is null || SelectedTorrent is null)
+        {
+            return;
+        }
+        try
+        {
+            await action(_client);
+            await RefreshAsync();
+        }
+        catch (Exception ex)
+        {
+            ConnectionError = ex.Message;
+        }
+    }
+
+    /// <summary>
+    /// Adds a torrent from a magnet link. Used directly by
+    /// <c>MainViewModelTests</c> and by the add-torrent dialog's
+    /// code-behind, which has no ViewModel of its own - a file picker
+    /// is inherently UI chrome with nothing worth unit-testing.
+    /// </summary>
+    public async Task<bool> AddMagnetAsync(string magnet, string? category, string? downloadDir)
+    {
+        if (_client is null)
+        {
+            return false;
+        }
+        try
+        {
+            await _client.AddMagnetAsync(magnet, category, downloadDir, CancellationToken.None);
+            AddTorrentError = null;
+            await RefreshAsync();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            AddTorrentError = ex.Message;
+            return false;
+        }
+    }
+
+    public async Task<bool> AddTorrentFileAsync(byte[] fileBytes, string fileName, string? category, string? downloadDir)
+    {
+        if (_client is null)
+        {
+            return false;
+        }
+        try
+        {
+            await _client.AddTorrentFileAsync(fileBytes, fileName, category, downloadDir, CancellationToken.None);
+            AddTorrentError = null;
+            await RefreshAsync();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            AddTorrentError = ex.Message;
+            return false;
         }
     }
 

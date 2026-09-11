@@ -115,6 +115,124 @@ public sealed class MainViewModelTests
     }
 
     [Fact]
+    public async Task AddMagnetAsync_AddsAndRefreshes()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        client.Torrents.Add(MakeTorrent("added.iso"));
+
+        var ok = await viewModel.AddMagnetAsync("magnet:?xt=urn:btih:abc", category: null, downloadDir: null);
+
+        Assert.True(ok);
+        Assert.Equal("magnet:?xt=urn:btih:abc", client.LastAddedMagnet);
+        Assert.Single(viewModel.Torrents);
+    }
+
+    [Fact]
+    public async Task AddMagnetAsync_WhenTheClientFails_SetsAnErrorAndReturnsFalse()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        client.Failure = new EngineRequestException("already added");
+
+        var ok = await viewModel.AddMagnetAsync("magnet:?xt=urn:btih:abc", category: null, downloadDir: null);
+
+        Assert.False(ok);
+        Assert.Equal("already added", viewModel.AddTorrentError);
+    }
+
+    [Fact]
+    public async Task RefreshAsync_PreservesTheSelectionAcrossARefresh()
+    {
+        // Regression guard: RefreshAsync used to replace Torrents with a
+        // brand new ObservableCollection every tick, which reset the
+        // DataGrid's SelectedItem to null - a context-menu action started
+        // right before the next 2s auto-refresh tick silently did nothing.
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        var torrent = MakeTorrent("ubuntu.iso");
+        client.Torrents.Add(torrent);
+        await viewModel.RefreshAsync();
+        viewModel.SelectedTorrent = viewModel.Torrents[0];
+
+        client.Torrents[0] = MakeTorrent("ubuntu.iso");
+        await viewModel.RefreshAsync();
+
+        Assert.NotNull(viewModel.SelectedTorrent);
+        Assert.Equal(torrent.InfoHash, viewModel.SelectedTorrent!.InfoHash);
+    }
+
+    [Fact]
+    public async Task PauseSelectedCommand_PausesTheSelectedTorrentAndRefreshes()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        var torrent = MakeTorrent("ubuntu.iso");
+        client.Torrents.Add(torrent);
+        await viewModel.RefreshAsync();
+        viewModel.SelectedTorrent = viewModel.Torrents[0];
+
+        await viewModel.PauseSelectedCommand.ExecuteAsync(null);
+
+        Assert.Equal([torrent.InfoHash], client.PausedHashes);
+    }
+
+    [Fact]
+    public async Task ResumeSelectedCommand_ResumesTheSelectedTorrent()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        var torrent = MakeTorrent("ubuntu.iso");
+        client.Torrents.Add(torrent);
+        await viewModel.RefreshAsync();
+        viewModel.SelectedTorrent = viewModel.Torrents[0];
+
+        await viewModel.ResumeSelectedCommand.ExecuteAsync(null);
+
+        Assert.Equal([torrent.InfoHash], client.ResumedHashes);
+    }
+
+    [Fact]
+    public async Task DeleteSelectedWithDataCommand_DeletesWithDeleteDataTrue()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        var torrent = MakeTorrent("ubuntu.iso");
+        client.Torrents.Add(torrent);
+        await viewModel.RefreshAsync();
+        viewModel.SelectedTorrent = viewModel.Torrents[0];
+
+        await viewModel.DeleteSelectedWithDataCommand.ExecuteAsync(null);
+
+        Assert.Equal([(torrent.InfoHash, true)], client.DeletedHashes);
+    }
+
+    [Fact]
+    public async Task PauseSelectedCommand_WithNoSelectionDoesNothing()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+
+        await viewModel.PauseSelectedCommand.ExecuteAsync(null);
+
+        Assert.Empty(client.PausedHashes);
+    }
+
+    [Fact]
     public void Constructor_WithSavedSettings_ConnectsAutomatically()
     {
         var settings = new FakeSettingsStore();

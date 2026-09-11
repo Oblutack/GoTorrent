@@ -37,5 +37,91 @@ public sealed class EngineClient : IEngineClient, IDisposable
         return stats ?? throw new InvalidOperationException("gottrentd returned an empty session response.");
     }
 
+    public async Task<string> AddMagnetAsync(string magnet, string? category, string? downloadDir, CancellationToken cancellationToken)
+    {
+        var body = new AddRequest { Magnet = magnet, Category = category, DownloadDir = downloadDir };
+        using var response = await _http.PostAsJsonAsync("api/v1/torrents", body, JsonOptions, cancellationToken);
+        return await ReadInfoHashOrThrowAsync(response, cancellationToken);
+    }
+
+    public async Task<string> AddTorrentFileAsync(byte[] fileBytes, string fileName, string? category, string? downloadDir, CancellationToken cancellationToken)
+    {
+        using var content = new MultipartFormDataContent
+        {
+            { new ByteArrayContent(fileBytes), "torrent", fileName },
+        };
+        if (!string.IsNullOrEmpty(category))
+        {
+            content.Add(new StringContent(category), "category");
+        }
+        if (!string.IsNullOrEmpty(downloadDir))
+        {
+            content.Add(new StringContent(downloadDir), "downloadDir");
+        }
+
+        using var response = await _http.PostAsync("api/v1/torrents", content, cancellationToken);
+        return await ReadInfoHashOrThrowAsync(response, cancellationToken);
+    }
+
+    public Task PauseAsync(string infoHash, CancellationToken cancellationToken) =>
+        TorrentActionAsync(infoHash, "pause", cancellationToken);
+
+    public Task ResumeAsync(string infoHash, CancellationToken cancellationToken) =>
+        TorrentActionAsync(infoHash, "resume", cancellationToken);
+
+    public async Task DeleteAsync(string infoHash, bool deleteData, CancellationToken cancellationToken)
+    {
+        var url = $"api/v1/torrents/{infoHash}";
+        if (deleteData)
+        {
+            url += "?deleteData=true";
+        }
+        using var response = await _http.DeleteAsync(url, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+    }
+
+    private async Task TorrentActionAsync(string infoHash, string action, CancellationToken cancellationToken)
+    {
+        using var response = await _http.PostAsync($"api/v1/torrents/{infoHash}/{action}", content: null, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+    }
+
+    private static async Task<string> ReadInfoHashOrThrowAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+    {
+        await EnsureSuccessAsync(response, cancellationToken);
+        var added = await response.Content.ReadFromJsonAsync<AddResponse>(JsonOptions, cancellationToken);
+        return added?.InfoHash ?? throw new InvalidOperationException("gottrentd returned an empty add response.");
+    }
+
+    private static async Task EnsureSuccessAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+    {
+        if (response.IsSuccessStatusCode)
+        {
+            return;
+        }
+
+        ErrorBody? error = null;
+        try
+        {
+            error = await response.Content.ReadFromJsonAsync<ErrorBody>(JsonOptions, cancellationToken);
+        }
+        catch (JsonException)
+        {
+        }
+
+        throw new EngineRequestException(error?.Error ?? $"gottrentd returned {(int)response.StatusCode} {response.ReasonPhrase}");
+    }
+
+    private sealed class AddRequest
+    {
+        public string? Magnet { get; set; }
+        public string? Category { get; set; }
+        public string? DownloadDir { get; set; }
+    }
+
+    private sealed record AddResponse(string InfoHash);
+
+    private sealed record ErrorBody(string Error);
+
     public void Dispose() => _http.Dispose();
 }

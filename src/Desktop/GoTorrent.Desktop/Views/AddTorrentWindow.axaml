@@ -1,0 +1,35 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d" d:DesignWidth="440" d:DesignHeight="360"
+        x:Class="GoTorrent.Desktop.Views.AddTorrentWindow"
+        Width="440" SizeToContent="Height" CanResize="False"
+        WindowStartupLocation="CenterOwner"
+        Title="Add Torrent">
+
+    <StackPanel Margin="16" Spacing="6">
+        <TextBlock Text="Magnet link" FontWeight="Bold" />
+        <TextBox Name="MagnetBox" PlaceholderText="magnet:?xt=urn:btih:..." />
+
+        <TextBlock Text="or a .torrent file" FontWeight="Bold" Margin="0,10,0,0" />
+        <Grid ColumnDefinitions="*,Auto">
+            <TextBox Name="FilePathBox" Grid.Column="0" IsReadOnly="True" PlaceholderText="No file selected" />
+            <Button Name="BrowseButton" Grid.Column="1" Content="Browse..." Margin="6,0,0,0" Click="OnBrowseClick" />
+        </Grid>
+
+        <TextBlock Text="Category (optional)" Margin="0,10,0,0" />
+        <TextBox Name="CategoryBox" />
+
+        <TextBlock Text="Save to (optional)" Margin="0,10,0,0" />
+        <TextBox Name="DownloadDirBox" PlaceholderText="Leave blank to use gottrentd's default" />
+
+        <TextBlock Name="ErrorText" Foreground="Red" TextWrapping="Wrap" IsVisible="False" Margin="0,10,0,0" />
+
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8" Margin="0,14,0,0">
+            <Button Content="Cancel" Click="OnCancelClick" />
+            <Button Name="AddButton" Content="Add" Click="OnAddClick" IsDefault="True" />
+        </StackPanel>
+    </StackPanel>
+
+</Window>

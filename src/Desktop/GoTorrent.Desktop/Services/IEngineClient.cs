@@ -13,4 +13,14 @@ public interface IEngineClient
     Task<IReadOnlyList<TorrentSummary>> ListTorrentsAsync(CancellationToken cancellationToken);
 
     Task<SessionStats> GetSessionAsync(CancellationToken cancellationToken);
+
+    Task<string> AddMagnetAsync(string magnet, string? category, string? downloadDir, CancellationToken cancellationToken);
+
+    Task<string> AddTorrentFileAsync(byte[] fileBytes, string fileName, string? category, string? downloadDir, CancellationToken cancellationToken);
+
+    Task PauseAsync(string infoHash, CancellationToken cancellationToken);
+
+    Task ResumeAsync(string infoHash, CancellationToken cancellationToken);
+
+    Task DeleteAsync(string infoHash, bool deleteData, CancellationToken cancellationToken);
 }
