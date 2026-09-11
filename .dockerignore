@@ -1,0 +1,9 @@
+**/bin/
+**/obj/
+.git/
+.vs/
+*.db
+*.db-shm
+*.db-wal
+downloads/
+test_folder/

@@ -1,0 +1,18 @@
+services:
+  hub:
+    build:
+      context: .
+      dockerfile: src/Hub/GoTorrent.Hub.Api/Dockerfile
+    ports:
+      - "8080:8080"
+    volumes:
+      - hub-data:/app/data
+    environment:
+      # Real secrets - set these in a .env file or your shell, never here.
+      - Engine__BaseAddress=${ENGINE_BASE_ADDRESS:-http://host.docker.internal:6880/}
+      - Engine__Token=${ENGINE_TOKEN}
+      - Jwt__SigningKey=${JWT_SIGNING_KEY}
+      - ConnectionStrings__GoTorrentHub=Data Source=/app/data/gotorrenthub.db
+
+volumes:
+  hub-data:

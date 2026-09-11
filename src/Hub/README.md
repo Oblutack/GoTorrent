@@ -65,6 +65,25 @@ GoTorrent.sln
    endpoint has no place on a Hub that might be reachable from outside
    the LAN.
 
+## Running it with Docker
+
+```sh
+docker build -f src/Hub/GoTorrent.Hub.Api/Dockerfile -t gotorrent-hub .
+docker run -p 8080:8080 \
+  -e Engine__BaseAddress="http://<gottrentd-host>:6880/" \
+  -e Engine__Token="<gottrentd's token>" \
+  -e Jwt__SigningKey="<32+ random bytes>" \
+  gotorrent-hub
+```
+
+Or `docker-compose up` from the repo root (reads `ENGINE_BASE_ADDRESS`,
+`ENGINE_TOKEN`, `JWT_SIGNING_KEY` from your shell or a `.env` file). The
+SQLite database lives in a volume (`/app/data`) so it survives a
+container restart. If `gottrentd` is running on the host machine rather
+than in a container, point `Engine:BaseAddress` at the host's real IP —
+gottrentd's own `AllowHosts` check rejects `host.docker.internal` by
+default, since it only recognizes the address it was actually bound to.
+
 ## Live events
 
 Connect a SignalR client (any language SignalR supports) to
@@ -83,7 +102,9 @@ second), tagged with which node it came from:
 
 ## Status
 
-All five of ROADMAP.md's 5.2 features are done:
+Phase 5 is done. Five of ROADMAP.md's six 5.2 features shipped (quota and
+schedule policy — monthly caps, per-node bandwidth windows — is left open
+as an optional stretch item, same as 4.4 on the Go side):
 
 - **Torrents/session proxy** — `GET /api/v1/torrents`, `GET /api/v1/session`,
   proxied from the one node configured via `Engine:*` — proof the
@@ -111,5 +132,5 @@ All five of ROADMAP.md's 5.2 features are done:
   keeps exactly one subscription running per enabled node, restarting
   one that drops without affecting the others.
 
-Phase 5.2 is complete; Identity + JWT and SignalR fan-out both landed the
-same day as the rest.
+Docker packaging (`src/Hub/GoTorrent.Hub.Api/Dockerfile`,
+`docker-compose.yml`) and this README's own framing round out 5.3/5.4.
