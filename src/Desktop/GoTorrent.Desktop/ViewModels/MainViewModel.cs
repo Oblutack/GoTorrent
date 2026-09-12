@@ -21,6 +21,8 @@ public partial class MainViewModel : ViewModelBase
     private readonly IAutostartService _autostartService;
     private readonly IFileAssociationService _fileAssociationService;
     private readonly IDaemonLauncher _daemonLauncher;
+    private readonly IDesktopNotifier _desktopNotifier;
+    private readonly HashSet<string> _notifiedCompletionHashes = [];
     private IEngineClient? _client;
     private EngineOptions? _connectedOptions;
     private DispatcherTimer? _timer;
@@ -96,7 +98,7 @@ public partial class MainViewModel : ViewModelBase
     [ObservableProperty]
     public partial bool DaemonStarting { get; set; }
 
-    public MainViewModel() : this(options => new EngineClient(options), new FileSettingsStore(), new WebSocketEventStream(), TimeProvider.System, new WindowsAutostartService(), new WindowsFileAssociationService(), new DaemonLauncher())
+    public MainViewModel() : this(options => new EngineClient(options), new FileSettingsStore(), new WebSocketEventStream(), TimeProvider.System, new WindowsAutostartService(), new WindowsFileAssociationService(), new DaemonLauncher(), new WindowsDesktopNotifier())
     {
     }
 
@@ -107,7 +109,7 @@ public partial class MainViewModel : ViewModelBase
     /// in-memory settings store.
     /// </summary>
     public MainViewModel(Func<EngineOptions, IEngineClient> clientFactory, ISettingsStore settingsStore)
-        : this(clientFactory, settingsStore, new WebSocketEventStream(), TimeProvider.System, new WindowsAutostartService(), new WindowsFileAssociationService(), new DaemonLauncher())
+        : this(clientFactory, settingsStore, new WebSocketEventStream(), TimeProvider.System, new WindowsAutostartService(), new WindowsFileAssociationService(), new DaemonLauncher(), new WindowsDesktopNotifier())
     {
     }
 
@@ -119,7 +121,7 @@ public partial class MainViewModel : ViewModelBase
     /// on real wall-clock time elapsing between two calls in a test.
     /// </summary>
     public MainViewModel(Func<EngineOptions, IEngineClient> clientFactory, ISettingsStore settingsStore, IEventStream eventStream, TimeProvider timeProvider)
-        : this(clientFactory, settingsStore, eventStream, timeProvider, new WindowsAutostartService(), new WindowsFileAssociationService(), new DaemonLauncher())
+        : this(clientFactory, settingsStore, eventStream, timeProvider, new WindowsAutostartService(), new WindowsFileAssociationService(), new DaemonLauncher(), new WindowsDesktopNotifier())
     {
     }
 
@@ -129,7 +131,7 @@ public partial class MainViewModel : ViewModelBase
     /// never depends on (or mutates) the real Windows registry.
     /// </summary>
     public MainViewModel(Func<EngineOptions, IEngineClient> clientFactory, ISettingsStore settingsStore, IEventStream eventStream, TimeProvider timeProvider, IAutostartService autostartService)
-        : this(clientFactory, settingsStore, eventStream, timeProvider, autostartService, new WindowsFileAssociationService(), new DaemonLauncher())
+        : this(clientFactory, settingsStore, eventStream, timeProvider, autostartService, new WindowsFileAssociationService(), new DaemonLauncher(), new WindowsDesktopNotifier())
     {
     }
 
@@ -138,7 +140,7 @@ public partial class MainViewModel : ViewModelBase
     /// the same reason as <paramref name="autostartService"/>.
     /// </summary>
     public MainViewModel(Func<EngineOptions, IEngineClient> clientFactory, ISettingsStore settingsStore, IEventStream eventStream, TimeProvider timeProvider, IAutostartService autostartService, IFileAssociationService fileAssociationService)
-        : this(clientFactory, settingsStore, eventStream, timeProvider, autostartService, fileAssociationService, new DaemonLauncher())
+        : this(clientFactory, settingsStore, eventStream, timeProvider, autostartService, fileAssociationService, new DaemonLauncher(), new WindowsDesktopNotifier())
     {
     }
 
@@ -147,6 +149,15 @@ public partial class MainViewModel : ViewModelBase
     /// fake so "spawn gottrentd" never starts a real process.
     /// </summary>
     public MainViewModel(Func<EngineOptions, IEngineClient> clientFactory, ISettingsStore settingsStore, IEventStream eventStream, TimeProvider timeProvider, IAutostartService autostartService, IFileAssociationService fileAssociationService, IDaemonLauncher daemonLauncher)
+        : this(clientFactory, settingsStore, eventStream, timeProvider, autostartService, fileAssociationService, daemonLauncher, new WindowsDesktopNotifier())
+    {
+    }
+
+    /// <summary>
+    /// <paramref name="desktopNotifier"/> - same seam again: tests use a
+    /// fake so "notify on completion" never shows a real OS notification.
+    /// </summary>
+    public MainViewModel(Func<EngineOptions, IEngineClient> clientFactory, ISettingsStore settingsStore, IEventStream eventStream, TimeProvider timeProvider, IAutostartService autostartService, IFileAssociationService fileAssociationService, IDaemonLauncher daemonLauncher, IDesktopNotifier desktopNotifier)
     {
         _clientFactory = clientFactory;
         _settingsStore = settingsStore;
@@ -155,6 +166,7 @@ public partial class MainViewModel : ViewModelBase
         _autostartService = autostartService;
         _fileAssociationService = fileAssociationService;
         _daemonLauncher = daemonLauncher;
+        _desktopNotifier = desktopNotifier;
 
         var settings = _settingsStore.Load();
         StartMinimized = settings.StartMinimized;
@@ -175,6 +187,9 @@ public partial class MainViewModel : ViewModelBase
 
     /// <summary>Stops the daemon this instance spawned, if any. Used by <c>App.axaml.cs</c>'s tray "Exit" handler.</summary>
     public void StopLocalDaemon() => _daemonLauncher.Stop();
+
+    /// <summary>Wires up real OS notifications on completion. Called once from <c>App.axaml.cs</c>, once the main window's real native handle exists.</summary>
+    public void AttachDesktopNotifier(IntPtr ownerWindowHandle) => _desktopNotifier.Attach(ownerWindowHandle);
 
     [RelayCommand]
     private void Connect() => TryConnect(BaseAddressInput, TokenInput, persist: true);
@@ -533,7 +548,35 @@ public partial class MainViewModel : ViewModelBase
                     PieceHave[index] = true;
                 }
                 break;
+            case "torrentStateChanged" when ev.State == "Seeding" && ev.InfoHash is { } hash:
+                NotifyCompletionOnce(hash);
+                break;
         }
+    }
+
+    /// <summary>
+    /// A live WS <c>torrentStateChanged</c>-to-<c>Seeding</c> event only
+    /// ever arrives for a genuine transition (the stream never replays
+    /// past events - a torrent already Seeding when this app connects
+    /// produces no event at all), so this is already "just finished" in
+    /// the common case. <see cref="_notifiedCompletionHashes"/> exists as
+    /// cheap insurance against the one real edge case that isn't: pausing
+    /// an already-seeding torrent and resuming it re-enters
+    /// <c>Seeding</c> and would otherwise re-fire this - the same
+    /// "finished once, not every re-entry" distinction the Go engine's
+    /// own <c>completionHookFired</c> guards against for <c>OnComplete</c>
+    /// server-side (see CLAUDE.md's engine section). Per-session only -
+    /// intentionally not persisted, so a fresh app launch can notify
+    /// again for a torrent that finishes after a restart.
+    /// </summary>
+    private void NotifyCompletionOnce(string infoHash)
+    {
+        if (!_notifiedCompletionHashes.Add(infoHash))
+        {
+            return;
+        }
+        var name = Torrents.FirstOrDefault(t => t.InfoHash == infoHash)?.Name ?? infoHash;
+        _desktopNotifier.Notify("Download complete", name);
     }
 
     /// <summary>

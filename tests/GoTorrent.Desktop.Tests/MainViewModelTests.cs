@@ -87,6 +87,14 @@ public sealed class MainViewModelTests
         return (viewModel, client, daemon);
     }
 
+    private static (MainViewModel ViewModel, FakeEngineClient Client, FakeDesktopNotifier Notifier) MakeViewModelWithDesktopNotifier()
+    {
+        var client = new FakeEngineClient();
+        var notifier = new FakeDesktopNotifier();
+        var viewModel = new MainViewModel(_ => client, new FakeSettingsStore(), new FakeEventStream(), TimeProvider.System, new FakeAutostartService(), new FakeFileAssociationService(), new FakeDaemonLauncher(), notifier);
+        return (viewModel, client, notifier);
+    }
+
     [Fact]
     public void Connect_WithAValidAddress_Succeeds()
     {
@@ -440,6 +448,51 @@ public sealed class MainViewModelTests
         viewModel.HandleEvent(new WsEvent("pieceVerified", DateTimeOffset.UtcNow, "deadbeef00000000000000000000000000000000", null, null, PieceIndex: 2, Session: null));
 
         Assert.False(viewModel.PieceHave[2]);
+    }
+
+    [Fact]
+    public async Task HandleEvent_TorrentStateChangedToSeeding_ShowsACompletionNotification()
+    {
+        var (viewModel, client, notifier) = MakeViewModelWithDesktopNotifier();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        var torrent = MakeTorrent("ubuntu.iso");
+        client.Torrents.Add(torrent);
+        await viewModel.RefreshAsync();
+
+        viewModel.HandleEvent(new WsEvent("torrentStateChanged", DateTimeOffset.UtcNow, torrent.InfoHash, "Seeding", null, null, null));
+
+        var notification = Assert.Single(notifier.Notifications);
+        Assert.Equal("ubuntu.iso", notification.Message);
+    }
+
+    [Fact]
+    public async Task HandleEvent_TorrentStateChangedToSeedingTwice_OnlyNotifiesOnce()
+    {
+        var (viewModel, client, notifier) = MakeViewModelWithDesktopNotifier();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        var torrent = MakeTorrent("ubuntu.iso");
+        client.Torrents.Add(torrent);
+        await viewModel.RefreshAsync();
+
+        var ev = new WsEvent("torrentStateChanged", DateTimeOffset.UtcNow, torrent.InfoHash, "Seeding", null, null, null);
+        viewModel.HandleEvent(ev);
+        viewModel.HandleEvent(ev);
+
+        Assert.Single(notifier.Notifications);
+    }
+
+    [Fact]
+    public void HandleEvent_TorrentStateChangedToADifferentState_DoesNotNotify()
+    {
+        var (viewModel, _, notifier) = MakeViewModelWithDesktopNotifier();
+
+        viewModel.HandleEvent(new WsEvent("torrentStateChanged", DateTimeOffset.UtcNow, "0102030405060708090a0b0c0d0e0f1011121314", "Downloading", null, null, null));
+
+        Assert.Empty(notifier.Notifications);
     }
 
     [Fact]

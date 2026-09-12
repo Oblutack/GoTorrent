@@ -35,6 +35,19 @@ public partial class App : Application
             mainViewModel.StartLiveEvents();
             mainViewModel.StartPeerRefresh();
 
+            // Same "wait for the real event rather than pre-empt Avalonia's
+            // own timing" reasoning as the start-minimized fix below - the
+            // native window handle IDesktopNotifier needs to anchor a real
+            // OS notification icon to is guaranteed to exist by Opened,
+            // whether or not the window ends up actually visible.
+            mainWindow.Opened += (_, _) =>
+            {
+                if (mainWindow.TryGetPlatformHandle() is { } handle)
+                {
+                    mainViewModel.AttachDesktopNotifier(handle.Handle);
+                }
+            };
+
             // A .torrent file or magnet: link double-clicked with this app
             // registered as the handler (Services/WindowsFileAssociationService)
             // arrives here as the first command-line argument.
