@@ -24,6 +24,7 @@ public partial class App : Application
             };
             mainViewModel.StartAutoRefresh();
             mainViewModel.StartLiveEvents();
+            mainViewModel.StartPeerRefresh();
         }
 
         base.OnFrameworkInitializationCompleted();

@@ -122,9 +122,10 @@
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="Address" Binding="{Binding Addr}" Width="2*" />
                             <DataGridTextColumn Header="Outbound" Binding="{Binding Outbound}" Width="*" />
-                            <DataGridTextColumn Header="Downloaded" Binding="{Binding Downloaded}" Width="*" />
-                            <DataGridTextColumn Header="Uploaded" Binding="{Binding Uploaded}" Width="*" />
+                            <DataGridTextColumn Header="Down" Binding="{Binding DownloadRateKBps, StringFormat='{}{0:F1} KiB/s'}" Width="*" />
+                            <DataGridTextColumn Header="Up" Binding="{Binding UploadRateKBps, StringFormat='{}{0:F1} KiB/s'}" Width="*" />
                             <DataGridTextColumn Header="Progress" Binding="{Binding Progress, StringFormat='{}{0:P0}'}" Width="*" />
+                            <DataGridTextColumn Header="Choked" Binding="{Binding PeerChoking}" Width="*" />
                         </DataGrid.Columns>
                     </DataGrid>
                 </TabItem>

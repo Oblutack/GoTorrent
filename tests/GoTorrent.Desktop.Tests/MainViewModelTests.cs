@@ -445,6 +445,67 @@ public sealed class MainViewModelTests
     }
 
     [Fact]
+    public async Task RefreshPeerRatesAsync_FirstPoll_RecordsZeroRateForEachPeer()
+    {
+        var (viewModel, client, _) = MakeViewModelWithClock();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        viewModel.SelectedTorrent = MakeTorrent("ubuntu.iso");
+        client.Peers.Add(new PeerEntry("127.0.0.1:6881", true, Downloaded: 4096, Uploaded: 0, false, true, false, true, 0.1));
+
+        await viewModel.RefreshPeerRatesAsync();
+
+        var row = Assert.Single(viewModel.DetailPeers);
+        Assert.Equal("127.0.0.1:6881", row.Addr);
+        Assert.Equal(0, row.DownloadRateKBps);
+    }
+
+    [Fact]
+    public async Task RefreshPeerRatesAsync_SecondPollOneSecondLater_RecordsAKnownRate()
+    {
+        var (viewModel, client, clock) = MakeViewModelWithClock();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        viewModel.SelectedTorrent = MakeTorrent("ubuntu.iso");
+        client.Peers.Add(new PeerEntry("127.0.0.1:6881", true, Downloaded: 1024, Uploaded: 512, false, true, false, true, 0.1));
+        await viewModel.RefreshPeerRatesAsync();
+
+        clock.Now = clock.Now.AddSeconds(1);
+        client.Peers[0] = client.Peers[0] with { Downloaded = 3072 };
+        await viewModel.RefreshPeerRatesAsync();
+
+        // (3072 - 1024) bytes over 1s = 2048 B/s = 2 KiB/s.
+        var row = Assert.Single(viewModel.DetailPeers);
+        Assert.Equal(2, row.DownloadRateKBps);
+        Assert.Equal(0, row.UploadRateKBps);
+    }
+
+    [Fact]
+    public async Task RefreshPeerRatesAsync_SwitchingSelectedTorrent_StartsAFreshSeries()
+    {
+        var (viewModel, client, clock) = MakeViewModelWithClock();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        viewModel.SelectedTorrent = MakeTorrent("ubuntu.iso");
+        client.Peers.Add(new PeerEntry("127.0.0.1:6881", true, Downloaded: 1024, Uploaded: 0, false, true, false, true, 0.1));
+        await viewModel.RefreshPeerRatesAsync();
+
+        clock.Now = clock.Now.AddSeconds(1);
+        // A different torrent, coincidentally sharing a peer address, with
+        // a much larger total - naively diffing against the previous
+        // torrent's totals would produce a nonsense huge rate.
+        viewModel.SelectedTorrent = MakeTorrent("debian.iso") with { InfoHash = "aabbccddeeff00112233445566778899aabbccd" };
+        client.Peers[0] = client.Peers[0] with { Downloaded = 500_000 };
+        await viewModel.RefreshPeerRatesAsync();
+
+        var row = Assert.Single(viewModel.DetailPeers);
+        Assert.Equal(0, row.DownloadRateKBps);
+    }
+
+    [Fact]
     public void Constructor_WithSavedSettings_ConnectsAutomatically()
     {
         var settings = new FakeSettingsStore();

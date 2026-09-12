@@ -20,10 +20,14 @@ public partial class MainViewModel : ViewModelBase
     private IEngineClient? _client;
     private EngineOptions? _connectedOptions;
     private DispatcherTimer? _timer;
+    private DispatcherTimer? _peerTimer;
     private bool _liveEventsStarted;
     private DateTimeOffset? _lastSpeedSampleTime;
     private long _lastTotalDownloaded;
     private long _lastTotalUploaded;
+    private string? _peerRatesForHash;
+    private DateTimeOffset? _lastPeerSampleTime;
+    private Dictionary<string, (long Downloaded, long Uploaded)> _lastPeerTotals = [];
 
     [ObservableProperty]
     public partial ObservableCollection<TorrentSummary> Torrents { get; set; } = [];
@@ -56,7 +60,7 @@ public partial class MainViewModel : ViewModelBase
     public partial ObservableCollection<FileEntry> DetailFiles { get; set; } = [];
 
     [ObservableProperty]
-    public partial ObservableCollection<PeerEntry> DetailPeers { get; set; } = [];
+    public partial ObservableCollection<PeerRow> DetailPeers { get; set; } = [];
 
     [ObservableProperty]
     public partial ObservableCollection<TrackerEntry> DetailTrackers { get; set; } = [];
@@ -188,7 +192,6 @@ public partial class MainViewModel : ViewModelBase
         {
             DetailTorrent = await _client.GetTorrentDetailAsync(hash, CancellationToken.None);
             DetailFiles = new ObservableCollection<FileEntry>(await _client.GetFilesAsync(hash, CancellationToken.None));
-            DetailPeers = new ObservableCollection<PeerEntry>(await _client.GetPeersAsync(hash, CancellationToken.None));
             DetailTrackers = new ObservableCollection<TrackerEntry>(await _client.GetTrackersAsync(hash, CancellationToken.None));
             var pieces = await _client.GetPiecesAsync(hash, CancellationToken.None);
             PieceHave = new ObservableCollection<bool>(pieces.ToHaveArray());
@@ -197,6 +200,72 @@ public partial class MainViewModel : ViewModelBase
         {
             ConnectionError = ex.Message;
         }
+        await RefreshPeerRatesAsync();
+    }
+
+    /// <summary>
+    /// Polls the selected torrent's peers and turns each one's cumulative
+    /// Downloaded/Uploaded into a KiB/s "contribution" rate - gottrentd's
+    /// <c>GET .../peers</c> reports running totals per peer, not a rate,
+    /// and there is no WS message that streams per-peer stats the way
+    /// <c>sessionStats</c> streams fleet-wide ones, so this has to poll
+    /// and diff itself. Runs at 1 Hz via <see cref="StartPeerRefresh"/>
+    /// and once immediately whenever the selection changes (from
+    /// <see cref="LoadSelectedDetailAsync"/>), matching the fleet-wide
+    /// speed graph's own "first sample has no rate yet" shape.
+    /// </summary>
+    public async Task RefreshPeerRatesAsync()
+    {
+        if (_client is null || SelectedTorrent is null)
+        {
+            DetailPeers = [];
+            _peerRatesForHash = null;
+            _lastPeerTotals = [];
+            _lastPeerSampleTime = null;
+            return;
+        }
+
+        var hash = SelectedTorrent.InfoHash;
+        if (hash != _peerRatesForHash)
+        {
+            // A different torrent than the last poll - a stale peer's
+            // totals from that torrent would produce a nonsense delta
+            // against this one's, so start this torrent's series fresh.
+            _peerRatesForHash = hash;
+            _lastPeerTotals = [];
+            _lastPeerSampleTime = null;
+        }
+
+        IReadOnlyList<PeerEntry> peers;
+        try
+        {
+            peers = await _client.GetPeersAsync(hash, CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            ConnectionError = ex.Message;
+            return;
+        }
+
+        var now = _timeProvider.GetUtcNow();
+        var elapsedSeconds = _lastPeerSampleTime is { } last ? (now - last).TotalSeconds : 0;
+        var rows = new List<PeerRow>(peers.Count);
+        var newTotals = new Dictionary<string, (long Downloaded, long Uploaded)>(peers.Count);
+        foreach (var peer in peers)
+        {
+            double downKBps = 0, upKBps = 0;
+            if (elapsedSeconds > 0 && _lastPeerTotals.TryGetValue(peer.Addr, out var previous))
+            {
+                downKBps = Math.Max(0, (peer.Downloaded - previous.Downloaded) / elapsedSeconds / 1024.0);
+                upKBps = Math.Max(0, (peer.Uploaded - previous.Uploaded) / elapsedSeconds / 1024.0);
+            }
+            rows.Add(new PeerRow(peer.Addr, peer.Outbound, downKBps, upKBps, peer.Progress, peer.AmChoking, peer.PeerChoking));
+            newTotals[peer.Addr] = (peer.Downloaded, peer.Uploaded);
+        }
+
+        _lastPeerTotals = newTotals;
+        _lastPeerSampleTime = now;
+        DetailPeers = new ObservableCollection<PeerRow>(rows);
     }
 
     /// <summary>
@@ -412,5 +481,25 @@ public partial class MainViewModel : ViewModelBase
         _timer.Tick += async (_, _) => await RefreshAsync();
         _timer.Start();
         _ = RefreshAsync();
+    }
+
+    /// <summary>
+    /// Starts the 1 Hz per-peer contribution poll - same
+    /// only-called-once-from-App.axaml.cs convention as
+    /// <see cref="StartAutoRefresh"/>/<see cref="StartLiveEvents"/>.
+    /// Separate timer from the main 2s auto-refresh: ROADMAP.md's 6.2
+    /// specifically calls for peer rows at 1 Hz, and ticking the whole
+    /// torrent list/detail pane that often would be far more REST calls
+    /// than the peer rate computation actually needs.
+    /// </summary>
+    public void StartPeerRefresh()
+    {
+        if (_peerTimer is not null)
+        {
+            return;
+        }
+        _peerTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+        _peerTimer.Tick += async (_, _) => await RefreshPeerRatesAsync();
+        _peerTimer.Start();
     }
 }
