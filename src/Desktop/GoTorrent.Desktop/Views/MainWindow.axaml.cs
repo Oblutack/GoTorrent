@@ -99,6 +99,36 @@ public partial class MainWindow : Window
         await dialog.ShowDialog(this);
     }
 
+    private async void OnSetTagsClick(object? sender, RoutedEventArgs e)
+    {
+        if (DataContext is not MainViewModel mainViewModel || mainViewModel.SelectedTorrent is null)
+        {
+            return;
+        }
+        var dialog = new SetTagsWindow(mainViewModel, mainViewModel.SelectedTorrent.InfoHash, mainViewModel.SelectedTorrent.Tags);
+        await dialog.ShowDialog(this);
+    }
+
+    private async void OnSetSpeedLimitsClick(object? sender, RoutedEventArgs e)
+    {
+        if (DataContext is not MainViewModel mainViewModel || mainViewModel.SelectedTorrent is null)
+        {
+            return;
+        }
+        var dialog = new SetSpeedLimitsWindow(mainViewModel, mainViewModel.SelectedTorrent.InfoHash);
+        await dialog.ShowDialog(this);
+    }
+
+    private async void OnSetLocationClick(object? sender, RoutedEventArgs e)
+    {
+        if (DataContext is not MainViewModel mainViewModel || mainViewModel.SelectedTorrent is null)
+        {
+            return;
+        }
+        var dialog = new SetLocationWindow(mainViewModel, mainViewModel.SelectedTorrent.InfoHash, mainViewModel.DetailTorrent?.DownloadDir);
+        await dialog.ShowDialog(this);
+    }
+
     private async void OnAddTrackerClick(object? sender, RoutedEventArgs e)
     {
         if (DataContext is not MainViewModel mainViewModel)

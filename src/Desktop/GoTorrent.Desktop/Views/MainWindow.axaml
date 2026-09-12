@@ -119,13 +119,16 @@
         <!-- Sidebar + torrent list + detail pane: shown once connected. -->
         <Grid Grid.Row="3" IsVisible="{Binding IsConnected}" ColumnDefinitions="170,*" Margin="0">
 
-            <!-- Sidebar: status filters + live categories. -->
+            <!-- Sidebar: status filters + live categories + live tags. -->
             <Border Grid.Column="0" Background="{DynamicResource GtPanel}">
                 <ListBox ItemsSource="{Binding SidebarFilters}" SelectedItem="{Binding SelectedFilter}"
                           Background="Transparent" Margin="0,8">
                     <ListBox.ItemTemplate>
                         <DataTemplate DataType="models:SidebarFilter">
-                            <TextBlock Text="{Binding Label}" Padding="4,2" />
+                            <Grid ColumnDefinitions="*,Auto" Margin="4,2">
+                                <TextBlock Grid.Column="0" Text="{Binding Label}" />
+                                <TextBlock Grid.Column="1" Text="{Binding Count}" Foreground="{DynamicResource GtSubtle}" FontSize="11" VerticalAlignment="Center" />
+                            </Grid>
                         </DataTemplate>
                     </ListBox.ItemTemplate>
                 </ListBox>
@@ -146,6 +149,9 @@
                             <MenuItem Header="Resume" Command="{Binding ResumeSelectedCommand}" />
                             <MenuItem Header="Force Start" Command="{Binding ToggleForceStartCommand}" />
                             <Separator />
+                            <MenuItem Header="Force Recheck" Command="{Binding VerifySelectedCommand}" />
+                            <MenuItem Header="Reannounce" Command="{Binding ReannounceSelectedCommand}" />
+                            <Separator />
                             <MenuItem Header="Move to Top" Command="{Binding MoveQueueTopCommand}" />
                             <MenuItem Header="Move Up" Command="{Binding MoveQueueUpCommand}" />
                             <MenuItem Header="Move Down" Command="{Binding MoveQueueDownCommand}" />
@@ -154,6 +160,9 @@
                             <MenuItem Header="Rarest-First (default)" Command="{Binding DisableSequentialCommand}" />
                             <Separator />
                             <MenuItem Header="Set Category..." Click="OnSetCategoryClick" />
+                            <MenuItem Header="Set Tags..." Click="OnSetTagsClick" />
+                            <MenuItem Header="Set Speed Limits..." Click="OnSetSpeedLimitsClick" />
+                            <MenuItem Header="Set Location..." Click="OnSetLocationClick" />
                             <Separator />
                             <MenuItem Header="Delete" Command="{Binding DeleteSelectedCommand}" />
                             <MenuItem Header="Delete with Data" Command="{Binding DeleteSelectedWithDataCommand}" />
@@ -260,6 +269,8 @@
                                 <DataGridTextColumn Header="Up" Binding="{Binding UploadRateKBps, StringFormat='{}{0:F1} KiB/s'}" Width="*" />
                                 <DataGridTextColumn Header="Progress" Binding="{Binding Progress, StringFormat='{}{0:P0}'}" Width="*" />
                                 <DataGridTextColumn Header="Choked" Binding="{Binding PeerChoking}" Width="*" />
+                                <DataGridTextColumn Header="Interested" Binding="{Binding PeerInterested}" Width="*" />
+                                <DataGridTextColumn Header="We're Interested" Binding="{Binding AmInterested}" Width="*" />
                             </DataGrid.Columns>
                         </DataGrid>
                     </TabItem>
@@ -274,6 +285,7 @@
                                     <DataGridTextColumn Header="URL" Binding="{Binding Url}" Width="3*" />
                                     <DataGridTextColumn Header="Seeders" Binding="{Binding Seeders}" Width="*" />
                                     <DataGridTextColumn Header="Leechers" Binding="{Binding Leechers}" Width="*" />
+                                    <DataGridTextColumn Header="Last Announce" Binding="{Binding LastAnnounce, StringFormat='{}{0:HH:mm:ss}'}" Width="*" />
                                     <DataGridTextColumn Header="Last Error" Binding="{Binding LastError}" Width="2*" />
                                 </DataGrid.Columns>
                             </DataGrid>

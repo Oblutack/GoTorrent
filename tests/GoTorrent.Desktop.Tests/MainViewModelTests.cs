@@ -194,6 +194,37 @@ public sealed class MainViewModelTests
     }
 
     [Fact]
+    public async Task AddUrlAsync_AddsAndRefreshes()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        client.Torrents.Add(MakeTorrent("added.iso"));
+
+        var ok = await viewModel.AddUrlAsync("https://example.com/file.torrent", category: null, downloadDir: null);
+
+        Assert.True(ok);
+        Assert.Equal("https://example.com/file.torrent", client.LastAddedUrl);
+        Assert.Single(viewModel.Torrents);
+    }
+
+    [Fact]
+    public async Task AddUrlAsync_WhenTheClientFails_SetsAnErrorAndReturnsFalse()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        client.Failure = new EngineRequestException("fetching url: 404");
+
+        var ok = await viewModel.AddUrlAsync("https://example.com/missing.torrent", category: null, downloadDir: null);
+
+        Assert.False(ok);
+        Assert.Equal("fetching url: 404", viewModel.AddTorrentError);
+    }
+
+    [Fact]
     public async Task AddMagnetAsync_WhenTheClientFails_SetsAnErrorAndReturnsFalse()
     {
         var (viewModel, client, _) = MakeViewModel();
@@ -351,6 +382,40 @@ public sealed class MainViewModelTests
         await viewModel.ResumeSelectedCommand.ExecuteAsync(null);
 
         Assert.Equal([torrent.InfoHash], client.ResumedHashes);
+    }
+
+    [Fact]
+    public async Task VerifySelectedCommand_VerifiesTheSelectedTorrent()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        var torrent = MakeTorrent("ubuntu.iso");
+        client.Torrents.Add(torrent);
+        await viewModel.RefreshAsync();
+        viewModel.SelectedTorrent = viewModel.Torrents[0];
+
+        await viewModel.VerifySelectedCommand.ExecuteAsync(null);
+
+        Assert.Equal([torrent.InfoHash], client.VerifiedHashes);
+    }
+
+    [Fact]
+    public async Task ReannounceSelectedCommand_ReannouncesTheSelectedTorrent()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        var torrent = MakeTorrent("ubuntu.iso");
+        client.Torrents.Add(torrent);
+        await viewModel.RefreshAsync();
+        viewModel.SelectedTorrent = viewModel.Torrents[0];
+
+        await viewModel.ReannounceSelectedCommand.ExecuteAsync(null);
+
+        Assert.Equal([torrent.InfoHash], client.ReannouncedHashes);
     }
 
     [Fact]
@@ -1049,6 +1114,73 @@ public sealed class MainViewModelTests
     }
 
     [Fact]
+    public async Task ApplyFilter_IncludesADistinctTagFromTorrents()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        client.Torrents.Add(MakeTorrent("movie") with { InfoHash = "1111111111111111111111111111111111111111", Tags = ["4K", "HDR"] });
+
+        await viewModel.RefreshAsync();
+
+        Assert.Contains(viewModel.SidebarFilters, f => f.Label == "4K");
+        Assert.Contains(viewModel.SidebarFilters, f => f.Label == "HDR");
+    }
+
+    [Fact]
+    public async Task ApplyFilter_ByTag_OnlyShowsTorrentsWithThatTag()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        client.Torrents.Add(MakeTorrent("tagged") with { InfoHash = "1111111111111111111111111111111111111111", Tags = ["4K"] });
+        client.Torrents.Add(MakeTorrent("untagged") with { InfoHash = "2222222222222222222222222222222222222222" });
+        await viewModel.RefreshAsync();
+
+        viewModel.SelectedFilter = viewModel.SidebarFilters.Single(f => f.Label == "4K");
+
+        Assert.Equal(["tagged"], viewModel.DisplayedTorrents.Select(t => t.Name));
+    }
+
+    [Fact]
+    public async Task ApplyFilter_SetsEachSidebarFiltersCount()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        client.Torrents.Add(MakeTorrent("a") with { InfoHash = "1111111111111111111111111111111111111111", State = "Seeding" });
+        client.Torrents.Add(MakeTorrent("b") with { InfoHash = "2222222222222222222222222222222222222222", State = "Seeding" });
+        client.Torrents.Add(MakeTorrent("c") with { InfoHash = "3333333333333333333333333333333333333333", State = "Paused" });
+
+        await viewModel.RefreshAsync();
+
+        Assert.Equal(3, viewModel.SidebarFilters.Single(f => f.Key == SidebarFilter.AllKey).Count);
+        Assert.Equal(2, viewModel.SidebarFilters.Single(f => f.Key == SidebarFilter.SeedingKey).Count);
+        Assert.Equal(1, viewModel.SidebarFilters.Single(f => f.Key == SidebarFilter.PausedKey).Count);
+        Assert.Equal(0, viewModel.SidebarFilters.Single(f => f.Key == SidebarFilter.ErrorKey).Count);
+    }
+
+    [Fact]
+    public async Task SetTagsAsync_SendsTheRequestedTags()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        var torrent = MakeTorrent("a");
+        client.Torrents.Add(torrent);
+        await viewModel.RefreshAsync();
+
+        var ok = await viewModel.SetTagsAsync(torrent.InfoHash, ["4K", "HDR"]);
+
+        Assert.True(ok);
+        Assert.Equal(["4K", "HDR"], client.Torrents[0].Tags);
+    }
+
+    [Fact]
     public async Task ToggleForceStartCommand_FlipsForceStart()
     {
         var (viewModel, client, _) = MakeViewModel();
@@ -1128,6 +1260,45 @@ public sealed class MainViewModelTests
 
         Assert.True(ok);
         Assert.Equal("Movies", client.Torrents[0].Category);
+    }
+
+    [Fact]
+    public async Task SetSpeedLimitsAsync_SendsTheRequestedLimits()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        var torrent = MakeTorrent("a");
+        client.Torrents.Add(torrent);
+        await viewModel.RefreshAsync();
+
+        var ok = await viewModel.SetSpeedLimitsAsync(torrent.InfoHash, 500, 100);
+
+        Assert.True(ok);
+        var (hash, options) = Assert.Single(client.PatchRequests);
+        Assert.Equal(torrent.InfoHash, hash);
+        Assert.Equal(500, options.DownLimitKB);
+        Assert.Equal(100, options.UpLimitKB);
+    }
+
+    [Fact]
+    public async Task SetLocationAsync_SendsTheRequestedDirectory()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        var torrent = MakeTorrent("a");
+        client.Torrents.Add(torrent);
+        await viewModel.RefreshAsync();
+
+        var ok = await viewModel.SetLocationAsync(torrent.InfoHash, "/new/location");
+
+        Assert.True(ok);
+        var (hash, options) = Assert.Single(client.PatchRequests);
+        Assert.Equal(torrent.InfoHash, hash);
+        Assert.Equal("/new/location", options.DownloadDir);
     }
 
     [Fact]

@@ -16,6 +16,9 @@ public interface IEngineClient
 
     Task<string> AddMagnetAsync(string magnet, string? category, string? downloadDir, CancellationToken cancellationToken);
 
+    /// <summary>Has gottrentd itself fetch a .torrent file from an http/https URL, rather than uploading one from disk - mirrors <c>internal/api.AddRequest</c>'s "url" field.</summary>
+    Task<string> AddUrlAsync(string url, string? category, string? downloadDir, CancellationToken cancellationToken);
+
     Task<string> AddTorrentFileAsync(byte[] fileBytes, string fileName, string? category, string? downloadDir, CancellationToken cancellationToken);
 
     Task PauseAsync(string infoHash, CancellationToken cancellationToken);
@@ -23,6 +26,12 @@ public interface IEngineClient
     Task ResumeAsync(string infoHash, CancellationToken cancellationToken);
 
     Task DeleteAsync(string infoHash, bool deleteData, CancellationToken cancellationToken);
+
+    /// <summary>Re-hashes every piece already on disk against the torrent's metadata - the same check a normal resume does, run on demand.</summary>
+    Task VerifyAsync(string infoHash, CancellationToken cancellationToken);
+
+    /// <summary>Forces an immediate tracker announce on every tier, rather than waiting out the current interval.</summary>
+    Task ReannounceAsync(string infoHash, CancellationToken cancellationToken);
 
     Task<TorrentDetail> GetTorrentDetailAsync(string infoHash, CancellationToken cancellationToken);
 

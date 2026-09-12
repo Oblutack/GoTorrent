@@ -16,4 +16,6 @@ public sealed record PeerRow(
     double UploadRateKBps,
     double Progress,
     bool AmChoking,
-    bool PeerChoking);
+    bool PeerChoking,
+    bool AmInterested,
+    bool PeerInterested);
