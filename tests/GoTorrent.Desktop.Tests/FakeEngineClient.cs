@@ -124,4 +124,50 @@ public sealed class FakeEngineClient : IEngineClient
         SessionLimits = new SessionLimits(downLimitKB ?? SessionLimits.DownLimitKB, upLimitKB ?? SessionLimits.UpLimitKB);
         return Task.FromResult(SessionLimits);
     }
+
+    public List<(string InfoHash, string Url)> AddedTrackers { get; } = [];
+
+    public Task<TorrentSummary> PatchTorrentAsync(string infoHash, PatchTorrentOptions options, CancellationToken cancellationToken)
+    {
+        if (Failure is not null)
+        {
+            return Task.FromException<TorrentSummary>(Failure);
+        }
+        var index = Torrents.FindIndex(t => t.InfoHash == infoHash);
+        if (index < 0)
+        {
+            return Task.FromException<TorrentSummary>(new InvalidOperationException($"unknown torrent {infoHash}"));
+        }
+        var updated = Torrents[index] with
+        {
+            Category = options.Category ?? Torrents[index].Category,
+            Tags = options.Tags ?? Torrents[index].Tags,
+            QueuePosition = options.QueuePosition ?? Torrents[index].QueuePosition,
+            ForceStart = options.ForceStart ?? Torrents[index].ForceStart,
+        };
+        Torrents[index] = updated;
+        return Task.FromResult(updated);
+    }
+
+    public Task AddTrackerAsync(string infoHash, string url, CancellationToken cancellationToken)
+    {
+        if (Failure is not null)
+        {
+            return Task.FromException(Failure);
+        }
+        AddedTrackers.Add((infoHash, url));
+        return Task.CompletedTask;
+    }
+
+    public List<(string InfoHash, int FileIndex, string Priority)> SetFilePriorities { get; } = [];
+
+    public Task SetFilePriorityAsync(string infoHash, int fileIndex, string priority, CancellationToken cancellationToken)
+    {
+        if (Failure is not null)
+        {
+            return Task.FromException(Failure);
+        }
+        SetFilePriorities.Add((infoHash, fileIndex, priority));
+        return Task.CompletedTask;
+    }
 }

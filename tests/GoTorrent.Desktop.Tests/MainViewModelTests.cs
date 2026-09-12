@@ -842,4 +842,209 @@ public sealed class MainViewModelTests
 
         Assert.Equal(1, daemon.StopCallCount);
     }
+
+    [Fact]
+    public async Task ApplyFilter_WithNoFilterOrSearch_ShowsEveryTorrent()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        client.Torrents.Add(MakeTorrent("a") with { InfoHash = "1111111111111111111111111111111111111111", State = "Seeding" });
+        client.Torrents.Add(MakeTorrent("b") with { InfoHash = "2222222222222222222222222222222222222222", State = "Paused" });
+
+        await viewModel.RefreshAsync();
+
+        Assert.Equal(2, viewModel.DisplayedTorrents.Count);
+    }
+
+    [Fact]
+    public async Task ApplyFilter_BySeedingStatus_OnlyShowsSeedingTorrents()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        client.Torrents.Add(MakeTorrent("seeder") with { InfoHash = "1111111111111111111111111111111111111111", State = "Seeding" });
+        client.Torrents.Add(MakeTorrent("leecher") with { InfoHash = "2222222222222222222222222222222222222222", State = "Downloading" });
+        await viewModel.RefreshAsync();
+
+        viewModel.SelectedFilter = new SidebarFilter(SidebarFilter.SeedingKey, "Seeding");
+
+        Assert.Equal(["seeder"], viewModel.DisplayedTorrents.Select(t => t.Name));
+    }
+
+    [Fact]
+    public async Task ApplyFilter_BySearchText_MatchesNameCaseInsensitively()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        client.Torrents.Add(MakeTorrent("Ubuntu.iso") with { InfoHash = "1111111111111111111111111111111111111111" });
+        client.Torrents.Add(MakeTorrent("Debian.iso") with { InfoHash = "2222222222222222222222222222222222222222" });
+        await viewModel.RefreshAsync();
+
+        viewModel.SearchText = "ubuntu";
+
+        Assert.Equal(["Ubuntu.iso"], viewModel.DisplayedTorrents.Select(t => t.Name));
+    }
+
+    [Fact]
+    public async Task ApplyFilter_IncludesADistinctCategoryFromTorrents()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        client.Torrents.Add(MakeTorrent("movie") with { InfoHash = "1111111111111111111111111111111111111111", Category = "Movies" });
+
+        await viewModel.RefreshAsync();
+
+        Assert.Contains(viewModel.SidebarFilters, f => f.Label == "Movies");
+    }
+
+    [Fact]
+    public async Task ToggleForceStartCommand_FlipsForceStart()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        var torrent = MakeTorrent("a") with { ForceStart = false };
+        client.Torrents.Add(torrent);
+        await viewModel.RefreshAsync();
+        viewModel.SelectedTorrent = viewModel.Torrents[0];
+
+        await viewModel.ToggleForceStartCommand.ExecuteAsync(null);
+
+        Assert.True(client.Torrents[0].ForceStart);
+    }
+
+    [Fact]
+    public async Task MoveQueueTopCommand_SetsQueuePositionToZero()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        client.Torrents.Add(MakeTorrent("a") with { QueuePosition = 3 });
+        await viewModel.RefreshAsync();
+        viewModel.SelectedTorrent = viewModel.Torrents[0];
+
+        await viewModel.MoveQueueTopCommand.ExecuteAsync(null);
+
+        Assert.Equal(0, client.Torrents[0].QueuePosition);
+    }
+
+    [Fact]
+    public async Task MoveQueueUpCommand_DecrementsQueuePosition()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        client.Torrents.Add(MakeTorrent("a") with { QueuePosition = 3 });
+        await viewModel.RefreshAsync();
+        viewModel.SelectedTorrent = viewModel.Torrents[0];
+
+        await viewModel.MoveQueueUpCommand.ExecuteAsync(null);
+
+        Assert.Equal(2, client.Torrents[0].QueuePosition);
+    }
+
+    [Fact]
+    public async Task MoveQueueDownCommand_IncrementsQueuePosition()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        client.Torrents.Add(MakeTorrent("a") with { QueuePosition = 3 });
+        await viewModel.RefreshAsync();
+        viewModel.SelectedTorrent = viewModel.Torrents[0];
+
+        await viewModel.MoveQueueDownCommand.ExecuteAsync(null);
+
+        Assert.Equal(4, client.Torrents[0].QueuePosition);
+    }
+
+    [Fact]
+    public async Task SetCategoryAsync_SetsTheCategory()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        var torrent = MakeTorrent("a");
+        client.Torrents.Add(torrent);
+        await viewModel.RefreshAsync();
+
+        var ok = await viewModel.SetCategoryAsync(torrent.InfoHash, "Movies");
+
+        Assert.True(ok);
+        Assert.Equal("Movies", client.Torrents[0].Category);
+    }
+
+    [Fact]
+    public async Task AddTrackerAsync_CallsThroughWithTheSelectedTorrentsHash()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        var torrent = MakeTorrent("a");
+        client.Torrents.Add(torrent);
+        await viewModel.RefreshAsync();
+        viewModel.SelectedTorrent = viewModel.Torrents[0];
+
+        var ok = await viewModel.AddTrackerAsync("http://example.com/announce");
+
+        Assert.True(ok);
+        Assert.Equal([(torrent.InfoHash, "http://example.com/announce")], client.AddedTrackers);
+    }
+
+    [Fact]
+    public async Task AddTrackerAsync_WithNoSelectedTorrent_ReturnsFalse()
+    {
+        var (viewModel, _, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+
+        var ok = await viewModel.AddTrackerAsync("http://example.com/announce");
+
+        Assert.False(ok);
+    }
+
+    [Fact]
+    public async Task SetFilePriorityAsync_CallsThroughWithTheSelectedTorrentsHash()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        var torrent = MakeTorrent("a");
+        client.Torrents.Add(torrent);
+        await viewModel.RefreshAsync();
+        viewModel.SelectedTorrent = viewModel.Torrents[0];
+
+        var ok = await viewModel.SetFilePriorityAsync(2, "high");
+
+        Assert.True(ok);
+        Assert.Equal([(torrent.InfoHash, 2, "high")], client.SetFilePriorities);
+    }
+
+    [Fact]
+    public async Task SetFilePriorityAsync_WithNoSelectedTorrent_ReturnsFalse()
+    {
+        var (viewModel, _, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+
+        var ok = await viewModel.SetFilePriorityAsync(0, "high");
+
+        Assert.False(ok);
+    }
 }

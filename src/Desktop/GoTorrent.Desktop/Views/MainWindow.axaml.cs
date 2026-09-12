@@ -51,6 +51,24 @@ public partial class MainWindow : Window
         }
     }
 
+    /// <summary>
+    /// Dragging and double-click-to-maximize on the title bar row itself
+    /// are handled natively by
+    /// <c>chrome:WindowDecorationProperties.ElementRole="TitleBar"</c>
+    /// (MainWindow.axaml) - Avalonia 12's real replacement for the older
+    /// manual <c>PointerPressed</c>+<c>BeginMoveDrag</c> pattern, which no
+    /// longer exists. These three handlers are only the caption buttons
+    /// themselves, which the drag region correctly excludes from its own
+    /// hit-testing.
+    /// </summary>
+    private void OnMinimizeClick(object? sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
+
+    private void OnMaximizeRestoreClick(object? sender, RoutedEventArgs e) =>
+        WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
+
+    /// <summary>Goes through the normal <see cref="Window.Close"/> path - <see cref="OnClosing"/> still decides whether that's a real exit or a hide-to-tray, same as the native close button always did.</summary>
+    private void OnCloseClick(object? sender, RoutedEventArgs e) => Close();
+
     private async void OnAddTorrentClick(object? sender, RoutedEventArgs e)
     {
         if (DataContext is not MainViewModel mainViewModel)
@@ -69,6 +87,63 @@ public partial class MainWindow : Window
         }
         var dialog = new PreferencesWindow(mainViewModel);
         await dialog.ShowDialog(this);
+    }
+
+    private async void OnSetCategoryClick(object? sender, RoutedEventArgs e)
+    {
+        if (DataContext is not MainViewModel mainViewModel || mainViewModel.SelectedTorrent is null)
+        {
+            return;
+        }
+        var dialog = new SetCategoryWindow(mainViewModel, mainViewModel.SelectedTorrent.InfoHash, mainViewModel.SelectedTorrent.Category);
+        await dialog.ShowDialog(this);
+    }
+
+    private async void OnAddTrackerClick(object? sender, RoutedEventArgs e)
+    {
+        if (DataContext is not MainViewModel mainViewModel)
+        {
+            return;
+        }
+        var url = NewTrackerBox.Text?.Trim();
+        if (string.IsNullOrEmpty(url))
+        {
+            return;
+        }
+        if (await mainViewModel.AddTrackerAsync(url))
+        {
+            NewTrackerBox.Text = string.Empty;
+        }
+    }
+
+    /// <summary>
+    /// Fires both for a real user pick and for the ComboBox re-syncing to
+    /// its bound <see cref="Models.FileEntry.Priority"/> whenever
+    /// <c>DetailFiles</c> is rebuilt (every detail-pane refresh) - only
+    /// calling the API when the selection actually differs from the row's
+    /// own current value tells the two apart without needing a separate
+    /// "is this a real user action" flag.
+    /// </summary>
+    private async void OnFilePriorityChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        if (DataContext is not MainViewModel mainViewModel)
+        {
+            return;
+        }
+        if (sender is not ComboBox { DataContext: Models.FileEntry entry, SelectedItem: string selected })
+        {
+            return;
+        }
+        if (selected == entry.Priority)
+        {
+            return;
+        }
+        var index = mainViewModel.DetailFiles.IndexOf(entry);
+        if (index < 0)
+        {
+            return;
+        }
+        await mainViewModel.SetFilePriorityAsync(index, selected);
     }
 
     /// <summary>

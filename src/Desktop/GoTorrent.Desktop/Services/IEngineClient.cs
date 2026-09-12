@@ -38,4 +38,13 @@ public interface IEngineClient
     Task<SessionLimits> GetSessionLimitsAsync(CancellationToken cancellationToken);
 
     Task<SessionLimits> SetSessionLimitsAsync(long? downLimitKB, long? upLimitKB, CancellationToken cancellationToken);
+
+    /// <summary>Changes one or more of a torrent's category/tags/queue position/force-start/sequential-mode settings - only the fields set on <paramref name="options"/> are touched.</summary>
+    Task<TorrentSummary> PatchTorrentAsync(string infoHash, PatchTorrentOptions options, CancellationToken cancellationToken);
+
+    /// <summary>Adds a tracker to a torrent's announce list at runtime.</summary>
+    Task AddTrackerAsync(string infoHash, string url, CancellationToken cancellationToken);
+
+    /// <summary>Changes one file's download priority - <paramref name="priority"/> is gottrentd's lowercase name ("skip"/"low"/"normal"/"high").</summary>
+    Task SetFilePriorityAsync(string infoHash, int fileIndex, string priority, CancellationToken cancellationToken);
 }

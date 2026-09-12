@@ -100,7 +100,7 @@ public sealed class WindowsDesktopNotifier : IDesktopNotifier
     {
         try
         {
-            using var stream = AssetLoader.Open(new Uri("avares://GoTorrent.Desktop/Assets/avalonia-logo.ico"));
+            using var stream = AssetLoader.Open(new Uri("avares://GoTorrent.Desktop/Assets/app-icon.ico"));
             return new IconHandle(new System.Drawing.Icon(stream));
         }
         catch (Exception ex) when (ex is IOException or FileNotFoundException or ArgumentException)
