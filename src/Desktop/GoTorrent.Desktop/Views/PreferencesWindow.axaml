@@ -21,6 +21,7 @@
         <TextBlock Text="General" FontWeight="Bold" Margin="0,14,0,0" />
         <CheckBox Name="StartMinimizedCheckBox" Content="Start minimized to tray" />
         <CheckBox Name="AutostartCheckBox" Content="Start with Windows" />
+        <CheckBox Name="FileAssociationCheckBox" Content="Open .torrent files and magnet links with GoTorrent" />
 
         <TextBlock Name="ErrorText" Foreground="Red" TextWrapping="Wrap" IsVisible="False" Margin="0,10,0,0" />
 

@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.IO;
 using System.Linq;
 using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -18,6 +19,7 @@ public partial class MainViewModel : ViewModelBase
     private readonly IEventStream _eventStream;
     private readonly TimeProvider _timeProvider;
     private readonly IAutostartService _autostartService;
+    private readonly IFileAssociationService _fileAssociationService;
     private IEngineClient? _client;
     private EngineOptions? _connectedOptions;
     private DispatcherTimer? _timer;
@@ -87,7 +89,10 @@ public partial class MainViewModel : ViewModelBase
     [ObservableProperty]
     public partial bool AutostartEnabled { get; set; }
 
-    public MainViewModel() : this(options => new EngineClient(options), new FileSettingsStore(), new WebSocketEventStream(), TimeProvider.System, new WindowsAutostartService())
+    [ObservableProperty]
+    public partial bool FileAssociationEnabled { get; set; }
+
+    public MainViewModel() : this(options => new EngineClient(options), new FileSettingsStore(), new WebSocketEventStream(), TimeProvider.System, new WindowsAutostartService(), new WindowsFileAssociationService())
     {
     }
 
@@ -98,7 +103,7 @@ public partial class MainViewModel : ViewModelBase
     /// in-memory settings store.
     /// </summary>
     public MainViewModel(Func<EngineOptions, IEngineClient> clientFactory, ISettingsStore settingsStore)
-        : this(clientFactory, settingsStore, new WebSocketEventStream(), TimeProvider.System, new WindowsAutostartService())
+        : this(clientFactory, settingsStore, new WebSocketEventStream(), TimeProvider.System, new WindowsAutostartService(), new WindowsFileAssociationService())
     {
     }
 
@@ -110,7 +115,7 @@ public partial class MainViewModel : ViewModelBase
     /// on real wall-clock time elapsing between two calls in a test.
     /// </summary>
     public MainViewModel(Func<EngineOptions, IEngineClient> clientFactory, ISettingsStore settingsStore, IEventStream eventStream, TimeProvider timeProvider)
-        : this(clientFactory, settingsStore, eventStream, timeProvider, new WindowsAutostartService())
+        : this(clientFactory, settingsStore, eventStream, timeProvider, new WindowsAutostartService(), new WindowsFileAssociationService())
     {
     }
 
@@ -120,16 +125,27 @@ public partial class MainViewModel : ViewModelBase
     /// never depends on (or mutates) the real Windows registry.
     /// </summary>
     public MainViewModel(Func<EngineOptions, IEngineClient> clientFactory, ISettingsStore settingsStore, IEventStream eventStream, TimeProvider timeProvider, IAutostartService autostartService)
+        : this(clientFactory, settingsStore, eventStream, timeProvider, autostartService, new WindowsFileAssociationService())
+    {
+    }
+
+    /// <summary>
+    /// <paramref name="fileAssociationService"/> - same seam again, for
+    /// the same reason as <paramref name="autostartService"/>.
+    /// </summary>
+    public MainViewModel(Func<EngineOptions, IEngineClient> clientFactory, ISettingsStore settingsStore, IEventStream eventStream, TimeProvider timeProvider, IAutostartService autostartService, IFileAssociationService fileAssociationService)
     {
         _clientFactory = clientFactory;
         _settingsStore = settingsStore;
         _eventStream = eventStream;
         _timeProvider = timeProvider;
         _autostartService = autostartService;
+        _fileAssociationService = fileAssociationService;
 
         var settings = _settingsStore.Load();
         StartMinimized = settings.StartMinimized;
         AutostartEnabled = _autostartService.IsEnabled();
+        FileAssociationEnabled = _fileAssociationService.IsRegistered();
         if (settings.IsConfigured)
         {
             BaseAddressInput = settings.BaseAddress!;
@@ -186,6 +202,50 @@ public partial class MainViewModel : ViewModelBase
     {
         _autostartService.SetEnabled(value);
         AutostartEnabled = value;
+    }
+
+    /// <summary>
+    /// Registers or unregisters this app as the handler for
+    /// <c>.torrent</c> files and <c>magnet:</c> links. Same
+    /// registry-is-the-source-of-truth reasoning as
+    /// <see cref="AutostartEnabled"/> - nothing persisted here either.
+    /// </summary>
+    public void SetFileAssociation(bool value)
+    {
+        _fileAssociationService.SetRegistered(value);
+        FileAssociationEnabled = value;
+    }
+
+    /// <summary>
+    /// Adds whatever the OS handed this process on the command line -
+    /// a <c>magnet:</c> URI (double-clicked a magnet link, once
+    /// <see cref="IFileAssociationService"/> is registered) or a
+    /// <c>.torrent</c> file path (double-clicked the file itself).
+    /// Called once, from <c>App.axaml.cs</c>, right after startup -
+    /// there is no retry if <see cref="_client"/> isn't connected yet,
+    /// since a fresh launch's auto-connect (see the constructor) has
+    /// already run by the time this is called.
+    /// </summary>
+    public async Task AddFromArgumentAsync(string argument)
+    {
+        if (_client is null)
+        {
+            AddTorrentError = $"Not connected to gottrentd - could not add \"{argument}\".";
+            return;
+        }
+        if (argument.StartsWith("magnet:", StringComparison.OrdinalIgnoreCase))
+        {
+            await AddMagnetAsync(argument, category: null, downloadDir: null);
+        }
+        else if (File.Exists(argument))
+        {
+            var bytes = await File.ReadAllBytesAsync(argument);
+            await AddTorrentFileAsync(bytes, Path.GetFileName(argument), category: null, downloadDir: null);
+        }
+        else
+        {
+            AddTorrentError = $"Don't know how to add \"{argument}\".";
+        }
     }
 
     public async Task RefreshAsync()

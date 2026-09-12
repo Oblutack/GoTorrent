@@ -71,6 +71,14 @@ public sealed class MainViewModelTests
         return (viewModel, autostart);
     }
 
+    private static (MainViewModel ViewModel, FakeEngineClient Client, FakeFileAssociationService FileAssociation) MakeViewModelWithFileAssociation(bool initiallyRegistered = false)
+    {
+        var client = new FakeEngineClient();
+        var fileAssociation = new FakeFileAssociationService { Registered = initiallyRegistered };
+        var viewModel = new MainViewModel(_ => client, new FakeSettingsStore(), new FakeEventStream(), TimeProvider.System, new FakeAutostartService(), fileAssociation);
+        return (viewModel, client, fileAssociation);
+    }
+
     [Fact]
     public void Connect_WithAValidAddress_Succeeds()
     {
@@ -540,6 +548,93 @@ public sealed class MainViewModelTests
 
         Assert.False(autostart.Enabled);
         Assert.False(viewModel.AutostartEnabled);
+    }
+
+    [Fact]
+    public void Constructor_ReadsFileAssociationStateFromTheService()
+    {
+        var (viewModel, _, _) = MakeViewModelWithFileAssociation(initiallyRegistered: true);
+
+        Assert.True(viewModel.FileAssociationEnabled);
+    }
+
+    [Fact]
+    public void SetFileAssociation_EnablesItThroughTheService()
+    {
+        var (viewModel, _, fileAssociation) = MakeViewModelWithFileAssociation(initiallyRegistered: false);
+
+        viewModel.SetFileAssociation(true);
+
+        Assert.True(fileAssociation.Registered);
+        Assert.True(viewModel.FileAssociationEnabled);
+    }
+
+    [Fact]
+    public void SetFileAssociation_DisablesItThroughTheService()
+    {
+        var (viewModel, _, fileAssociation) = MakeViewModelWithFileAssociation(initiallyRegistered: true);
+
+        viewModel.SetFileAssociation(false);
+
+        Assert.False(fileAssociation.Registered);
+        Assert.False(viewModel.FileAssociationEnabled);
+    }
+
+    [Fact]
+    public async Task AddFromArgumentAsync_WithAMagnetLink_AddsItAsAMagnet()
+    {
+        var (viewModel, client, _) = MakeViewModelWithFileAssociation();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+
+        await viewModel.AddFromArgumentAsync("magnet:?xt=urn:btih:abc");
+
+        Assert.Equal("magnet:?xt=urn:btih:abc", client.LastAddedMagnet);
+    }
+
+    [Fact]
+    public async Task AddFromArgumentAsync_WithATorrentFilePath_AddsItAsAFile()
+    {
+        var (viewModel, client, _) = MakeViewModelWithFileAssociation();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        var path = Path.Combine(Path.GetTempPath(), $"gotorrent-test-{Guid.NewGuid():N}.torrent");
+        await File.WriteAllBytesAsync(path, [1, 2, 3]);
+        try
+        {
+            await viewModel.AddFromArgumentAsync(path);
+
+            Assert.Equal(Path.GetFileName(path), client.LastAddedFileName);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public async Task AddFromArgumentAsync_WithNeitherAMagnetNorAnExistingFile_SetsAnError()
+    {
+        var (viewModel, _, _) = MakeViewModelWithFileAssociation();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+
+        await viewModel.AddFromArgumentAsync(@"C:\does\not\exist.torrent");
+
+        Assert.NotNull(viewModel.AddTorrentError);
+    }
+
+    [Fact]
+    public async Task AddFromArgumentAsync_WhenNotConnected_SetsAnError()
+    {
+        var (viewModel, _, _) = MakeViewModelWithFileAssociation();
+
+        await viewModel.AddFromArgumentAsync("magnet:?xt=urn:btih:abc");
+
+        Assert.NotNull(viewModel.AddTorrentError);
     }
 
     [Fact]

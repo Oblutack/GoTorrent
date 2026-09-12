@@ -35,6 +35,14 @@ public partial class App : Application
             mainViewModel.StartLiveEvents();
             mainViewModel.StartPeerRefresh();
 
+            // A .torrent file or magnet: link double-clicked with this app
+            // registered as the handler (Services/WindowsFileAssociationService)
+            // arrives here as the first command-line argument.
+            if (desktop.Args is [var argument, ..])
+            {
+                _ = mainViewModel.AddFromArgumentAsync(argument);
+            }
+
             // Avalonia's classic desktop lifetime shows desktop.MainWindow
             // itself once this method returns, regardless of whether Show()
             // was called here - so "start minimized" has to undo that show

@@ -27,6 +27,7 @@ public partial class PreferencesWindow : Window
         _mainViewModel = mainViewModel;
         StartMinimizedCheckBox.IsChecked = mainViewModel.StartMinimized;
         AutostartCheckBox.IsChecked = mainViewModel.AutostartEnabled;
+        FileAssociationCheckBox.IsChecked = mainViewModel.FileAssociationEnabled;
         Opened += async (_, _) => await LoadCurrentLimitsAsync();
     }
 
@@ -65,6 +66,7 @@ public partial class PreferencesWindow : Window
             await _mainViewModel.SetSessionLimitsAsync(down, up);
             _mainViewModel.SetStartMinimized(StartMinimizedCheckBox.IsChecked ?? false);
             _mainViewModel.SetAutostart(AutostartCheckBox.IsChecked ?? false);
+            _mainViewModel.SetFileAssociation(FileAssociationCheckBox.IsChecked ?? false);
             Close();
         }
         catch (Exception ex)
