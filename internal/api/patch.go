@@ -23,6 +23,9 @@ type PatchTorrentRequest struct {
 	UpLimitKB     *int64    `json:"upLimitKB,omitempty"`
 	QueuePosition *int      `json:"queuePosition,omitempty"`
 	ForceStart    *bool     `json:"forceStart,omitempty"`
+	// Sequential toggles rarest-first vs. sequential piece ordering at
+	// runtime for this one torrent — see engine.Engine.SetSequential.
+	Sequential *bool `json:"sequential,omitempty"`
 	// DownloadDir moves the torrent's content root via engine.MoveData -
 	// synchronous, and can take a while for a large torrent (it stops the
 	// torrent, renames the directory, and restarts it).
@@ -84,6 +87,12 @@ func PatchTorrentHandler(e *engine.Engine) http.HandlerFunc {
 		}
 		if req.ForceStart != nil {
 			if err := e.SetForceStart(hash, *req.ForceStart); err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+		}
+		if req.Sequential != nil {
+			if err := e.SetSequential(hash, *req.Sequential); err != nil {
 				writeError(w, http.StatusBadRequest, err.Error())
 				return
 			}

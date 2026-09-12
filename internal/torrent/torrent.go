@@ -818,6 +818,28 @@ func (t *Torrent) SetFilePriority(fileIndex int, priority picker.Priority) error
 	}
 }
 
+// SetSequential switches this torrent between rarest-first (the default)
+// and sequential piece ordering at runtime — previously only a whole-fleet
+// startup setting (gottrent's -sequential flag applies to every torrent an
+// Engine manages), this is the per-torrent runtime equivalent a control-API
+// client needs to turn streaming-style ordering on or off for just one
+// torrent without restarting the daemon. Not persisted across a restart —
+// same known-gap shape as file priorities and seed limits (see CLAUDE.md).
+func (t *Torrent) SetSequential(sequential bool) error {
+	resp := make(chan error, 1)
+	select {
+	case t.control <- controlMsg{kind: ctrlSetSequential, sequential: sequential, errReply: resp}:
+	case <-t.done:
+		return ErrClosed
+	}
+	select {
+	case err := <-resp:
+		return err
+	case <-t.done:
+		return ErrClosed
+	}
+}
+
 // AddTracker adds url to this torrent's tracker list at runtime (3.6), as
 // its own announce-list tier (BEP 12) — the announce loop picks it up on
 // its next iteration (or immediately, if the torrent is Paused and later

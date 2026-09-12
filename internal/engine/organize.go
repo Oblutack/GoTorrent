@@ -38,3 +38,26 @@ func (e *Engine) SetTags(hash metainfo.Hash, tags []string) error {
 	e.mu.Unlock()
 	return err
 }
+
+// AddTracker adds url to hash's tracker list at runtime — a thin fleet-level
+// wrapper around Torrent.AddTracker (3.6), for the control API (a control
+// API client has no other way to reach a specific managed *torrent.Torrent
+// directly).
+func (e *Engine) AddTracker(hash metainfo.Hash, url string) error {
+	tr, ok := e.Get(hash)
+	if !ok {
+		return fmt.Errorf("engine: %s is not managed by this engine", hash)
+	}
+	return tr.AddTracker(url)
+}
+
+// SetSequential switches hash between rarest-first and sequential piece
+// ordering at runtime — a thin fleet-level wrapper around
+// Torrent.SetSequential, same reasoning as AddTracker above.
+func (e *Engine) SetSequential(hash metainfo.Hash, sequential bool) error {
+	tr, ok := e.Get(hash)
+	if !ok {
+		return fmt.Errorf("engine: %s is not managed by this engine", hash)
+	}
+	return tr.SetSequential(sequential)
+}

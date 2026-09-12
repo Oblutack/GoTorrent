@@ -96,6 +96,9 @@ func (t *Torrent) handleControl(msg controlMsg) {
 	case ctrlReannounce:
 		msg.errReply <- t.doReannounce()
 
+	case ctrlSetSequential:
+		msg.errReply <- t.doSetSequential(msg.sequential)
+
 	case ctrlPeers:
 		msg.peersReply <- t.peersSnapshot()
 	}
@@ -245,6 +248,20 @@ func (t *Torrent) doSetFilePriority(fileIndex int, priority picker.Priority) err
 		t.setState(StateCheckingFiles)
 		t.setState(StateDownloading)
 	}
+	return nil
+}
+
+// doSetSequential switches this torrent's own piece-picking order at
+// runtime, independent of every other managed torrent's — Picker.SetStrategy
+// is a plain field write, safe here since the actor is the only goroutine
+// that ever touches t.pick. Already-active pieces are left alone; only
+// which piece nextPiece reaches for next changes.
+func (t *Torrent) doSetSequential(sequential bool) error {
+	strategy := picker.RarestFirst
+	if sequential {
+		strategy = picker.Sequential
+	}
+	t.pick.SetStrategy(strategy)
 	return nil
 }
 

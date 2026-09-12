@@ -338,6 +338,29 @@ func TestSequentialStrategy(t *testing.T) {
 	}
 }
 
+// TestSetStrategySwitchesAnAlreadyConstructedPicker proves SetStrategy is
+// a real runtime toggle, not just a construction-time option - the picker
+// here starts RarestFirst (the default) and is switched to Sequential
+// before ever picking, so if SetStrategy didn't actually take effect this
+// would fail the same way TestSequentialStrategy would.
+func TestSetStrategySwitchesAnAlreadyConstructedPicker(t *testing.T) {
+	p := newTestPicker(t, 5, func(c *Config) { c.MaxActivePieces = 1 })
+	seedAvailability(p, 5)
+	p.SetStrategy(Sequential)
+	now := time.Now()
+
+	for expected := 0; expected < 5; expected++ {
+		reqs := p.Pick(everything, 4, now)
+		if len(reqs) == 0 || reqs[0].Index != expected {
+			t.Fatalf("after SetStrategy(Sequential), picked %v, want piece %d", reqs, expected)
+		}
+		for _, r := range reqs {
+			p.Received(r.Index, r.Begin, r.Length)
+		}
+		p.MarkVerified(expected)
+	}
+}
+
 func TestPeerWithoutThePieceGetsNothing(t *testing.T) {
 	p := newTestPicker(t, 4, nil)
 	seedAvailability(p, 4)

@@ -32,6 +32,17 @@ func (s Strategy) String() string {
 	return "rarest-first"
 }
 
+// SetStrategy changes which order nextPiece walks undecided pieces in at
+// runtime — a plain field write, safe without its own lock for the same
+// reason every other Picker mutator is: the actor is the only goroutine
+// that ever touches a Picker (see internal/torrent's own package doc).
+// Pieces already active are unaffected; only which piece gets picked next
+// changes, the same "no eviction, just steer new work" shape
+// SetPriorities already uses.
+func (p *Picker) SetStrategy(s Strategy) {
+	p.cfg.Strategy = s
+}
+
 // blockState is where one block of an in-progress piece has got to.
 type blockState uint8
 

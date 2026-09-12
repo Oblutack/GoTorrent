@@ -102,6 +102,21 @@ func TestPatchTorrentHandlerSetsForceStartAndQueuePosition(t *testing.T) {
 	}
 }
 
+func TestPatchTorrentHandlerSetsSequential(t *testing.T) {
+	e := newTestEngine(t)
+	hash := addTestTorrent(t, e, "sequentialpatched")
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("PATCH /api/v1/torrents/{hash}", PatchTorrentHandler(e))
+
+	rec := patchRequest(t, mux, "/api/v1/torrents/"+hash.String(), PatchTorrentRequest{
+		Sequential: boolPtr(true),
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestPatchTorrentHandlerUnknownHashReturns404(t *testing.T) {
 	e := newTestEngine(t)
 	mux := http.NewServeMux()

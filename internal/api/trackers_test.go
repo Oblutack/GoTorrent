@@ -1,8 +1,10 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 )
@@ -49,6 +51,58 @@ func TestTrackersHandlerUnknownHashReturns404(t *testing.T) {
 
 	unmanaged := "0000000000000000000000000000000000000000"
 	rec := routedRequest(t, mux, http.MethodGet, "/api/v1/torrents/"+unmanaged+"/trackers")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}
+
+func TestAddTrackerHandlerAddsAndAnnounces(t *testing.T) {
+	e := newTestEngine(t)
+	hash := addTestTorrent(t, e, "addtrackerhandler")
+	tr, _ := e.Get(hash)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/v1/torrents/{hash}/trackers", AddTrackerHandler(e))
+
+	body, err := json.Marshal(AddTrackerRequest{URL: "http://127.0.0.1:2/announce"})
+	if err != nil {
+		t.Fatalf("marshal request body: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/torrents/"+hash.String()+"/trackers", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
+	}
+
+	if err := tr.Reannounce(); err != nil {
+		t.Fatalf("Reannounce: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, s := range tr.TrackerStatuses() {
+			if s.URL == "http://127.0.0.1:2/announce" {
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("added tracker never appeared in TrackerStatuses(): %v", tr.TrackerStatuses())
+}
+
+func TestAddTrackerHandlerUnknownHashReturns404(t *testing.T) {
+	e := newTestEngine(t)
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/v1/torrents/{hash}/trackers", AddTrackerHandler(e))
+
+	body, err := json.Marshal(AddTrackerRequest{URL: "http://example.com/announce"})
+	if err != nil {
+		t.Fatalf("marshal request body: %v", err)
+	}
+	unmanaged := "0000000000000000000000000000000000000000"
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/torrents/"+unmanaged+"/trackers", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", rec.Code)
 	}
