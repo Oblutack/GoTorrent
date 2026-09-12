@@ -20,6 +20,7 @@ public partial class MainViewModel : ViewModelBase
     private readonly TimeProvider _timeProvider;
     private readonly IAutostartService _autostartService;
     private readonly IFileAssociationService _fileAssociationService;
+    private readonly IDaemonLauncher _daemonLauncher;
     private IEngineClient? _client;
     private EngineOptions? _connectedOptions;
     private DispatcherTimer? _timer;
@@ -92,7 +93,10 @@ public partial class MainViewModel : ViewModelBase
     [ObservableProperty]
     public partial bool FileAssociationEnabled { get; set; }
 
-    public MainViewModel() : this(options => new EngineClient(options), new FileSettingsStore(), new WebSocketEventStream(), TimeProvider.System, new WindowsAutostartService(), new WindowsFileAssociationService())
+    [ObservableProperty]
+    public partial bool DaemonStarting { get; set; }
+
+    public MainViewModel() : this(options => new EngineClient(options), new FileSettingsStore(), new WebSocketEventStream(), TimeProvider.System, new WindowsAutostartService(), new WindowsFileAssociationService(), new DaemonLauncher())
     {
     }
 
@@ -103,7 +107,7 @@ public partial class MainViewModel : ViewModelBase
     /// in-memory settings store.
     /// </summary>
     public MainViewModel(Func<EngineOptions, IEngineClient> clientFactory, ISettingsStore settingsStore)
-        : this(clientFactory, settingsStore, new WebSocketEventStream(), TimeProvider.System, new WindowsAutostartService(), new WindowsFileAssociationService())
+        : this(clientFactory, settingsStore, new WebSocketEventStream(), TimeProvider.System, new WindowsAutostartService(), new WindowsFileAssociationService(), new DaemonLauncher())
     {
     }
 
@@ -115,7 +119,7 @@ public partial class MainViewModel : ViewModelBase
     /// on real wall-clock time elapsing between two calls in a test.
     /// </summary>
     public MainViewModel(Func<EngineOptions, IEngineClient> clientFactory, ISettingsStore settingsStore, IEventStream eventStream, TimeProvider timeProvider)
-        : this(clientFactory, settingsStore, eventStream, timeProvider, new WindowsAutostartService(), new WindowsFileAssociationService())
+        : this(clientFactory, settingsStore, eventStream, timeProvider, new WindowsAutostartService(), new WindowsFileAssociationService(), new DaemonLauncher())
     {
     }
 
@@ -125,7 +129,7 @@ public partial class MainViewModel : ViewModelBase
     /// never depends on (or mutates) the real Windows registry.
     /// </summary>
     public MainViewModel(Func<EngineOptions, IEngineClient> clientFactory, ISettingsStore settingsStore, IEventStream eventStream, TimeProvider timeProvider, IAutostartService autostartService)
-        : this(clientFactory, settingsStore, eventStream, timeProvider, autostartService, new WindowsFileAssociationService())
+        : this(clientFactory, settingsStore, eventStream, timeProvider, autostartService, new WindowsFileAssociationService(), new DaemonLauncher())
     {
     }
 
@@ -134,6 +138,15 @@ public partial class MainViewModel : ViewModelBase
     /// the same reason as <paramref name="autostartService"/>.
     /// </summary>
     public MainViewModel(Func<EngineOptions, IEngineClient> clientFactory, ISettingsStore settingsStore, IEventStream eventStream, TimeProvider timeProvider, IAutostartService autostartService, IFileAssociationService fileAssociationService)
+        : this(clientFactory, settingsStore, eventStream, timeProvider, autostartService, fileAssociationService, new DaemonLauncher())
+    {
+    }
+
+    /// <summary>
+    /// <paramref name="daemonLauncher"/> - same seam again: tests use a
+    /// fake so "spawn gottrentd" never starts a real process.
+    /// </summary>
+    public MainViewModel(Func<EngineOptions, IEngineClient> clientFactory, ISettingsStore settingsStore, IEventStream eventStream, TimeProvider timeProvider, IAutostartService autostartService, IFileAssociationService fileAssociationService, IDaemonLauncher daemonLauncher)
     {
         _clientFactory = clientFactory;
         _settingsStore = settingsStore;
@@ -141,6 +154,7 @@ public partial class MainViewModel : ViewModelBase
         _timeProvider = timeProvider;
         _autostartService = autostartService;
         _fileAssociationService = fileAssociationService;
+        _daemonLauncher = daemonLauncher;
 
         var settings = _settingsStore.Load();
         StartMinimized = settings.StartMinimized;
@@ -152,6 +166,15 @@ public partial class MainViewModel : ViewModelBase
             TryConnect(settings.BaseAddress!, settings.Token!, persist: false);
         }
     }
+
+    /// <summary>Whether a local gottrentd binary was found next to this app - gates the connect screen's "Start gottrentd" button.</summary>
+    public bool DaemonAvailable => _daemonLauncher.IsAvailable;
+
+    /// <summary>Whether this instance spawned the daemon currently running - gates the tray "Exit" flow's offer to stop it too.</summary>
+    public bool WeOwnRunningDaemon => _daemonLauncher.IsRunning;
+
+    /// <summary>Stops the daemon this instance spawned, if any. Used by <c>App.axaml.cs</c>'s tray "Exit" handler.</summary>
+    public void StopLocalDaemon() => _daemonLauncher.Stop();
 
     [RelayCommand]
     private void Connect() => TryConnect(BaseAddressInput, TokenInput, persist: true);
@@ -177,6 +200,72 @@ public partial class MainViewModel : ViewModelBase
         {
             ConnectionError = ex.Message;
             IsConnected = false;
+        }
+    }
+
+    /// <summary>
+    /// Daemon supervision's "attach if running, spawn if not": first tries
+    /// <see cref="BaseAddressInput"/> with whatever token
+    /// <see cref="IDaemonLauncher.TryReadExistingToken"/> finds (a real API
+    /// call, not just constructing a client - see <see cref="TryReachAsync"/>,
+    /// since <see cref="TryConnect"/> itself never makes one), and only
+    /// spawns a fresh gottrentd if that fails or no token file exists yet.
+    /// </summary>
+    [RelayCommand]
+    private async Task StartLocalDaemonAsync()
+    {
+        if (DaemonStarting)
+        {
+            return;
+        }
+        DaemonStarting = true;
+        ConnectionError = null;
+        try
+        {
+            Uri baseUri;
+            try
+            {
+                baseUri = new Uri(BaseAddressInput);
+            }
+            catch (Exception ex)
+            {
+                ConnectionError = ex.Message;
+                return;
+            }
+
+            var existingToken = _daemonLauncher.TryReadExistingToken();
+            if (existingToken is not null && await TryReachAsync(baseUri, existingToken))
+            {
+                TryConnect(BaseAddressInput, existingToken, persist: true);
+                return;
+            }
+
+            var token = await _daemonLauncher.StartAsync(baseUri.Authority, CancellationToken.None);
+            if (token is null)
+            {
+                ConnectionError = "Could not start gottrentd - it may already be running on a different address, or the executable could not be found next to this app.";
+                return;
+            }
+            TryConnect(BaseAddressInput, token, persist: true);
+        }
+        finally
+        {
+            DaemonStarting = false;
+        }
+    }
+
+    /// <summary>A real API call, not just constructing a client - proves gottrentd is actually reachable at <paramref name="baseAddress"/>, not just that a token file happens to exist.</summary>
+    private async Task<bool> TryReachAsync(Uri baseAddress, string token)
+    {
+        try
+        {
+            var probe = _clientFactory(new EngineOptions(baseAddress, token));
+            await probe.GetSessionAsync(CancellationToken.None);
+            return true;
+        }
+        catch
+        {
+            return false;
         }
     }
 

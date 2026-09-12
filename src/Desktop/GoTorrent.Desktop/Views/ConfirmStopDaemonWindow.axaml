@@ -1,0 +1,21 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d" d:DesignWidth="360" d:DesignHeight="140"
+        x:Class="GoTorrent.Desktop.Views.ConfirmStopDaemonWindow"
+        Width="360" SizeToContent="Height" CanResize="False"
+        WindowStartupLocation="CenterScreen"
+        Topmost="True"
+        Title="Exit GoTorrent">
+
+    <StackPanel Margin="16" Spacing="10">
+        <TextBlock Text="GoTorrent started gottrentd automatically. Stop it too, or leave it running in the background so your torrents keep transferring?"
+                    TextWrapping="Wrap" />
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8" Margin="0,6,0,0">
+            <Button Content="Leave Running" Click="OnLeaveRunningClick" IsDefault="True" />
+            <Button Content="Stop gottrentd" Click="OnStopClick" />
+        </StackPanel>
+    </StackPanel>
+
+</Window>

@@ -23,7 +23,12 @@
             <TextBlock Text="Connect to gottrentd" FontWeight="Bold" />
             <TextBox PlaceholderText="Base address, e.g. http://127.0.0.1:6880/" Text="{Binding BaseAddressInput}" />
             <TextBox PlaceholderText="Bearer token" Text="{Binding TokenInput}" />
-            <Button Content="Connect" Command="{Binding ConnectCommand}" HorizontalAlignment="Left" />
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <Button Content="Connect" Command="{Binding ConnectCommand}" />
+                <Button Content="Start gottrentd" Command="{Binding StartLocalDaemonCommand}"
+                        IsVisible="{Binding DaemonAvailable}" IsEnabled="{Binding !DaemonStarting}" />
+                <TextBlock Text="Starting gottrentd..." VerticalAlignment="Center" Foreground="Gray" IsVisible="{Binding DaemonStarting}" />
+            </StackPanel>
             <TextBlock Text="{Binding ConnectionError}" Foreground="Red" IsVisible="{Binding ConnectionError, Converter={x:Static conv:ObjectConverters.IsNotNull}}" />
         </StackPanel>
 

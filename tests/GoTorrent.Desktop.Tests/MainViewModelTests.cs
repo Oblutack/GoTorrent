@@ -79,6 +79,14 @@ public sealed class MainViewModelTests
         return (viewModel, client, fileAssociation);
     }
 
+    private static (MainViewModel ViewModel, FakeEngineClient Client, FakeDaemonLauncher Daemon) MakeViewModelWithDaemonLauncher()
+    {
+        var client = new FakeEngineClient();
+        var daemon = new FakeDaemonLauncher();
+        var viewModel = new MainViewModel(_ => client, new FakeSettingsStore(), new FakeEventStream(), TimeProvider.System, new FakeAutostartService(), new FakeFileAssociationService(), daemon);
+        return (viewModel, client, daemon);
+    }
+
     [Fact]
     public void Connect_WithAValidAddress_Succeeds()
     {
@@ -688,5 +696,97 @@ public sealed class MainViewModelTests
         viewModel.ConnectCommand.Execute(null);
 
         Assert.True(settings.Load().StartMinimized);
+    }
+
+    [Fact]
+    public void Constructor_ReadsDaemonAvailabilityFromTheLauncher()
+    {
+        var (viewModel, _, daemon) = MakeViewModelWithDaemonLauncher();
+        daemon.IsAvailable = true;
+
+        Assert.True(viewModel.DaemonAvailable);
+    }
+
+    [Fact]
+    public async Task StartLocalDaemonCommand_WithNoExistingToken_SpawnsAndConnectsUsingTheReturnedToken()
+    {
+        var (viewModel, _, daemon) = MakeViewModelWithDaemonLauncher();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        daemon.ExistingToken = null;
+        daemon.TokenToReturnOnStart = "spawned-token";
+
+        await viewModel.StartLocalDaemonCommand.ExecuteAsync(null);
+
+        Assert.Equal(1, daemon.StartCallCount);
+        Assert.Equal("127.0.0.1:6880", daemon.LastStartApiAddress);
+        Assert.True(viewModel.IsConnected);
+        Assert.True(daemon.IsRunning);
+        Assert.Null(viewModel.ConnectionError);
+    }
+
+    [Fact]
+    public async Task StartLocalDaemonCommand_WithAReachableExistingToken_AttachesWithoutSpawning()
+    {
+        var (viewModel, client, daemon) = MakeViewModelWithDaemonLauncher();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        daemon.ExistingToken = "already-running-token";
+        client.Failure = null;
+
+        await viewModel.StartLocalDaemonCommand.ExecuteAsync(null);
+
+        Assert.Equal(0, daemon.StartCallCount);
+        Assert.True(viewModel.IsConnected);
+    }
+
+    [Fact]
+    public async Task StartLocalDaemonCommand_WithAnUnreachableExistingToken_FallsBackToSpawning()
+    {
+        var (viewModel, client, daemon) = MakeViewModelWithDaemonLauncher();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        daemon.ExistingToken = "stale-token";
+        daemon.TokenToReturnOnStart = "spawned-token";
+        client.Failure = new InvalidOperationException("connection refused");
+
+        await viewModel.StartLocalDaemonCommand.ExecuteAsync(null);
+
+        Assert.Equal(1, daemon.StartCallCount);
+        Assert.True(viewModel.IsConnected);
+    }
+
+    [Fact]
+    public async Task StartLocalDaemonCommand_WhenSpawnFails_SetsAConnectionErrorAndStaysDisconnected()
+    {
+        var (viewModel, _, daemon) = MakeViewModelWithDaemonLauncher();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        daemon.ExistingToken = null;
+        daemon.TokenToReturnOnStart = null;
+
+        await viewModel.StartLocalDaemonCommand.ExecuteAsync(null);
+
+        Assert.False(viewModel.IsConnected);
+        Assert.NotNull(viewModel.ConnectionError);
+    }
+
+    [Fact]
+    public void WeOwnRunningDaemon_ReflectsTheLaunchersIsRunning()
+    {
+        var (viewModel, _, daemon) = MakeViewModelWithDaemonLauncher();
+
+        Assert.False(viewModel.WeOwnRunningDaemon);
+
+        daemon.TokenToReturnOnStart = "a-token";
+        _ = daemon.StartAsync("127.0.0.1:6880", CancellationToken.None);
+
+        Assert.True(viewModel.WeOwnRunningDaemon);
+    }
+
+    [Fact]
+    public void StopLocalDaemon_CallsThroughToTheLauncher()
+    {
+        var (viewModel, _, daemon) = MakeViewModelWithDaemonLauncher();
+
+        viewModel.StopLocalDaemon();
+
+        Assert.Equal(1, daemon.StopCallCount);
     }
 }

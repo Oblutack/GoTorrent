@@ -70,15 +70,42 @@ public partial class App : Application
         }
     }
 
-    private void OnTrayExitClicked(object? sender, EventArgs e)
+    private async void OnTrayExitClicked(object? sender, EventArgs e)
     {
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
+            // Daemon supervision's "offer to keep it running on exit" -
+            // only asked when this instance actually spawned gottrentd
+            // itself, never for one it just attached to.
+            if (desktop.MainWindow is MainWindow { DataContext: MainViewModel { WeOwnRunningDaemon: true } mainViewModel })
+            {
+                await ConfirmStopDaemonAsync(mainViewModel);
+            }
+
             if (desktop.MainWindow is MainWindow mainWindow)
             {
                 mainWindow.AllowRealClose();
             }
             desktop.Shutdown();
+        }
+    }
+
+    /// <summary>
+    /// Shown via <see cref="Window.Show()"/>, not <c>ShowDialog</c> - the
+    /// main window may be hidden (minimized to tray) right now, and this
+    /// prompt must not depend on it being visible.
+    /// </summary>
+    private static async Task ConfirmStopDaemonAsync(MainViewModel mainViewModel)
+    {
+        var dialog = new ConfirmStopDaemonWindow();
+        var closed = new TaskCompletionSource();
+        dialog.Closed += (_, _) => closed.TrySetResult();
+        dialog.Show();
+        dialog.Activate();
+        await closed.Task;
+        if (dialog.ShouldStopDaemon)
+        {
+            mainViewModel.StopLocalDaemon();
         }
     }
 }
