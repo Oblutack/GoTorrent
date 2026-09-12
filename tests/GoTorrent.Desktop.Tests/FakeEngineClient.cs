@@ -17,6 +17,7 @@ public sealed class FakeEngineClient : IEngineClient
     public List<(string InfoHash, bool DeleteData)> DeletedHashes { get; } = [];
     public string? LastAddedMagnet { get; private set; }
     public string? LastAddedFileName { get; private set; }
+    public string? LastAddedUrl { get; private set; }
 
     public TorrentDetail? Detail { get; set; }
     public List<FileEntry> Files { get; set; } = [];
@@ -59,6 +60,16 @@ public sealed class FakeEngineClient : IEngineClient
         return Task.FromResult("0102030405060708090a0b0c0d0e0f1011121314");
     }
 
+    public Task<string> AddUrlAsync(string url, string? category, string? downloadDir, CancellationToken cancellationToken)
+    {
+        if (Failure is not null)
+        {
+            return Task.FromException<string>(Failure);
+        }
+        LastAddedUrl = url;
+        return Task.FromResult("0102030405060708090a0b0c0d0e0f1011121314");
+    }
+
     public Task<string> AddTorrentFileAsync(byte[] fileBytes, string fileName, string? category, string? downloadDir, CancellationToken cancellationToken)
     {
         if (Failure is not null)
@@ -86,6 +97,29 @@ public sealed class FakeEngineClient : IEngineClient
             return Task.FromException(Failure);
         }
         ResumedHashes.Add(infoHash);
+        return Task.CompletedTask;
+    }
+
+    public List<string> VerifiedHashes { get; } = [];
+    public List<string> ReannouncedHashes { get; } = [];
+
+    public Task VerifyAsync(string infoHash, CancellationToken cancellationToken)
+    {
+        if (Failure is not null)
+        {
+            return Task.FromException(Failure);
+        }
+        VerifiedHashes.Add(infoHash);
+        return Task.CompletedTask;
+    }
+
+    public Task ReannounceAsync(string infoHash, CancellationToken cancellationToken)
+    {
+        if (Failure is not null)
+        {
+            return Task.FromException(Failure);
+        }
+        ReannouncedHashes.Add(infoHash);
         return Task.CompletedTask;
     }
 
@@ -151,8 +185,12 @@ public sealed class FakeEngineClient : IEngineClient
 
     public List<(string InfoHash, string Url)> AddedTrackers { get; } = [];
 
+    /// <summary>Every <see cref="PatchTorrentAsync"/> call's (hash, options) pair, in order - the only way a test can see a field with no corresponding <see cref="TorrentSummary"/> property to merge into (e.g. <see cref="PatchTorrentOptions.DownLimitKB"/>, which gottrentd never reports back either).</summary>
+    public List<(string InfoHash, PatchTorrentOptions Options)> PatchRequests { get; } = [];
+
     public Task<TorrentSummary> PatchTorrentAsync(string infoHash, PatchTorrentOptions options, CancellationToken cancellationToken)
     {
+        PatchRequests.Add((infoHash, options));
         if (Failure is not null)
         {
             return Task.FromException<TorrentSummary>(Failure);

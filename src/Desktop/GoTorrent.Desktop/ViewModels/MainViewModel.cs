@@ -549,9 +549,28 @@ public partial class MainViewModel : ViewModelBase, IDisposable
             .OrderBy(c => c, StringComparer.OrdinalIgnoreCase)
             .Select(c => SidebarFilter.Category(c!));
 
+        var tags = Torrents
+            .SelectMany(t => t.Tags ?? [])
+            .Where(t => !string.IsNullOrWhiteSpace(t))
+            .Distinct()
+            .OrderBy(t => t, StringComparer.OrdinalIgnoreCase)
+            .Select(SidebarFilter.Tag);
+
         var filters = new List<SidebarFilter> { AllFilter, DownloadingFilter, SeedingFilter, PausedFilter, ErrorFilter };
         filters.AddRange(categories);
+        filters.AddRange(tags);
         SyncCollection(SidebarFilters, filters);
+
+        // Every entry's Count is recomputed against the just-reconciled
+        // live SidebarFilters (not the possibly-discarded freshly-built
+        // filters list above - SyncCollection may have kept the *existing*
+        // instance for an unchanged category/tag rather than this one, see
+        // SyncCollection's own doc comment), so a mutation here always
+        // lands on the object actually bound in the sidebar.
+        foreach (var filter in SidebarFilters)
+        {
+            filter.Count = Torrents.Count(t => filter.Matches(t.State, t.Category, t.Tags));
+        }
 
         // Avalonia's TextBox/ListBox can still hand back a genuine null
         // through the same two-way-binding-writes-null-during-a-transient-
@@ -570,7 +589,7 @@ public partial class MainViewModel : ViewModelBase, IDisposable
         SelectedFilter = selectedFilter;
 
         var search = (SearchText ?? string.Empty).Trim();
-        var filtered = Torrents.Where(t => selectedFilter.Matches(t.State, t.Category));
+        var filtered = Torrents.Where(t => selectedFilter.Matches(t.State, t.Category, t.Tags));
         if (search.Length > 0)
         {
             filtered = filtered.Where(t => t.Name.Contains(search, StringComparison.OrdinalIgnoreCase));
@@ -698,7 +717,7 @@ public partial class MainViewModel : ViewModelBase, IDisposable
                 downKBps = Math.Max(0, (peer.Downloaded - previous.Downloaded) / elapsedSeconds / 1024.0);
                 upKBps = Math.Max(0, (peer.Uploaded - previous.Uploaded) / elapsedSeconds / 1024.0);
             }
-            rows.Add(new PeerRow(peer.Addr, peer.Outbound, downKBps, upKBps, peer.Progress, peer.AmChoking, peer.PeerChoking));
+            rows.Add(new PeerRow(peer.Addr, peer.Outbound, downKBps, upKBps, peer.Progress, peer.AmChoking, peer.PeerChoking, peer.AmInterested, peer.PeerInterested));
             newTotals[peer.Addr] = (peer.Downloaded, peer.Uploaded);
         }
 
@@ -873,6 +892,12 @@ public partial class MainViewModel : ViewModelBase, IDisposable
     private Task DeleteSelectedWithDataAsync() => RunTorrentActionAsync(client => client.DeleteAsync(SelectedTorrent!.InfoHash, deleteData: true, CancellationToken.None));
 
     [RelayCommand]
+    private Task VerifySelectedAsync() => RunTorrentActionAsync(client => client.VerifyAsync(SelectedTorrent!.InfoHash, CancellationToken.None));
+
+    [RelayCommand]
+    private Task ReannounceSelectedAsync() => RunTorrentActionAsync(client => client.ReannounceAsync(SelectedTorrent!.InfoHash, CancellationToken.None));
+
+    [RelayCommand]
     private Task ToggleForceStartAsync() => RunTorrentActionAsync(client =>
         client.PatchTorrentAsync(SelectedTorrent!.InfoHash, new PatchTorrentOptions(ForceStart: !SelectedTorrent!.ForceStart), CancellationToken.None));
 
@@ -913,6 +938,84 @@ public partial class MainViewModel : ViewModelBase, IDisposable
         try
         {
             await _client.PatchTorrentAsync(infoHash, new PatchTorrentOptions(Category: category), CancellationToken.None);
+            await RefreshAsync();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            ConnectionError = ex.Message;
+            return false;
+        }
+    }
+
+    /// <summary>Replaces a torrent's tag set entirely (not a merge - the Go side's own <c>SetTags</c> works the same way). Used by the "Set Tags..." context menu prompt's code-behind.</summary>
+    public async Task<bool> SetTagsAsync(string infoHash, IReadOnlyList<string> tags)
+    {
+        if (_client is null)
+        {
+            return false;
+        }
+        try
+        {
+            await _client.PatchTorrentAsync(infoHash, new PatchTorrentOptions(Tags: tags), CancellationToken.None);
+            await RefreshAsync();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            ConnectionError = ex.Message;
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Sets one torrent's own down/up rate limit, in KiB/s (0 = unlimited).
+    /// Used by the "Set Speed Limits..." context menu prompt's code-behind.
+    /// There's nothing to pre-fill the dialog with - gottrentd's
+    /// <c>TorrentSummary</c>/<c>TorrentDetail</c> never report a torrent's
+    /// current per-torrent limit back (same write-only shape as
+    /// <see cref="EnableSequentialAsync"/>/<see cref="DisableSequentialAsync"/>
+    /// - there is no GET route for it either).
+    /// </summary>
+    public async Task<bool> SetSpeedLimitsAsync(string infoHash, long downLimitKB, long upLimitKB)
+    {
+        if (_client is null)
+        {
+            return false;
+        }
+        try
+        {
+            await _client.PatchTorrentAsync(infoHash, new PatchTorrentOptions(DownLimitKB: downLimitKB, UpLimitKB: upLimitKB), CancellationToken.None);
+            await RefreshAsync();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            ConnectionError = ex.Message;
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Moves a torrent's downloaded content to a new directory
+    /// (<c>engine.MoveData</c> on the Go side: stops the torrent, renames
+    /// the content root, restarts under the new directory, resumes from
+    /// existing resume data with no re-download or re-verify). Used by the
+    /// "Set Location..." context menu prompt's code-behind. Unlike the
+    /// speed-limit dialog above, this one genuinely can pre-fill - the
+    /// current save path is already sitting in
+    /// <see cref="DetailTorrent"/>.<c>DownloadDir</c> for whatever torrent
+    /// is selected.
+    /// </summary>
+    public async Task<bool> SetLocationAsync(string infoHash, string downloadDir)
+    {
+        if (_client is null)
+        {
+            return false;
+        }
+        try
+        {
+            await _client.PatchTorrentAsync(infoHash, new PatchTorrentOptions(DownloadDir: downloadDir), CancellationToken.None);
             await RefreshAsync();
             return true;
         }
@@ -995,6 +1098,27 @@ public partial class MainViewModel : ViewModelBase, IDisposable
         try
         {
             await _client.AddMagnetAsync(magnet, category, downloadDir, CancellationToken.None);
+            AddTorrentError = null;
+            await RefreshAsync();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            AddTorrentError = ex.Message;
+            return false;
+        }
+    }
+
+    /// <summary>Adds a torrent by having gottrentd itself fetch it from an http/https URL - the same code-behind reasoning as <see cref="AddMagnetAsync"/>.</summary>
+    public async Task<bool> AddUrlAsync(string url, string? category, string? downloadDir)
+    {
+        if (_client is null)
+        {
+            return false;
+        }
+        try
+        {
+            await _client.AddUrlAsync(url, category, downloadDir, CancellationToken.None);
             AddTorrentError = null;
             await RefreshAsync();
             return true;

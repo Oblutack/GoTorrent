@@ -53,6 +53,13 @@ public sealed class EngineClient : IEngineClient, IDisposable
         return await ReadInfoHashOrThrowAsync(response, cancellationToken);
     }
 
+    public async Task<string> AddUrlAsync(string url, string? category, string? downloadDir, CancellationToken cancellationToken)
+    {
+        var body = new AddRequest { Url = url, Category = category, DownloadDir = downloadDir };
+        using var response = await _http.PostAsJsonAsync("api/v1/torrents", body, JsonOptions, cancellationToken);
+        return await ReadInfoHashOrThrowAsync(response, cancellationToken);
+    }
+
     public async Task<string> AddTorrentFileAsync(byte[] fileBytes, string fileName, string? category, string? downloadDir, CancellationToken cancellationToken)
     {
         using var content = new MultipartFormDataContent
@@ -77,6 +84,12 @@ public sealed class EngineClient : IEngineClient, IDisposable
 
     public Task ResumeAsync(string infoHash, CancellationToken cancellationToken) =>
         TorrentActionAsync(infoHash, "resume", cancellationToken);
+
+    public Task VerifyAsync(string infoHash, CancellationToken cancellationToken) =>
+        TorrentActionAsync(infoHash, "verify", cancellationToken);
+
+    public Task ReannounceAsync(string infoHash, CancellationToken cancellationToken) =>
+        TorrentActionAsync(infoHash, "reannounce", cancellationToken);
 
     public async Task DeleteAsync(string infoHash, bool deleteData, CancellationToken cancellationToken)
     {
@@ -149,6 +162,9 @@ public sealed class EngineClient : IEngineClient, IDisposable
             QueuePosition = options.QueuePosition,
             ForceStart = options.ForceStart,
             Sequential = options.Sequential,
+            DownLimitKB = options.DownLimitKB,
+            UpLimitKB = options.UpLimitKB,
+            DownloadDir = options.DownloadDir,
         };
         var request = new HttpRequestMessage(HttpMethod.Patch, $"api/v1/torrents/{infoHash}") { Content = JsonContent.Create(body, options: JsonOptions) };
         using var response = await _http.SendAsync(request, cancellationToken);
@@ -201,6 +217,7 @@ public sealed class EngineClient : IEngineClient, IDisposable
     private sealed class AddRequest
     {
         public string? Magnet { get; set; }
+        public string? Url { get; set; }
         public string? Category { get; set; }
         public string? DownloadDir { get; set; }
     }
@@ -222,6 +239,9 @@ public sealed class EngineClient : IEngineClient, IDisposable
         public int? QueuePosition { get; set; }
         public bool? ForceStart { get; set; }
         public bool? Sequential { get; set; }
+        public long? DownLimitKB { get; set; }
+        public long? UpLimitKB { get; set; }
+        public string? DownloadDir { get; set; }
     }
 
     private sealed class AddTrackerRequest

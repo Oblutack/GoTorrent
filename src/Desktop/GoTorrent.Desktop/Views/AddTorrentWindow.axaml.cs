@@ -58,6 +58,7 @@ public partial class AddTorrentWindow : Window
     private async void OnAddClick(object? sender, RoutedEventArgs e)
     {
         var magnet = MagnetBox.Text?.Trim();
+        var url = UrlBox.Text?.Trim();
         var category = string.IsNullOrWhiteSpace(CategoryBox.Text) ? null : CategoryBox.Text!.Trim();
         var downloadDir = string.IsNullOrWhiteSpace(DownloadDirBox.Text) ? null : DownloadDirBox.Text!.Trim();
 
@@ -74,9 +75,13 @@ public partial class AddTorrentWindow : Window
                 var bytes = await File.ReadAllBytesAsync(_selectedFilePath);
                 ok = await _mainViewModel.AddTorrentFileAsync(bytes, Path.GetFileName(_selectedFilePath), category, downloadDir);
             }
+            else if (!string.IsNullOrWhiteSpace(url))
+            {
+                ok = await _mainViewModel.AddUrlAsync(url, category, downloadDir);
+            }
             else
             {
-                ShowError("Enter a magnet link or choose a .torrent file.");
+                ShowError("Enter a magnet link, a .torrent URL, or choose a .torrent file.");
                 return;
             }
 
