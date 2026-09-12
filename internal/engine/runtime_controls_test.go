@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/Oblutack/GoTorrent/internal/metainfo"
+	"github.com/Oblutack/GoTorrent/internal/picker"
 )
 
 // TestAddTrackerReachesTheManagedTorrent proves the fleet-level wrapper
@@ -79,5 +80,39 @@ func TestSetSequentialRejectsUnknownHash(t *testing.T) {
 	var bogus metainfo.Hash
 	if err := e.SetSequential(bogus, true); err == nil {
 		t.Fatal("SetSequential on an unmanaged hash: want an error")
+	}
+}
+
+// TestSetFilePriorityReachesTheManagedTorrent proves the fleet-level
+// wrapper delegates for real, same reasoning as TestSetSequentialReachesTheManagedTorrent -
+// the priority/picker mechanics themselves are already proven at
+// internal/torrent's own level.
+func TestSetFilePriorityReachesTheManagedTorrent(t *testing.T) {
+	e := newTestEngine(t)
+	torrentDir := t.TempDir()
+	path, hash := writeTorrentFile(t, torrentDir, "set-file-priority")
+	if _, err := e.Add(path, ""); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	if err := e.SetFilePriority(hash, 0, picker.PriorityHigh); err != nil {
+		t.Fatalf("SetFilePriority: %v", err)
+	}
+
+	tr, ok := e.Get(hash)
+	if !ok {
+		t.Fatal("torrent missing right after Add")
+	}
+	got := tr.Stats().FilePriorities
+	if len(got) != 1 || got[0] != picker.PriorityHigh {
+		t.Fatalf("FilePriorities = %v, want [high]", got)
+	}
+}
+
+func TestSetFilePriorityRejectsUnknownHash(t *testing.T) {
+	e := newTestEngine(t)
+	var bogus metainfo.Hash
+	if err := e.SetFilePriority(bogus, 0, picker.PriorityHigh); err == nil {
+		t.Fatal("SetFilePriority on an unmanaged hash: want an error")
 	}
 }

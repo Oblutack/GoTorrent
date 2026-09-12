@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/Oblutack/GoTorrent/internal/metainfo"
+	"github.com/Oblutack/GoTorrent/internal/picker"
 )
 
 // SetCategory changes hash's category after the fact. It only updates the
@@ -60,4 +61,15 @@ func (e *Engine) SetSequential(hash metainfo.Hash, sequential bool) error {
 		return fmt.Errorf("engine: %s is not managed by this engine", hash)
 	}
 	return tr.SetSequential(sequential)
+}
+
+// SetFilePriority changes one file's download priority at runtime — a thin
+// fleet-level wrapper around Torrent.SetFilePriority (3.2), same reasoning
+// as AddTracker/SetSequential above.
+func (e *Engine) SetFilePriority(hash metainfo.Hash, fileIndex int, priority picker.Priority) error {
+	tr, ok := e.Get(hash)
+	if !ok {
+		return fmt.Errorf("engine: %s is not managed by this engine", hash)
+	}
+	return tr.SetFilePriority(fileIndex, priority)
 }
