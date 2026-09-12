@@ -16,7 +16,7 @@
         Background="{DynamicResource GtBackground}"
         MinWidth="640" MinHeight="420"
         ExtendClientAreaToDecorationsHint="True"
-        WindowDecorations="None"
+        WindowDecorations="BorderOnly"
         ExtendClientAreaTitleBarHeightHint="-1"
         DragDrop.AllowDrop="True">
 
