@@ -80,6 +80,9 @@ public partial class MainViewModel : ViewModelBase
     [ObservableProperty]
     public partial double LatestUploadRateKBps { get; set; }
 
+    [ObservableProperty]
+    public partial bool StartMinimized { get; set; }
+
     public MainViewModel() : this(options => new EngineClient(options), new FileSettingsStore(), new WebSocketEventStream(), TimeProvider.System)
     {
     }
@@ -110,6 +113,7 @@ public partial class MainViewModel : ViewModelBase
         _timeProvider = timeProvider;
 
         var settings = _settingsStore.Load();
+        StartMinimized = settings.StartMinimized;
         if (settings.IsConfigured)
         {
             BaseAddressInput = settings.BaseAddress!;
@@ -131,7 +135,10 @@ public partial class MainViewModel : ViewModelBase
             ConnectionError = null;
             if (persist)
             {
-                _settingsStore.Save(new DesktopSettings(baseAddress, token));
+                // `with` rather than a fresh DesktopSettings - this must not
+                // clobber StartMinimized (or any other future preference)
+                // back to its default every time the user hits Connect.
+                _settingsStore.Save(_settingsStore.Load() with { BaseAddress = baseAddress, Token = token });
             }
         }
         catch (Exception ex)
@@ -139,6 +146,17 @@ public partial class MainViewModel : ViewModelBase
             ConnectionError = ex.Message;
             IsConnected = false;
         }
+    }
+
+    /// <summary>
+    /// Persists the "start minimized to tray" preference. Used by the
+    /// preferences dialog's code-behind, same reasoning as
+    /// <see cref="GetSessionLimitsAsync"/>/<see cref="SetSessionLimitsAsync"/>.
+    /// </summary>
+    public void SetStartMinimized(bool value)
+    {
+        StartMinimized = value;
+        _settingsStore.Save(_settingsStore.Load() with { StartMinimized = value });
     }
 
     public async Task RefreshAsync()

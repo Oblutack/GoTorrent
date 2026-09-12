@@ -517,4 +517,44 @@ public sealed class MainViewModelTests
         Assert.True(viewModel.IsConnected);
         Assert.Equal("http://127.0.0.1:6880/", viewModel.BaseAddressInput);
     }
+
+    [Fact]
+    public void Constructor_WithSavedSettings_LoadsStartMinimized()
+    {
+        var settings = new FakeSettingsStore();
+        settings.Save(new DesktopSettings("http://127.0.0.1:6880/", "saved-token", StartMinimized: true));
+
+        var viewModel = new MainViewModel(_ => new FakeEngineClient(), settings);
+
+        Assert.True(viewModel.StartMinimized);
+    }
+
+    [Fact]
+    public void SetStartMinimized_PersistsWithoutTouchingSavedConnectionSettings()
+    {
+        var (viewModel, _, settings) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+
+        viewModel.SetStartMinimized(true);
+
+        var saved = settings.Load();
+        Assert.True(saved.StartMinimized);
+        Assert.Equal("http://127.0.0.1:6880/", saved.BaseAddress);
+        Assert.Equal("a-token", saved.Token);
+    }
+
+    [Fact]
+    public void Connect_DoesNotResetAPreviouslySavedStartMinimized()
+    {
+        var (viewModel, _, settings) = MakeViewModel();
+        settings.Save(new DesktopSettings(null, null, StartMinimized: true));
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+
+        viewModel.ConnectCommand.Execute(null);
+
+        Assert.True(settings.Load().StartMinimized);
+    }
 }

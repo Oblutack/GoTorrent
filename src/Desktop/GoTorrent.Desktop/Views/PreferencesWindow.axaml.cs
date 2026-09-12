@@ -25,6 +25,7 @@ public partial class PreferencesWindow : Window
     {
         InitializeComponent();
         _mainViewModel = mainViewModel;
+        StartMinimizedCheckBox.IsChecked = mainViewModel.StartMinimized;
         Opened += async (_, _) => await LoadCurrentLimitsAsync();
     }
 
@@ -61,6 +62,7 @@ public partial class PreferencesWindow : Window
         try
         {
             await _mainViewModel.SetSessionLimitsAsync(down, up);
+            _mainViewModel.SetStartMinimized(StartMinimizedCheckBox.IsChecked ?? false);
             Close();
         }
         catch (Exception ex)

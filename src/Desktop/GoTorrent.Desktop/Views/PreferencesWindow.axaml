@@ -18,6 +18,9 @@
         <TextBlock Text="Upload limit" Margin="0,10,0,0" />
         <TextBox Name="UpLimitBox" />
 
+        <TextBlock Text="General" FontWeight="Bold" Margin="0,14,0,0" />
+        <CheckBox Name="StartMinimizedCheckBox" Content="Start minimized to tray" />
+
         <TextBlock Name="ErrorText" Foreground="Red" TextWrapping="Wrap" IsVisible="False" Margin="0,10,0,0" />
 
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8" Margin="0,14,0,0">
