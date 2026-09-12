@@ -9,7 +9,7 @@ using GoTorrent.Desktop.Services;
 
 namespace GoTorrent.Desktop.ViewModels;
 
-public partial class MainViewModel : ViewModelBase
+public partial class MainViewModel : ViewModelBase, IDisposable
 {
     /// <summary>How many speed-graph samples to keep - one sessionStats WS message arrives per second, so this is a rolling five-minute window.</summary>
     private const int MaxSpeedSamples = 300;
@@ -34,6 +34,10 @@ public partial class MainViewModel : ViewModelBase
     private string? _peerRatesForHash;
     private DateTimeOffset? _lastPeerSampleTime;
     private Dictionary<string, (long Downloaded, long Uploaded)> _lastPeerTotals = [];
+    private CancellationTokenSource? _detailLoadCts;
+    private bool _autoRefreshInFlight;
+    private bool _peerRefreshInFlight;
+    private readonly CancellationTokenSource _lifetimeCts = new();
 
     /// <summary>
     /// One stable <see cref="TorrentRowViewModel"/> per torrent gottrentd
@@ -223,7 +227,12 @@ public partial class MainViewModel : ViewModelBase
         try
         {
             var options = new EngineOptions(new Uri(baseAddress), token);
-            _client = _clientFactory(options);
+            var newClient = _clientFactory(options);
+            // Reconnecting (a second Connect click, or daemon supervision
+            // attaching after a spawn) used to just overwrite _client,
+            // leaking the previous one's real HttpClient/socket handles.
+            (_client as IDisposable)?.Dispose();
+            _client = newClient;
             _connectedOptions = options;
             IsConnected = true;
             ConnectionError = null;
@@ -296,15 +305,21 @@ public partial class MainViewModel : ViewModelBase
     /// <summary>A real API call, not just constructing a client - proves gottrentd is actually reachable at <paramref name="baseAddress"/>, not just that a token file happens to exist.</summary>
     private async Task<bool> TryReachAsync(Uri baseAddress, string token)
     {
+        var probe = _clientFactory(new EngineOptions(baseAddress, token));
         try
         {
-            var probe = _clientFactory(new EngineOptions(baseAddress, token));
             await probe.GetSessionAsync(CancellationToken.None);
             return true;
         }
         catch
         {
             return false;
+        }
+        finally
+        {
+            // This one's always a throwaway, whether the probe succeeds or
+            // not - a real connection is TryConnect's own separate client.
+            (probe as IDisposable)?.Dispose();
         }
     }
 
@@ -571,9 +586,26 @@ public partial class MainViewModel : ViewModelBase
     /// update instead of waiting out the rest of the 2s interval.
     /// Clears the detail pane rather than erroring when nothing is
     /// selected - that's a normal state, not a failure.
+    ///
+    /// <para>
+    /// Cancels its own previous in-flight call before starting a new one:
+    /// selecting torrent A (slow to respond) then quickly torrent B (fast)
+    /// used to let A's four awaits resolve after B's already had, silently
+    /// overwriting the detail pane with the wrong torrent's files/trackers/
+    /// pieces. Every request this method makes now carries the same
+    /// per-call token, so a superseded call's requests are actually
+    /// cancelled (not just "whose result wins the race"), and a resulting
+    /// <see cref="OperationCanceledException"/> is treated as "nothing to
+    /// do," not a real failure to surface as <see cref="ConnectionError"/>.
+    /// </para>
     /// </summary>
     public async Task LoadSelectedDetailAsync()
     {
+        _detailLoadCts?.Cancel();
+        var cts = new CancellationTokenSource();
+        _detailLoadCts = cts;
+        var token = cts.Token;
+
         if (_client is null || SelectedTorrent is null)
         {
             DetailTorrent = null;
@@ -586,17 +618,23 @@ public partial class MainViewModel : ViewModelBase
         var hash = SelectedTorrent.InfoHash;
         try
         {
-            DetailTorrent = await _client.GetTorrentDetailAsync(hash, CancellationToken.None);
-            DetailFiles = new ObservableCollection<FileEntry>(await _client.GetFilesAsync(hash, CancellationToken.None));
-            DetailTrackers = new ObservableCollection<TrackerEntry>(await _client.GetTrackersAsync(hash, CancellationToken.None));
-            var pieces = await _client.GetPiecesAsync(hash, CancellationToken.None);
+            var detail = await _client.GetTorrentDetailAsync(hash, token);
+            var files = await _client.GetFilesAsync(hash, token);
+            var trackers = await _client.GetTrackersAsync(hash, token);
+            var pieces = await _client.GetPiecesAsync(hash, token);
+            DetailTorrent = detail;
+            DetailFiles = new ObservableCollection<FileEntry>(files);
+            DetailTrackers = new ObservableCollection<TrackerEntry>(trackers);
             PieceHave = new ObservableCollection<bool>(pieces.ToHaveArray());
+        }
+        catch (OperationCanceledException)
+        {
+            // Superseded by a newer selection/refresh - not a real failure.
         }
         catch (Exception ex)
         {
             ConnectionError = ex.Message;
         }
-        await RefreshPeerRatesAsync();
     }
 
     /// <summary>
@@ -605,10 +643,15 @@ public partial class MainViewModel : ViewModelBase
     /// <c>GET .../peers</c> reports running totals per peer, not a rate,
     /// and there is no WS message that streams per-peer stats the way
     /// <c>sessionStats</c> streams fleet-wide ones, so this has to poll
-    /// and diff itself. Runs at 1 Hz via <see cref="StartPeerRefresh"/>
-    /// and once immediately whenever the selection changes (from
-    /// <see cref="LoadSelectedDetailAsync"/>), matching the fleet-wide
-    /// speed graph's own "first sample has no rate yet" shape.
+    /// and diff itself. Runs at 1 Hz via <see cref="StartPeerRefresh"/> -
+    /// the view's own <c>OnTorrentSelectionChanged</c> also calls this
+    /// once immediately on a manual selection change, for the same
+    /// instant-feedback reason it calls <see cref="LoadSelectedDetailAsync"/>
+    /// directly rather than waiting out the rest of an interval. Not
+    /// called from <see cref="LoadSelectedDetailAsync"/> itself anymore -
+    /// that used to mean peers were polled from both the 2s auto-refresh
+    /// tick and this method's own 1s timer at once, roughly 1.5x more
+    /// often than intended.
     /// </summary>
     public async Task RefreshPeerRatesAsync()
     {
@@ -692,24 +735,40 @@ public partial class MainViewModel : ViewModelBase
     /// </summary>
     private async Task LiveEventLoopAsync()
     {
-        while (true)
+        var token = _lifetimeCts.Token;
+        while (!token.IsCancellationRequested)
         {
             if (_connectedOptions is { } options)
             {
                 try
                 {
-                    await foreach (var ev in _eventStream.ConnectAsync(options, CancellationToken.None))
+                    await foreach (var ev in _eventStream.ConnectAsync(options, token))
                     {
                         var captured = ev;
                         await Dispatcher.UIThread.InvokeAsync(() => HandleEvent(captured));
                     }
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
                 }
                 catch
                 {
                     // Connection dropped or gottrentd unreachable - retry below.
                 }
             }
-            await Task.Delay(TimeSpan.FromSeconds(2));
+            try
+            {
+                // Not yet connected at all has nothing worth retrying
+                // quickly for - a real dropped connection gets the
+                // shorter delay so reconnecting still feels prompt.
+                var delay = _connectedOptions is null ? TimeSpan.FromSeconds(5) : TimeSpan.FromSeconds(2);
+                await Task.Delay(delay, token);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
         }
     }
 
@@ -985,6 +1044,18 @@ public partial class MainViewModel : ViewModelBase
     /// timer, so this is only ever called once a real
     /// Application/Dispatcher exists (from App.axaml.cs, never from
     /// tests, which call <see cref="RefreshAsync"/> directly instead).
+    ///
+    /// <para>
+    /// <c>Tick</c>'s handler is guarded against re-entrancy: a slow or
+    /// hung daemon used to let a second (and third, and...) tick start
+    /// its own <see cref="RefreshAsync"/> while an earlier one was still
+    /// awaiting, all interleaving at <c>await</c> points on the UI thread
+    /// against the same bound collections. Guarding here (rather than
+    /// inside <see cref="RefreshAsync"/> itself) keeps every other direct
+    /// caller of <see cref="RefreshAsync"/> - an action that just
+    /// succeeded, tests - unaffected: they always get a real, immediate
+    /// refresh, only the timer's own re-entry is skipped.
+    /// </para>
     /// </summary>
     public void StartAutoRefresh()
     {
@@ -993,7 +1064,22 @@ public partial class MainViewModel : ViewModelBase
             return;
         }
         _timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
-        _timer.Tick += async (_, _) => await RefreshAsync();
+        _timer.Tick += async (_, _) =>
+        {
+            if (_autoRefreshInFlight)
+            {
+                return;
+            }
+            _autoRefreshInFlight = true;
+            try
+            {
+                await RefreshAsync();
+            }
+            finally
+            {
+                _autoRefreshInFlight = false;
+            }
+        };
         _timer.Start();
         _ = RefreshAsync();
     }
@@ -1001,7 +1087,8 @@ public partial class MainViewModel : ViewModelBase
     /// <summary>
     /// Starts the 1 Hz per-peer contribution poll - same
     /// only-called-once-from-App.axaml.cs convention as
-    /// <see cref="StartAutoRefresh"/>/<see cref="StartLiveEvents"/>.
+    /// <see cref="StartAutoRefresh"/>/<see cref="StartLiveEvents"/>, same
+    /// re-entrancy guard reasoning too.
     /// Separate timer from the main 2s auto-refresh: ROADMAP.md's 6.2
     /// specifically calls for peer rows at 1 Hz, and ticking the whole
     /// torrent list/detail pane that often would be far more REST calls
@@ -1014,7 +1101,39 @@ public partial class MainViewModel : ViewModelBase
             return;
         }
         _peerTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
-        _peerTimer.Tick += async (_, _) => await RefreshPeerRatesAsync();
+        _peerTimer.Tick += async (_, _) =>
+        {
+            if (_peerRefreshInFlight)
+            {
+                return;
+            }
+            _peerRefreshInFlight = true;
+            try
+            {
+                await RefreshPeerRatesAsync();
+            }
+            finally
+            {
+                _peerRefreshInFlight = false;
+            }
+        };
         _peerTimer.Start();
+    }
+
+    /// <summary>
+    /// Stops the background loops (auto-refresh, peer refresh, the live
+    /// event socket loop) and disposes the current engine client - called
+    /// once from <c>App.axaml.cs</c>'s real-exit path (the tray's "Exit,"
+    /// never the hide-to-tray close), so nothing keeps polling or holding
+    /// a real socket open after the process has decided to actually quit.
+    /// </summary>
+    public void Dispose()
+    {
+        _timer?.Stop();
+        _peerTimer?.Stop();
+        _lifetimeCts.Cancel();
+        _detailLoadCts?.Cancel();
+        (_client as IDisposable)?.Dispose();
+        _lifetimeCts.Dispose();
     }
 }

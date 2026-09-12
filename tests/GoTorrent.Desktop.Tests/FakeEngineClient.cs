@@ -26,6 +26,21 @@ public sealed class FakeEngineClient : IEngineClient
     public List<string> DetailRequestedHashes { get; } = [];
     public PiecesInfo Pieces { get; set; } = new(0, 0, []);
 
+    /// <summary>Per-hash override for <see cref="GetTorrentDetailAsync"/>'s result - lets a test give two different selected torrents distinguishable responses, which the single shared <see cref="Detail"/> can't.</summary>
+    public Dictionary<string, TorrentDetail> DetailsByHash { get; } = [];
+
+    /// <summary>
+    /// Per-hash gate for <see cref="GetTorrentDetailAsync"/> - a test can
+    /// register a never-completed <see cref="TaskCompletionSource"/> here
+    /// to simulate "this one call is slow," without a real sleep, to
+    /// deterministically test cancelling a superseded
+    /// <c>LoadSelectedDetailAsync</c> call (the stale-response race 6.5
+    /// fixed). Registering the passed <see cref="CancellationToken"/>
+    /// against the gate is what actually lets the real cancellation path
+    /// (not just "the test never awaits the slow task") be exercised.
+    /// </summary>
+    public Dictionary<string, TaskCompletionSource> DetailGatesByHash { get; } = [];
+
     public Task<IReadOnlyList<TorrentSummary>> ListTorrentsAsync(CancellationToken cancellationToken) =>
         Failure is not null
             ? Task.FromException<IReadOnlyList<TorrentSummary>>(Failure)
@@ -84,14 +99,23 @@ public sealed class FakeEngineClient : IEngineClient
         return Task.CompletedTask;
     }
 
-    public Task<TorrentDetail> GetTorrentDetailAsync(string infoHash, CancellationToken cancellationToken)
+    public async Task<TorrentDetail> GetTorrentDetailAsync(string infoHash, CancellationToken cancellationToken)
     {
         DetailRequestedHashes.Add(infoHash);
+        if (DetailGatesByHash.TryGetValue(infoHash, out var gate))
+        {
+            await using var registration = cancellationToken.Register(() => gate.TrySetCanceled(cancellationToken));
+            await gate.Task;
+        }
         if (Failure is not null)
         {
-            return Task.FromException<TorrentDetail>(Failure);
+            throw Failure;
         }
-        return Task.FromResult(Detail ?? throw new InvalidOperationException("Detail was not set on the fake."));
+        if (DetailsByHash.TryGetValue(infoHash, out var detail))
+        {
+            return detail;
+        }
+        return Detail ?? throw new InvalidOperationException("Detail was not set on the fake.");
     }
 
     public Task<IReadOnlyList<FileEntry>> GetFilesAsync(string infoHash, CancellationToken cancellationToken) =>

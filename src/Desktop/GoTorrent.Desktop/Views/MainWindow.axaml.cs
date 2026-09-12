@@ -150,13 +150,19 @@ public partial class MainWindow : Window
     /// Loads the detail pane immediately when the user picks a different
     /// row, instead of waiting out the rest of the 2s auto-refresh
     /// interval - RefreshAsync already reloads it on every tick, this
-    /// just makes clicking a row feel instant too.
+    /// just makes clicking a row feel instant too. Also kicks
+    /// RefreshPeerRatesAsync once here for the same reason - it no longer
+    /// runs as a side effect of LoadSelectedDetailAsync (that used to
+    /// double-poll peers alongside the dedicated 1Hz timer), so without
+    /// this the Peers tab would wait up to 1s after a manual selection
+    /// change before showing anything for the newly selected torrent.
     /// </summary>
     private async void OnTorrentSelectionChanged(object? sender, SelectionChangedEventArgs e)
     {
         if (DataContext is MainViewModel mainViewModel)
         {
             await mainViewModel.LoadSelectedDetailAsync();
+            await mainViewModel.RefreshPeerRatesAsync();
         }
     }
 
