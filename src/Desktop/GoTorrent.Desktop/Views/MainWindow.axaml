@@ -9,7 +9,8 @@
         x:Class="GoTorrent.Desktop.Views.MainWindow"
         x:DataType="vm:MainViewModel"
         Icon="/Assets/avalonia-logo.ico"
-        Title="GoTorrent">
+        Title="GoTorrent"
+        DragDrop.AllowDrop="True">
 
     <Design.DataContext>
         <vm:MainViewModel />
