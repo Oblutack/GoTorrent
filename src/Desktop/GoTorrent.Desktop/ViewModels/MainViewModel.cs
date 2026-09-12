@@ -35,12 +35,19 @@ public partial class MainViewModel : ViewModelBase
     private DateTimeOffset? _lastPeerSampleTime;
     private Dictionary<string, (long Downloaded, long Uploaded)> _lastPeerTotals = [];
 
+    /// <summary>
+    /// One stable <see cref="TorrentRowViewModel"/> per torrent gottrentd
+    /// reports, for as long as it's managed - never reassigned wholesale
+    /// and never has its existing rows replaced, only updated in place
+    /// (<see cref="ReconcileTorrents"/>). See <see cref="TorrentRowViewModel"/>'s
+    /// own doc comment for the real selection bug this fixes.
+    /// </summary>
     [ObservableProperty]
-    public partial ObservableCollection<TorrentSummary> Torrents { get; set; } = [];
+    public partial ObservableCollection<TorrentRowViewModel> Torrents { get; set; } = [];
 
-    /// <summary>The sidebar's own view of <see cref="Torrents"/> - status filter, then category, then <see cref="SearchText"/>, recomputed by <see cref="ApplyFilter"/> whenever any of those change.</summary>
+    /// <summary>The sidebar's own view of <see cref="Torrents"/> - status filter, then category, then <see cref="SearchText"/>, recomputed by <see cref="ApplyFilter"/> whenever any of those change. Reconciled in place (<see cref="SyncCollection{T}"/>), same reasoning as <see cref="Torrents"/> itself.</summary>
     [ObservableProperty]
-    public partial ObservableCollection<TorrentSummary> DisplayedTorrents { get; set; } = [];
+    public partial ObservableCollection<TorrentRowViewModel> DisplayedTorrents { get; set; } = [];
 
     /// <summary>Built-in status filters plus one entry per distinct category actually present - recomputed alongside <see cref="DisplayedTorrents"/>, so a category that no torrent uses anymore disappears on its own.</summary>
     [ObservableProperty]
@@ -68,7 +75,7 @@ public partial class MainViewModel : ViewModelBase
     public partial string TokenInput { get; set; } = string.Empty;
 
     [ObservableProperty]
-    public partial TorrentSummary? SelectedTorrent { get; set; }
+    public partial TorrentRowViewModel? SelectedTorrent { get; set; }
 
     [ObservableProperty]
     public partial string? AddTorrentError { get; set; }
@@ -378,13 +385,7 @@ public partial class MainViewModel : ViewModelBase
         try
         {
             var torrents = await _client.ListTorrentsAsync(CancellationToken.None);
-            var selectedHash = SelectedTorrent?.InfoHash;
-            Torrents = new ObservableCollection<TorrentSummary>(torrents);
-            // Replacing the collection on every 2s auto-refresh tick resets
-            // the DataGrid's SelectedItem to null - re-locate the same
-            // torrent by hash so a context-menu action started right
-            // before a refresh still has something to act on.
-            SelectedTorrent = selectedHash is null ? null : Torrents.FirstOrDefault(t => t.InfoHash == selectedHash);
+            ReconcileTorrents(torrents);
             ApplyFilter();
             Session = await _client.GetSessionAsync(CancellationToken.None);
             ConnectionError = null;
@@ -396,9 +397,101 @@ public partial class MainViewModel : ViewModelBase
         await LoadSelectedDetailAsync();
     }
 
+    /// <summary>
+    /// Updates <see cref="Torrents"/> from a fresh poll without ever
+    /// replacing a still-present row's object - existing rows (matched by
+    /// <see cref="TorrentRowViewModel.InfoHash"/>) are updated in place via
+    /// <see cref="TorrentRowViewModel.UpdateFrom"/>, new ones get a new
+    /// <see cref="TorrentRowViewModel"/>, and rows no longer reported are
+    /// dropped. This is what makes <see cref="SelectedTorrent"/> (and the
+    /// DataGrid selection it's bound to) survive a refresh automatically -
+    /// see <see cref="TorrentRowViewModel"/>'s own doc comment for why that
+    /// used to silently break.
+    ///
+    /// <para>
+    /// Explicitly nulls <see cref="SelectedTorrent"/> when its row is gone
+    /// (deleted, or gottrentd simply stopped reporting it) rather than
+    /// counting on the real <c>DataGrid</c>'s own two-way-binding
+    /// side effect to do it - that side effect is real and does fire in
+    /// the actual running app, but a ViewModel that only behaves correctly
+    /// through a specific View's binding quirks isn't actually correct on
+    /// its own, and a plain ViewModel-level unit test (no real
+    /// <c>SelectingItemsControl</c> in the loop) proved it: caught by this
+    /// method's own test, not by inspection.
+    /// </para>
+    /// </summary>
+    private void ReconcileTorrents(IReadOnlyList<TorrentSummary> fresh)
+    {
+        var existingByHash = Torrents.ToDictionary(t => t.InfoHash);
+        var updatedOrder = new List<TorrentRowViewModel>(fresh.Count);
+        foreach (var summary in fresh)
+        {
+            if (existingByHash.TryGetValue(summary.InfoHash, out var row))
+            {
+                row.UpdateFrom(summary);
+            }
+            else
+            {
+                row = new TorrentRowViewModel(summary);
+            }
+            updatedOrder.Add(row);
+        }
+        SyncCollection(Torrents, updatedOrder);
+        if (SelectedTorrent is { } selected && !Torrents.Contains(selected))
+        {
+            SelectedTorrent = null;
+        }
+    }
+
+    /// <summary>
+    /// Reconciles <paramref name="collection"/> to contain exactly
+    /// <paramref name="desiredOrder"/>, in that order - by reference
+    /// identity for a class (e.g. <see cref="TorrentRowViewModel"/>, where
+    /// that's the whole point) or by value for a <c>record</c> (e.g.
+    /// <see cref="Models.SidebarFilter"/>, where <c>IndexOf</c>'s default
+    /// value-equality naturally finds and keeps the existing instance for
+    /// an unchanged entry rather than inserting the freshly-constructed
+    /// one <paramref name="desiredOrder"/> happens to carry). Never fully
+    /// clears the collection unless every single entry actually changed -
+    /// the real fix for the stack-overflow/NullReferenceException class of
+    /// bug a full <c>Clear()</c> used to cause here (see git history/
+    /// CLAUDE.md): a bound <c>SelectingItemsControl</c>'s selection
+    /// machinery reacts to the collection transiently going empty, not
+    /// just to what it ends up containing.
+    /// </summary>
+    private static void SyncCollection<T>(ObservableCollection<T> collection, IReadOnlyList<T> desiredOrder)
+    {
+        for (var i = collection.Count - 1; i >= 0; i--)
+        {
+            if (!desiredOrder.Contains(collection[i]))
+            {
+                collection.RemoveAt(i);
+            }
+        }
+        for (var i = 0; i < desiredOrder.Count; i++)
+        {
+            var item = desiredOrder[i];
+            var currentIndex = collection.IndexOf(item);
+            if (currentIndex < 0)
+            {
+                collection.Insert(i, item);
+            }
+            else if (currentIndex != i)
+            {
+                collection.Move(currentIndex, i);
+            }
+        }
+    }
+
     partial void OnSelectedFilterChanged(SidebarFilter value) => ApplyFilter();
 
     partial void OnSearchTextChanged(string value) => ApplyFilter();
+
+    private static readonly SidebarFilter AllFilter = new(SidebarFilter.AllKey, "All");
+    private static readonly SidebarFilter DownloadingFilter = new(SidebarFilter.DownloadingKey, "Downloading");
+    private static readonly SidebarFilter SeedingFilter = new(SidebarFilter.SeedingKey, "Seeding");
+    private static readonly SidebarFilter PausedFilter = new(SidebarFilter.PausedKey, "Paused");
+    private static readonly SidebarFilter ErrorFilter = new(SidebarFilter.ErrorKey, "Error");
 
     /// <summary>
     /// Recomputes both <see cref="SidebarFilters"/> (the built-in status
@@ -409,51 +502,31 @@ public partial class MainViewModel : ViewModelBase
     /// either of those two change.
     ///
     /// <para>
-    /// Both collections are mutated in place (<c>Clear</c> then re-<c>Add</c>)
-    /// rather than reassigned to a new <see cref="ObservableCollection{T}"/>
-    /// instance - <b>a real stack overflow, caught live, not by a unit
-    /// test</b>: reassigning <see cref="SidebarFilters"/> makes the sidebar
-    /// <c>ListBox</c> (its <c>ItemsSource</c> bound to it) re-initialize its
-    /// selection model, which - since the same control's <c>SelectedItem</c>
-    /// is two-way bound to <see cref="SelectedFilter"/> - writes back into
-    /// <see cref="SelectedFilter"/>, re-entering this method, which
-    /// reassigns the collection again, forever. No amount of ViewModel-only
-    /// unit testing catches this, since it only happens through the real
-    /// Avalonia <c>SelectingItemsControl</c>/<c>SelectionModel</c> machinery
-    /// no fake ever exercises.
-    /// </para>
-    ///
-    /// <para>
-    /// Second real bug caught the same way, right after fixing the first:
-    /// even mutating in place, <c>SidebarFilters.Clear()</c> still leaves
-    /// the ListBox with zero items for one moment, which makes it report
-    /// "nothing selected" - and since <c>SelectedItem</c> is two-way bound,
-    /// that writes a genuine <c>null</c> into <see cref="SelectedFilter"/>
-    /// (C#'s non-nullable annotation on the property is compile-time only;
-    /// Avalonia's binding layer sets the CLR property directly and does not
-    /// honor it) <i>before</i> the re-<c>Add</c> loop below finishes and
-    /// this method reaches its own read of <c>SelectedFilter.Key</c> -
-    /// which NullReferenceExceptions right there. Fixed by capturing the
-    /// key to restore into a local <b>before</b> touching the collection at
-    /// all, so this method never depends on reading the live (possibly
-    /// null, possibly reentrantly-changed) property partway through.
+    /// Both collections are reconciled in place via <see cref="SyncCollection{T}"/>
+    /// rather than <c>Clear()</c>-ed and rebuilt - the 6.5 fix for two real
+    /// bugs caught live, not by a unit test, while this method still used
+    /// <c>Clear()</c>/re-<c>Add()</c>: (1) reassigning <see cref="SidebarFilters"/>
+    /// to a brand-new collection instance made the sidebar <c>ListBox</c>
+    /// re-initialize its selection model, which - since <c>SelectedItem</c>
+    /// is two-way bound to <see cref="SelectedFilter"/> - wrote back into
+    /// it, re-entering this method and reassigning again, forever (a real
+    /// stack overflow); (2) even after switching to in-place mutation,
+    /// <c>SidebarFilters.Clear()</c> alone still left the ListBox with zero
+    /// items for one moment, which made it report "nothing selected" and
+    /// write a genuine <c>null</c> into <see cref="SelectedFilter"/> (its
+    /// non-nullable C# annotation is compile-time only; Avalonia's binding
+    /// layer does not honor it) before the rebuild finished - a real
+    /// NullReferenceException. <see cref="SyncCollection{T}"/> never
+    /// removes and re-adds an entry that's still wanted, so the ListBox's
+    /// <c>ItemsSource</c> never transiently empties out at all for the
+    /// common case (built-ins plus unchanged categories), and
+    /// <see cref="SelectedFilter"/>/<see cref="SelectedTorrent"/> simply
+    /// keep pointing at the same still-present object - no capture-before/
+    /// restore-after dance needed anymore.
     /// </para>
     /// </summary>
     private void ApplyFilter()
     {
-        var previousFilterKey = SelectedFilter?.Key ?? SidebarFilter.AllKey;
-        // Same "capture before mutating" defense as previousFilterKey, for
-        // a related but distinct real bug this one caught live: clearing
-        // DisplayedTorrents below transiently leaves the torrent DataGrid
-        // with nothing selected, which - same two-way-binding-writes-
-        // through-a-transient-state mechanism - nulls out SelectedTorrent
-        // too. Unlike SelectedFilter, nothing else in this method ever
-        // restores it, so a real user's selection was silently dropped by
-        // the very next 2s auto-refresh tick, making the detail pane
-        // disappear right after picking a row - caught by actually
-        // clicking a row and watching it happen, not by a unit test.
-        var previousSelectedHash = SelectedTorrent?.InfoHash;
-
         var categories = Torrents
             .Select(t => t.Category)
             .Where(c => !string.IsNullOrWhiteSpace(c))
@@ -461,52 +534,33 @@ public partial class MainViewModel : ViewModelBase
             .OrderBy(c => c, StringComparer.OrdinalIgnoreCase)
             .Select(c => SidebarFilter.Category(c!));
 
-        var filters = new List<SidebarFilter>
-        {
-            new(SidebarFilter.AllKey, "All"),
-            new(SidebarFilter.DownloadingKey, "Downloading"),
-            new(SidebarFilter.SeedingKey, "Seeding"),
-            new(SidebarFilter.PausedKey, "Paused"),
-            new(SidebarFilter.ErrorKey, "Error"),
-        };
+        var filters = new List<SidebarFilter> { AllFilter, DownloadingFilter, SeedingFilter, PausedFilter, ErrorFilter };
         filters.AddRange(categories);
-        SidebarFilters.Clear();
-        foreach (var filter in filters)
-        {
-            SidebarFilters.Add(filter);
-        }
-        // The previously selected filter (e.g. a category) might no longer
-        // exist - fall back to "All" rather than keep a stale, now-missing
-        // selection that would otherwise show an empty list forever. Record
-        // equality means this is a no-op (and doesn't re-enter this method
-        // via OnSelectedFilterChanged) when the selection is unchanged.
-        var selected = filters.FirstOrDefault(f => f.Key == previousFilterKey) ?? filters[0];
-        SelectedFilter = selected;
+        SyncCollection(SidebarFilters, filters);
 
-        // Avalonia's TextBox can hand back a genuine null through this
-        // same two-way-binding-writes-null-during-a-transient-state
-        // mechanism (e.g. the box being cleared entirely) despite
-        // SearchText's own non-nullable C# annotation - same defensive
-        // reasoning as previousFilterKey above.
+        // Avalonia's TextBox/ListBox can still hand back a genuine null
+        // through the same two-way-binding-writes-null-during-a-transient-
+        // state mechanism described above (e.g. the search box being
+        // cleared entirely, or the selected filter having just been
+        // removed from SidebarFilters because its category disappeared) -
+        // fall back to "All" rather than trust the possibly-null live
+        // property, same defensive reasoning as before, just narrower now.
+        // SidebarFilters.Contains uses SidebarFilter's own value equality,
+        // so for the common "nothing changed" case this finds and reuses
+        // the exact reference already stored in the field - the assignment
+        // below is then a true no-op, both by reference and (via
+        // CommunityToolkit's generated equality-skip) by not re-raising
+        // PropertyChanged/re-entering this method through OnSelectedFilterChanged.
+        var selectedFilter = SelectedFilter is { } sf && SidebarFilters.Contains(sf) ? sf : AllFilter;
+        SelectedFilter = selectedFilter;
+
         var search = (SearchText ?? string.Empty).Trim();
-        var filtered = Torrents.Where(selected.Matches);
+        var filtered = Torrents.Where(t => selectedFilter.Matches(t.State, t.Category));
         if (search.Length > 0)
         {
             filtered = filtered.Where(t => t.Name.Contains(search, StringComparison.OrdinalIgnoreCase));
         }
-        DisplayedTorrents.Clear();
-        foreach (var torrent in filtered)
-        {
-            DisplayedTorrents.Add(torrent);
-        }
-        // Restore the selection the Clear() above just wiped out, if the
-        // previously selected torrent still exists in the filtered set -
-        // null (filtered out, or nothing was selected to begin with) is
-        // the correct outcome otherwise, same as before this method ever
-        // touched it.
-        SelectedTorrent = previousSelectedHash is null
-            ? null
-            : DisplayedTorrents.FirstOrDefault(t => t.InfoHash == previousSelectedHash);
+        SyncCollection(DisplayedTorrents, filtered.ToList());
     }
 
     /// <summary>

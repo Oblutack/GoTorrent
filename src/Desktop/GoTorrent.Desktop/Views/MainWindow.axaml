@@ -163,7 +163,7 @@
                         <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="3*" />
                         <DataGridTemplateColumn Header="State" Width="110">
                             <DataGridTemplateColumn.CellTemplate>
-                                <DataTemplate DataType="models:TorrentSummary">
+                                <DataTemplate DataType="vm:TorrentRowViewModel">
                                     <Border Background="{Binding State, Converter={StaticResource StateToBrush}}"
                                             CornerRadius="8" Padding="8,2" HorizontalAlignment="Left">
                                         <TextBlock Text="{Binding State}" Foreground="White" FontSize="11" />

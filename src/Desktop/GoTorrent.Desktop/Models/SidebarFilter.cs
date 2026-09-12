@@ -18,14 +18,22 @@ public sealed record SidebarFilter(string Key, string Label)
 
     public static SidebarFilter Category(string name) => new(CategoryPrefix + name, name);
 
-    public bool Matches(TorrentSummary torrent) => Key switch
+    /// <summary>
+    /// Takes the two fields it needs directly, rather than a
+    /// <see cref="TorrentSummary"/> - 6.5's stable-row-identity rework
+    /// means the live torrent list is a <c>ViewModels.TorrentRowViewModel</c>,
+    /// not a <see cref="TorrentSummary"/>, and this stays usable from
+    /// either (or a plain test fixture) without a Models-to-ViewModels
+    /// dependency in either direction.
+    /// </summary>
+    public bool Matches(string state, string? category) => Key switch
     {
         AllKey => true,
-        DownloadingKey => torrent.State is "Downloading" or "FetchingMetadata" or "CheckingFiles",
-        SeedingKey => torrent.State == "Seeding",
-        PausedKey => torrent.State == "Paused",
-        ErrorKey => torrent.State == "Error",
-        _ when Key.StartsWith(CategoryPrefix, StringComparison.Ordinal) => torrent.Category == Label,
+        DownloadingKey => state is "Downloading" or "FetchingMetadata" or "CheckingFiles",
+        SeedingKey => state == "Seeding",
+        PausedKey => state == "Paused",
+        ErrorKey => state == "Error",
+        _ when Key.StartsWith(CategoryPrefix, StringComparison.Ordinal) => category == Label,
         _ => true,
     };
 }

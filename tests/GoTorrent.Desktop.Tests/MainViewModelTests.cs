@@ -232,6 +232,94 @@ public sealed class MainViewModelTests
     }
 
     [Fact]
+    public async Task RefreshAsync_KeepsTheSameRowInstanceAcrossRefreshesEvenWhenUnchanged()
+    {
+        // The actual root cause RefreshAsync_PreservesTheSelectionAcrossARefresh
+        // guards the symptom of: TorrentSummary is a record (value equality),
+        // so CommunityToolkit's generated setter used to silently skip
+        // reassigning SelectedTorrent whenever a freshly-fetched record was
+        // "equal" to the old one - leaving it pointing at an instance no
+        // longer present in the rebuilt DisplayedTorrents. A stable
+        // TorrentRowViewModel per torrent (updated in place, never
+        // replaced) means the *same object reference* survives every
+        // refresh, changed or not - this pins that down directly rather
+        // than only checking InfoHash equality, which a bug like the
+        // original one could still satisfy by accident.
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        client.Torrents.Add(MakeTorrent("ubuntu.iso"));
+        await viewModel.RefreshAsync();
+        var firstRow = viewModel.Torrents[0];
+        viewModel.SelectedTorrent = firstRow;
+
+        // Genuinely unchanged data on the next poll, same as an idle
+        // seeding torrent between two 2s ticks.
+        await viewModel.RefreshAsync();
+
+        Assert.Same(firstRow, viewModel.Torrents[0]);
+        Assert.Same(firstRow, viewModel.SelectedTorrent);
+        Assert.Contains(firstRow, viewModel.DisplayedTorrents);
+    }
+
+    [Fact]
+    public async Task RefreshAsync_UpdatesAnExistingRowInPlaceRatherThanReplacingIt()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        client.Torrents.Add(MakeTorrent("ubuntu.iso") with { Downloaded = 100 });
+        await viewModel.RefreshAsync();
+        var row = viewModel.Torrents[0];
+
+        client.Torrents[0] = MakeTorrent("ubuntu.iso") with { Downloaded = 500 };
+        await viewModel.RefreshAsync();
+
+        Assert.Same(row, viewModel.Torrents[0]);
+        Assert.Equal(500, row.Downloaded);
+    }
+
+    [Fact]
+    public async Task RefreshAsync_RemovesARowAndClearsSelectionWhenTheTorrentIsGone()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        client.Torrents.Add(MakeTorrent("ubuntu.iso"));
+        await viewModel.RefreshAsync();
+        viewModel.SelectedTorrent = viewModel.Torrents[0];
+
+        client.Torrents.Clear();
+        await viewModel.RefreshAsync();
+
+        Assert.Empty(viewModel.Torrents);
+        Assert.Empty(viewModel.DisplayedTorrents);
+        Assert.Null(viewModel.SelectedTorrent);
+    }
+
+    [Fact]
+    public async Task ApplyFilter_KeepsTheSameSidebarFilterInstanceForAnUnchangedCategory()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        client.Torrents.Add(MakeTorrent("movie") with { Category = "Movies" });
+        await viewModel.RefreshAsync();
+        var moviesFilter = viewModel.SidebarFilters.Single(f => f.Label == "Movies");
+        viewModel.SelectedFilter = moviesFilter;
+
+        client.Torrents.Add(MakeTorrent("show") with { InfoHash = "9999999999999999999999999999999999999999", Category = "Movies" });
+        await viewModel.RefreshAsync();
+
+        Assert.Same(moviesFilter, viewModel.SidebarFilters.Single(f => f.Label == "Movies"));
+        Assert.Same(moviesFilter, viewModel.SelectedFilter);
+    }
+
+    [Fact]
     public async Task PauseSelectedCommand_PausesTheSelectedTorrentAndRefreshes()
     {
         var (viewModel, client, _) = MakeViewModel();
@@ -527,7 +615,7 @@ public sealed class MainViewModelTests
         viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
         viewModel.TokenInput = "a-token";
         viewModel.ConnectCommand.Execute(null);
-        viewModel.SelectedTorrent = MakeTorrent("ubuntu.iso");
+        viewModel.SelectedTorrent = new TorrentRowViewModel(MakeTorrent("ubuntu.iso"));
         client.Peers.Add(new PeerEntry("127.0.0.1:6881", true, Downloaded: 4096, Uploaded: 0, false, true, false, true, 0.1));
 
         await viewModel.RefreshPeerRatesAsync();
@@ -544,7 +632,7 @@ public sealed class MainViewModelTests
         viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
         viewModel.TokenInput = "a-token";
         viewModel.ConnectCommand.Execute(null);
-        viewModel.SelectedTorrent = MakeTorrent("ubuntu.iso");
+        viewModel.SelectedTorrent = new TorrentRowViewModel(MakeTorrent("ubuntu.iso"));
         client.Peers.Add(new PeerEntry("127.0.0.1:6881", true, Downloaded: 1024, Uploaded: 512, false, true, false, true, 0.1));
         await viewModel.RefreshPeerRatesAsync();
 
@@ -565,7 +653,7 @@ public sealed class MainViewModelTests
         viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
         viewModel.TokenInput = "a-token";
         viewModel.ConnectCommand.Execute(null);
-        viewModel.SelectedTorrent = MakeTorrent("ubuntu.iso");
+        viewModel.SelectedTorrent = new TorrentRowViewModel(MakeTorrent("ubuntu.iso"));
         client.Peers.Add(new PeerEntry("127.0.0.1:6881", true, Downloaded: 1024, Uploaded: 0, false, true, false, true, 0.1));
         await viewModel.RefreshPeerRatesAsync();
 
@@ -573,7 +661,7 @@ public sealed class MainViewModelTests
         // A different torrent, coincidentally sharing a peer address, with
         // a much larger total - naively diffing against the previous
         // torrent's totals would produce a nonsense huge rate.
-        viewModel.SelectedTorrent = MakeTorrent("debian.iso") with { InfoHash = "aabbccddeeff00112233445566778899aabbccd" };
+        viewModel.SelectedTorrent = new TorrentRowViewModel(MakeTorrent("debian.iso") with { InfoHash = "aabbccddeeff00112233445566778899aabbccd" });
         client.Peers[0] = client.Peers[0] with { Downloaded = 500_000 };
         await viewModel.RefreshPeerRatesAsync();
 
