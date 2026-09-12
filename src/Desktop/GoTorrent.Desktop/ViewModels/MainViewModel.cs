@@ -38,6 +38,20 @@ public partial class MainViewModel : ViewModelBase
     [ObservableProperty]
     public partial ObservableCollection<TorrentSummary> Torrents { get; set; } = [];
 
+    /// <summary>The sidebar's own view of <see cref="Torrents"/> - status filter, then category, then <see cref="SearchText"/>, recomputed by <see cref="ApplyFilter"/> whenever any of those change.</summary>
+    [ObservableProperty]
+    public partial ObservableCollection<TorrentSummary> DisplayedTorrents { get; set; } = [];
+
+    /// <summary>Built-in status filters plus one entry per distinct category actually present - recomputed alongside <see cref="DisplayedTorrents"/>, so a category that no torrent uses anymore disappears on its own.</summary>
+    [ObservableProperty]
+    public partial ObservableCollection<SidebarFilter> SidebarFilters { get; set; } = [];
+
+    [ObservableProperty]
+    public partial SidebarFilter SelectedFilter { get; set; } = new(SidebarFilter.AllKey, "All");
+
+    [ObservableProperty]
+    public partial string SearchText { get; set; } = string.Empty;
+
     [ObservableProperty]
     public partial SessionStats? Session { get; set; }
 
@@ -64,6 +78,9 @@ public partial class MainViewModel : ViewModelBase
 
     [ObservableProperty]
     public partial ObservableCollection<FileEntry> DetailFiles { get; set; } = [];
+
+    /// <summary>The Files tab's priority ComboBox options - gottrentd's own lowercase priority names (picker.Priority.MarshalText), never changes so it's not observable.</summary>
+    public static IReadOnlyList<string> FilePriorityOptions { get; } = ["skip", "low", "normal", "high"];
 
     [ObservableProperty]
     public partial ObservableCollection<PeerRow> DetailPeers { get; set; } = [];
@@ -368,6 +385,7 @@ public partial class MainViewModel : ViewModelBase
             // torrent by hash so a context-menu action started right
             // before a refresh still has something to act on.
             SelectedTorrent = selectedHash is null ? null : Torrents.FirstOrDefault(t => t.InfoHash == selectedHash);
+            ApplyFilter();
             Session = await _client.GetSessionAsync(CancellationToken.None);
             ConnectionError = null;
         }
@@ -376,6 +394,119 @@ public partial class MainViewModel : ViewModelBase
             ConnectionError = ex.Message;
         }
         await LoadSelectedDetailAsync();
+    }
+
+    partial void OnSelectedFilterChanged(SidebarFilter value) => ApplyFilter();
+
+    partial void OnSearchTextChanged(string value) => ApplyFilter();
+
+    /// <summary>
+    /// Recomputes both <see cref="SidebarFilters"/> (the built-in status
+    /// filters plus one per distinct category actually present in
+    /// <see cref="Torrents"/>) and <see cref="DisplayedTorrents"/> (that
+    /// set, further narrowed by <see cref="SelectedFilter"/> then
+    /// <see cref="SearchText"/>) - called after every refresh and whenever
+    /// either of those two change.
+    ///
+    /// <para>
+    /// Both collections are mutated in place (<c>Clear</c> then re-<c>Add</c>)
+    /// rather than reassigned to a new <see cref="ObservableCollection{T}"/>
+    /// instance - <b>a real stack overflow, caught live, not by a unit
+    /// test</b>: reassigning <see cref="SidebarFilters"/> makes the sidebar
+    /// <c>ListBox</c> (its <c>ItemsSource</c> bound to it) re-initialize its
+    /// selection model, which - since the same control's <c>SelectedItem</c>
+    /// is two-way bound to <see cref="SelectedFilter"/> - writes back into
+    /// <see cref="SelectedFilter"/>, re-entering this method, which
+    /// reassigns the collection again, forever. No amount of ViewModel-only
+    /// unit testing catches this, since it only happens through the real
+    /// Avalonia <c>SelectingItemsControl</c>/<c>SelectionModel</c> machinery
+    /// no fake ever exercises.
+    /// </para>
+    ///
+    /// <para>
+    /// Second real bug caught the same way, right after fixing the first:
+    /// even mutating in place, <c>SidebarFilters.Clear()</c> still leaves
+    /// the ListBox with zero items for one moment, which makes it report
+    /// "nothing selected" - and since <c>SelectedItem</c> is two-way bound,
+    /// that writes a genuine <c>null</c> into <see cref="SelectedFilter"/>
+    /// (C#'s non-nullable annotation on the property is compile-time only;
+    /// Avalonia's binding layer sets the CLR property directly and does not
+    /// honor it) <i>before</i> the re-<c>Add</c> loop below finishes and
+    /// this method reaches its own read of <c>SelectedFilter.Key</c> -
+    /// which NullReferenceExceptions right there. Fixed by capturing the
+    /// key to restore into a local <b>before</b> touching the collection at
+    /// all, so this method never depends on reading the live (possibly
+    /// null, possibly reentrantly-changed) property partway through.
+    /// </para>
+    /// </summary>
+    private void ApplyFilter()
+    {
+        var previousFilterKey = SelectedFilter?.Key ?? SidebarFilter.AllKey;
+        // Same "capture before mutating" defense as previousFilterKey, for
+        // a related but distinct real bug this one caught live: clearing
+        // DisplayedTorrents below transiently leaves the torrent DataGrid
+        // with nothing selected, which - same two-way-binding-writes-
+        // through-a-transient-state mechanism - nulls out SelectedTorrent
+        // too. Unlike SelectedFilter, nothing else in this method ever
+        // restores it, so a real user's selection was silently dropped by
+        // the very next 2s auto-refresh tick, making the detail pane
+        // disappear right after picking a row - caught by actually
+        // clicking a row and watching it happen, not by a unit test.
+        var previousSelectedHash = SelectedTorrent?.InfoHash;
+
+        var categories = Torrents
+            .Select(t => t.Category)
+            .Where(c => !string.IsNullOrWhiteSpace(c))
+            .Distinct()
+            .OrderBy(c => c, StringComparer.OrdinalIgnoreCase)
+            .Select(c => SidebarFilter.Category(c!));
+
+        var filters = new List<SidebarFilter>
+        {
+            new(SidebarFilter.AllKey, "All"),
+            new(SidebarFilter.DownloadingKey, "Downloading"),
+            new(SidebarFilter.SeedingKey, "Seeding"),
+            new(SidebarFilter.PausedKey, "Paused"),
+            new(SidebarFilter.ErrorKey, "Error"),
+        };
+        filters.AddRange(categories);
+        SidebarFilters.Clear();
+        foreach (var filter in filters)
+        {
+            SidebarFilters.Add(filter);
+        }
+        // The previously selected filter (e.g. a category) might no longer
+        // exist - fall back to "All" rather than keep a stale, now-missing
+        // selection that would otherwise show an empty list forever. Record
+        // equality means this is a no-op (and doesn't re-enter this method
+        // via OnSelectedFilterChanged) when the selection is unchanged.
+        var selected = filters.FirstOrDefault(f => f.Key == previousFilterKey) ?? filters[0];
+        SelectedFilter = selected;
+
+        // Avalonia's TextBox can hand back a genuine null through this
+        // same two-way-binding-writes-null-during-a-transient-state
+        // mechanism (e.g. the box being cleared entirely) despite
+        // SearchText's own non-nullable C# annotation - same defensive
+        // reasoning as previousFilterKey above.
+        var search = (SearchText ?? string.Empty).Trim();
+        var filtered = Torrents.Where(selected.Matches);
+        if (search.Length > 0)
+        {
+            filtered = filtered.Where(t => t.Name.Contains(search, StringComparison.OrdinalIgnoreCase));
+        }
+        DisplayedTorrents.Clear();
+        foreach (var torrent in filtered)
+        {
+            DisplayedTorrents.Add(torrent);
+        }
+        // Restore the selection the Clear() above just wiped out, if the
+        // previously selected torrent still exists in the filtered set -
+        // null (filtered out, or nothing was selected to begin with) is
+        // the correct outcome otherwise, same as before this method ever
+        // touched it.
+        SelectedTorrent = previousSelectedHash is null
+            ? null
+            : DisplayedTorrents.FirstOrDefault(t => t.InfoHash == previousSelectedHash);
     }
 
     /// <summary>
@@ -627,6 +758,97 @@ public partial class MainViewModel : ViewModelBase
 
     [RelayCommand]
     private Task DeleteSelectedWithDataAsync() => RunTorrentActionAsync(client => client.DeleteAsync(SelectedTorrent!.InfoHash, deleteData: true, CancellationToken.None));
+
+    [RelayCommand]
+    private Task ToggleForceStartAsync() => RunTorrentActionAsync(client =>
+        client.PatchTorrentAsync(SelectedTorrent!.InfoHash, new PatchTorrentOptions(ForceStart: !SelectedTorrent!.ForceStart), CancellationToken.None));
+
+    [RelayCommand]
+    private Task MoveQueueTopAsync() => RunTorrentActionAsync(client =>
+        client.PatchTorrentAsync(SelectedTorrent!.InfoHash, new PatchTorrentOptions(QueuePosition: 0), CancellationToken.None));
+
+    [RelayCommand]
+    private Task MoveQueueUpAsync() => RunTorrentActionAsync(client =>
+        client.PatchTorrentAsync(SelectedTorrent!.InfoHash, new PatchTorrentOptions(QueuePosition: Math.Max(0, SelectedTorrent!.QueuePosition - 1)), CancellationToken.None));
+
+    [RelayCommand]
+    private Task MoveQueueDownAsync() => RunTorrentActionAsync(client =>
+        client.PatchTorrentAsync(SelectedTorrent!.InfoHash, new PatchTorrentOptions(QueuePosition: SelectedTorrent!.QueuePosition + 1), CancellationToken.None));
+
+    /// <summary>
+    /// gottrentd doesn't report a torrent's current picker strategy
+    /// anywhere in <see cref="Models.TorrentSummary"/>/<see cref="Models.TorrentDetail"/>
+    /// (it's actor-internal state, not part of either DTO), so there's
+    /// nothing to toggle against - two explicit commands instead of one
+    /// blind toggle.
+    /// </summary>
+    [RelayCommand]
+    private Task EnableSequentialAsync() => RunTorrentActionAsync(client =>
+        client.PatchTorrentAsync(SelectedTorrent!.InfoHash, new PatchTorrentOptions(Sequential: true), CancellationToken.None));
+
+    [RelayCommand]
+    private Task DisableSequentialAsync() => RunTorrentActionAsync(client =>
+        client.PatchTorrentAsync(SelectedTorrent!.InfoHash, new PatchTorrentOptions(Sequential: false), CancellationToken.None));
+
+    /// <summary>Sets a torrent's category. Used by the "Set Category..." context menu prompt's code-behind (no ViewModel of its own, same reasoning as every other small dialog).</summary>
+    public async Task<bool> SetCategoryAsync(string infoHash, string category)
+    {
+        if (_client is null)
+        {
+            return false;
+        }
+        try
+        {
+            await _client.PatchTorrentAsync(infoHash, new PatchTorrentOptions(Category: category), CancellationToken.None);
+            await RefreshAsync();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            ConnectionError = ex.Message;
+            return false;
+        }
+    }
+
+    /// <summary>Adds a tracker to the selected torrent. Used by the Trackers tab's "Add" button code-behind.</summary>
+    public async Task<bool> AddTrackerAsync(string url)
+    {
+        if (_client is null || SelectedTorrent is null)
+        {
+            return false;
+        }
+        try
+        {
+            await _client.AddTrackerAsync(SelectedTorrent.InfoHash, url, CancellationToken.None);
+            await LoadSelectedDetailAsync();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            ConnectionError = ex.Message;
+            return false;
+        }
+    }
+
+    /// <summary>Changes one file's priority on the selected torrent. Used by the Files tab's priority selector.</summary>
+    public async Task<bool> SetFilePriorityAsync(int fileIndex, string priority)
+    {
+        if (_client is null || SelectedTorrent is null)
+        {
+            return false;
+        }
+        try
+        {
+            await _client.SetFilePriorityAsync(SelectedTorrent.InfoHash, fileIndex, priority, CancellationToken.None);
+            await LoadSelectedDetailAsync();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            ConnectionError = ex.Message;
+            return false;
+        }
+    }
 
     private async Task RunTorrentActionAsync(Func<IEngineClient, Task> action)
     {

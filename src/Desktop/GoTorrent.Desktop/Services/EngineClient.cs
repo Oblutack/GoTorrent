@@ -131,6 +131,38 @@ public sealed class EngineClient : IEngineClient, IDisposable
         return limits ?? throw new InvalidOperationException("gottrentd returned an empty session-limits response.");
     }
 
+    public async Task<TorrentSummary> PatchTorrentAsync(string infoHash, PatchTorrentOptions options, CancellationToken cancellationToken)
+    {
+        var body = new PatchTorrentRequest
+        {
+            Category = options.Category,
+            Tags = options.Tags,
+            QueuePosition = options.QueuePosition,
+            ForceStart = options.ForceStart,
+            Sequential = options.Sequential,
+        };
+        var request = new HttpRequestMessage(HttpMethod.Patch, $"api/v1/torrents/{infoHash}") { Content = JsonContent.Create(body, options: JsonOptions) };
+        using var response = await _http.SendAsync(request, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+        var summary = await response.Content.ReadFromJsonAsync<TorrentSummary>(JsonOptions, cancellationToken);
+        return summary ?? throw new InvalidOperationException("gottrentd returned an empty torrent response.");
+    }
+
+    public async Task AddTrackerAsync(string infoHash, string url, CancellationToken cancellationToken)
+    {
+        var body = new AddTrackerRequest { Url = url };
+        using var response = await _http.PostAsJsonAsync($"api/v1/torrents/{infoHash}/trackers", body, JsonOptions, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+    }
+
+    public async Task SetFilePriorityAsync(string infoHash, int fileIndex, string priority, CancellationToken cancellationToken)
+    {
+        var body = new PatchFilePriorityRequest { Priority = priority };
+        var request = new HttpRequestMessage(HttpMethod.Patch, $"api/v1/torrents/{infoHash}/files/{fileIndex}") { Content = JsonContent.Create(body, options: JsonOptions) };
+        using var response = await _http.SendAsync(request, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+    }
+
     private static async Task<string> ReadInfoHashOrThrowAsync(HttpResponseMessage response, CancellationToken cancellationToken)
     {
         await EnsureSuccessAsync(response, cancellationToken);
@@ -172,6 +204,25 @@ public sealed class EngineClient : IEngineClient, IDisposable
     {
         public long? DownLimitKB { get; set; }
         public long? UpLimitKB { get; set; }
+    }
+
+    private sealed class PatchTorrentRequest
+    {
+        public string? Category { get; set; }
+        public IReadOnlyList<string>? Tags { get; set; }
+        public int? QueuePosition { get; set; }
+        public bool? ForceStart { get; set; }
+        public bool? Sequential { get; set; }
+    }
+
+    private sealed class AddTrackerRequest
+    {
+        public string? Url { get; set; }
+    }
+
+    private sealed class PatchFilePriorityRequest
+    {
+        public string? Priority { get; set; }
     }
 
     public void Dispose() => _http.Dispose();

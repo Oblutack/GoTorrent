@@ -1,0 +1,40 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:chrome="using:Avalonia.Controls.Chrome"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d" d:DesignWidth="320" d:DesignHeight="140"
+        x:Class="GoTorrent.Desktop.Views.SetCategoryWindow"
+        Width="320" SizeToContent="Height" CanResize="False"
+        WindowStartupLocation="CenterOwner"
+        Background="{DynamicResource GtBackground}"
+        Icon="/Assets/app-icon.ico"
+        ExtendClientAreaToDecorationsHint="True"
+        WindowDecorations="None"
+        ExtendClientAreaTitleBarHeightHint="-1"
+        Title="Set Category">
+
+    <Grid RowDefinitions="32,*">
+        <Grid Grid.Row="0" ColumnDefinitions="Auto,*,Auto"
+              Background="{DynamicResource GtTitleBar}"
+              chrome:WindowDecorationProperties.ElementRole="TitleBar">
+            <Image Grid.Column="0" Source="/Assets/app-icon.ico" Width="14" Height="14" Margin="10,0,6,0" />
+            <TextBlock Grid.Column="1" Text="Set Category" VerticalAlignment="Center" FontSize="12" Foreground="{DynamicResource GtSubtle}" />
+            <Button Grid.Column="2" Classes="caption captionClose" Click="OnCancelClick"
+                    chrome:WindowDecorationProperties.ElementRole="CloseButton">
+                <Path Data="M0,0 L10,10 M10,0 L0,10" StrokeThickness="1" />
+            </Button>
+        </Grid>
+
+        <StackPanel Grid.Row="1" Margin="16" Spacing="6">
+            <TextBlock Text="Category" FontWeight="Bold" />
+            <TextBox Name="CategoryBox" PlaceholderText="Leave blank to clear" />
+            <TextBlock Name="ErrorText" Foreground="{DynamicResource GtError}" TextWrapping="Wrap" IsVisible="False" Margin="0,6,0,0" />
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8" Margin="0,10,0,0">
+                <Button Content="Cancel" Click="OnCancelClick" />
+                <Button Name="OkButton" Content="Set" Click="OnOkClick" Classes="accent" IsDefault="True" />
+            </StackPanel>
+        </StackPanel>
+    </Grid>
+
+</Window>
