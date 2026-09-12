@@ -64,6 +64,13 @@ public sealed class MainViewModelTests
         return (viewModel, client, clock);
     }
 
+    private static (MainViewModel ViewModel, FakeAutostartService Autostart) MakeViewModelWithAutostart(bool initiallyEnabled = false)
+    {
+        var autostart = new FakeAutostartService { Enabled = initiallyEnabled };
+        var viewModel = new MainViewModel(_ => new FakeEngineClient(), new FakeSettingsStore(), new FakeEventStream(), TimeProvider.System, autostart);
+        return (viewModel, autostart);
+    }
+
     [Fact]
     public void Connect_WithAValidAddress_Succeeds()
     {
@@ -503,6 +510,36 @@ public sealed class MainViewModelTests
 
         var row = Assert.Single(viewModel.DetailPeers);
         Assert.Equal(0, row.DownloadRateKBps);
+    }
+
+    [Fact]
+    public void Constructor_ReadsAutostartStateFromTheAutostartService()
+    {
+        var (viewModel, _) = MakeViewModelWithAutostart(initiallyEnabled: true);
+
+        Assert.True(viewModel.AutostartEnabled);
+    }
+
+    [Fact]
+    public void SetAutostart_EnablesItThroughTheAutostartService()
+    {
+        var (viewModel, autostart) = MakeViewModelWithAutostart(initiallyEnabled: false);
+
+        viewModel.SetAutostart(true);
+
+        Assert.True(autostart.Enabled);
+        Assert.True(viewModel.AutostartEnabled);
+    }
+
+    [Fact]
+    public void SetAutostart_DisablesItThroughTheAutostartService()
+    {
+        var (viewModel, autostart) = MakeViewModelWithAutostart(initiallyEnabled: true);
+
+        viewModel.SetAutostart(false);
+
+        Assert.False(autostart.Enabled);
+        Assert.False(viewModel.AutostartEnabled);
     }
 
     [Fact]

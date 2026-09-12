@@ -17,6 +17,7 @@ public partial class MainViewModel : ViewModelBase
     private readonly ISettingsStore _settingsStore;
     private readonly IEventStream _eventStream;
     private readonly TimeProvider _timeProvider;
+    private readonly IAutostartService _autostartService;
     private IEngineClient? _client;
     private EngineOptions? _connectedOptions;
     private DispatcherTimer? _timer;
@@ -83,7 +84,10 @@ public partial class MainViewModel : ViewModelBase
     [ObservableProperty]
     public partial bool StartMinimized { get; set; }
 
-    public MainViewModel() : this(options => new EngineClient(options), new FileSettingsStore(), new WebSocketEventStream(), TimeProvider.System)
+    [ObservableProperty]
+    public partial bool AutostartEnabled { get; set; }
+
+    public MainViewModel() : this(options => new EngineClient(options), new FileSettingsStore(), new WebSocketEventStream(), TimeProvider.System, new WindowsAutostartService())
     {
     }
 
@@ -94,7 +98,7 @@ public partial class MainViewModel : ViewModelBase
     /// in-memory settings store.
     /// </summary>
     public MainViewModel(Func<EngineOptions, IEngineClient> clientFactory, ISettingsStore settingsStore)
-        : this(clientFactory, settingsStore, new WebSocketEventStream(), TimeProvider.System)
+        : this(clientFactory, settingsStore, new WebSocketEventStream(), TimeProvider.System, new WindowsAutostartService())
     {
     }
 
@@ -106,14 +110,26 @@ public partial class MainViewModel : ViewModelBase
     /// on real wall-clock time elapsing between two calls in a test.
     /// </summary>
     public MainViewModel(Func<EngineOptions, IEngineClient> clientFactory, ISettingsStore settingsStore, IEventStream eventStream, TimeProvider timeProvider)
+        : this(clientFactory, settingsStore, eventStream, timeProvider, new WindowsAutostartService())
+    {
+    }
+
+    /// <summary>
+    /// <paramref name="autostartService"/> is the same kind of seam again -
+    /// tests use a fake so "is GoTorrent registered to launch at login"
+    /// never depends on (or mutates) the real Windows registry.
+    /// </summary>
+    public MainViewModel(Func<EngineOptions, IEngineClient> clientFactory, ISettingsStore settingsStore, IEventStream eventStream, TimeProvider timeProvider, IAutostartService autostartService)
     {
         _clientFactory = clientFactory;
         _settingsStore = settingsStore;
         _eventStream = eventStream;
         _timeProvider = timeProvider;
+        _autostartService = autostartService;
 
         var settings = _settingsStore.Load();
         StartMinimized = settings.StartMinimized;
+        AutostartEnabled = _autostartService.IsEnabled();
         if (settings.IsConfigured)
         {
             BaseAddressInput = settings.BaseAddress!;
@@ -157,6 +173,19 @@ public partial class MainViewModel : ViewModelBase
     {
         StartMinimized = value;
         _settingsStore.Save(_settingsStore.Load() with { StartMinimized = value });
+    }
+
+    /// <summary>
+    /// Registers or unregisters this app to launch at login. Nothing is
+    /// persisted in <see cref="DesktopSettings"/> for this one - the
+    /// Windows registry itself is the source of truth, so a user removing
+    /// it outside the app (or on another machine's settings.json) is
+    /// reflected correctly rather than fought.
+    /// </summary>
+    public void SetAutostart(bool value)
+    {
+        _autostartService.SetEnabled(value);
+        AutostartEnabled = value;
     }
 
     public async Task RefreshAsync()

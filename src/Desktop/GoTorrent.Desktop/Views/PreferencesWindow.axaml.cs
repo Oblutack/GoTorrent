@@ -26,6 +26,7 @@ public partial class PreferencesWindow : Window
         InitializeComponent();
         _mainViewModel = mainViewModel;
         StartMinimizedCheckBox.IsChecked = mainViewModel.StartMinimized;
+        AutostartCheckBox.IsChecked = mainViewModel.AutostartEnabled;
         Opened += async (_, _) => await LoadCurrentLimitsAsync();
     }
 
@@ -63,6 +64,7 @@ public partial class PreferencesWindow : Window
         {
             await _mainViewModel.SetSessionLimitsAsync(down, up);
             _mainViewModel.SetStartMinimized(StartMinimizedCheckBox.IsChecked ?? false);
+            _mainViewModel.SetAutostart(AutostartCheckBox.IsChecked ?? false);
             Close();
         }
         catch (Exception ex)
