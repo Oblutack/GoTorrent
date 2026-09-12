@@ -99,6 +99,15 @@ public partial class App : Application
             {
                 mainWindow.AllowRealClose();
             }
+            // Stops the auto-refresh/peer-refresh timers and the live
+            // event socket loop, and disposes the current engine client's
+            // real HttpClient - only on an actual quit, never on the
+            // ordinary hide-to-tray close this handler is not on the path
+            // for.
+            if (desktop.MainWindow?.DataContext is MainViewModel viewModelToDispose)
+            {
+                viewModelToDispose.Dispose();
+            }
             desktop.Shutdown();
         }
     }

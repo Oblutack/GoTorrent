@@ -293,11 +293,18 @@
             </Grid>
         </Grid>
 
-        <TextBlock Grid.Row="4"
-                    Text="{Binding ConnectionError}"
-                    Foreground="{DynamicResource GtError}"
-                    Margin="12,4"
-                    IsVisible="{Binding ConnectionError, Converter={x:Static conv:ObjectConverters.IsNotNull}}" />
+        <!-- AddTorrentError used to be bound only inside AddTorrentWindow's
+             own dialog, so a failed add that didn't go through that
+             dialog (drag-and-drop, .torrent/magnet file association) had
+             nowhere in the running app to actually show up. -->
+        <StackPanel Grid.Row="4" Margin="12,4" Spacing="2">
+            <TextBlock Text="{Binding ConnectionError}"
+                        Foreground="{DynamicResource GtError}"
+                        IsVisible="{Binding ConnectionError, Converter={x:Static conv:ObjectConverters.IsNotNull}}" />
+            <TextBlock Text="{Binding AddTorrentError, StringFormat='Add torrent: {0}'}"
+                        Foreground="{DynamicResource GtError}"
+                        IsVisible="{Binding AddTorrentError, Converter={x:Static conv:ObjectConverters.IsNotNull}}" />
+        </StackPanel>
     </Grid>
 
 </Window>

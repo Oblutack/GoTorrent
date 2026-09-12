@@ -400,7 +400,7 @@ public sealed class MainViewModelTests
     }
 
     [Fact]
-    public async Task LoadSelectedDetailAsync_WithASelectionPopulatesAllFourTabs()
+    public async Task LoadSelectedDetailAsync_WithASelectionPopulatesGeneralFilesAndTrackers()
     {
         var (viewModel, client, _) = MakeViewModel();
         viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
@@ -412,7 +412,6 @@ public sealed class MainViewModelTests
         viewModel.SelectedTorrent = viewModel.Torrents[0];
         client.Detail = MakeDetail("ubuntu.iso");
         client.Files.Add(new FileEntry(["ubuntu.iso"], 1000, "normal"));
-        client.Peers.Add(new PeerEntry("127.0.0.1:6881", true, 100, 0, false, true, false, true, 0.1));
         client.Trackers.Add(new TrackerEntry("udp://tracker.example/announce", DateTimeOffset.UtcNow, null, 5, 1));
 
         await viewModel.LoadSelectedDetailAsync();
@@ -420,8 +419,65 @@ public sealed class MainViewModelTests
         Assert.Equal(torrent.InfoHash, client.DetailRequestedHashes.Last());
         Assert.Equal("ubuntu.iso", viewModel.DetailTorrent!.Name);
         Assert.Single(viewModel.DetailFiles);
-        Assert.Single(viewModel.DetailPeers);
         Assert.Single(viewModel.DetailTrackers);
+    }
+
+    [Fact]
+    public async Task OnTorrentSelectionChanged_CallsBothLoadSelectedDetailAndRefreshPeerRates()
+    {
+        // Peers is deliberately not one of LoadSelectedDetailAsync's own
+        // four tabs anymore (see its own doc comment) - the real
+        // MainWindow.axaml.cs's OnTorrentSelectionChanged calls both
+        // methods together on a manual selection change, which is what
+        // this pins down instead of relying on a side effect.
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        var torrent = MakeTorrent("ubuntu.iso");
+        client.Torrents.Add(torrent);
+        await viewModel.RefreshAsync();
+        viewModel.SelectedTorrent = viewModel.Torrents[0];
+        client.Detail = MakeDetail("ubuntu.iso");
+        client.Peers.Add(new PeerEntry("127.0.0.1:6881", true, 100, 0, false, true, false, true, 0.1));
+
+        await viewModel.LoadSelectedDetailAsync();
+        await viewModel.RefreshPeerRatesAsync();
+
+        Assert.Single(viewModel.DetailPeers);
+    }
+
+    [Fact]
+    public async Task LoadSelectedDetailAsync_ASlowSupersededCallNeverOverwritesTheNewerSelection()
+    {
+        // The real bug: select torrent A (slow to respond), then quickly
+        // select torrent B (fast) - A's four awaits used to resolve after
+        // B's already had, silently overwriting the detail pane with A's
+        // (now wrong) data. A's own GetTorrentDetailAsync call is gated
+        // open forever (simulating "slow"), so if the fix didn't actually
+        // cancel it, this test would hang instead of failing - a stronger
+        // guarantee than a timing-based assertion could give.
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        var torrentA = MakeTorrent("A") with { InfoHash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" };
+        var torrentB = MakeTorrent("B") with { InfoHash = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" };
+        client.Torrents.Add(torrentA);
+        client.Torrents.Add(torrentB);
+        await viewModel.RefreshAsync();
+        client.DetailsByHash[torrentA.InfoHash] = MakeDetail("A");
+        client.DetailsByHash[torrentB.InfoHash] = MakeDetail("B");
+        client.DetailGatesByHash[torrentA.InfoHash] = new TaskCompletionSource();
+
+        viewModel.SelectedTorrent = viewModel.Torrents.Single(t => t.InfoHash == torrentA.InfoHash);
+        var slowLoad = viewModel.LoadSelectedDetailAsync();
+
+        viewModel.SelectedTorrent = viewModel.Torrents.Single(t => t.InfoHash == torrentB.InfoHash);
+        await viewModel.LoadSelectedDetailAsync();
+        await slowLoad;
+
+        Assert.Equal("B", viewModel.DetailTorrent!.Name);
     }
 
     [Fact]

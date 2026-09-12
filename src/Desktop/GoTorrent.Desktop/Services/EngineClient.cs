@@ -19,9 +19,18 @@ public sealed class EngineClient : IEngineClient, IDisposable
 
     private readonly HttpClient _http;
 
+    /// <summary>
+    /// The default <see cref="HttpClient.Timeout"/> is 100 seconds - fine
+    /// for a call across a real network, but on a local daemon a hung
+    /// request should surface as an error in a few seconds, not stall the
+    /// UI's data for well over a minute while 2s-interval timer ticks pile
+    /// up behind it.
+    /// </summary>
+    private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(10);
+
     public EngineClient(EngineOptions options)
     {
-        _http = new HttpClient { BaseAddress = options.BaseAddress };
+        _http = new HttpClient { BaseAddress = options.BaseAddress, Timeout = RequestTimeout };
         _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", options.Token);
     }
 
