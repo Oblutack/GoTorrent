@@ -80,14 +80,28 @@ public sealed class FakeEngineClient : IEngineClient
         return Task.FromResult("0102030405060708090a0b0c0d0e0f1011121314");
     }
 
-    public Task PauseAsync(string infoHash, CancellationToken cancellationToken)
+    /// <summary>
+    /// Optional gate on <see cref="PauseAsync"/> - same shape as
+    /// <see cref="DetailGatesByHash"/>, for the one test that needs to
+    /// observe optimistic-UI state *before* the real API response lands,
+    /// which a synchronously-completing fake call makes otherwise
+    /// unobservable (everything, including the following
+    /// <c>RefreshAsync</c>, would run to completion before the test ever
+    /// gets a chance to check anything in between).
+    /// </summary>
+    public TaskCompletionSource? PauseGate { get; set; }
+
+    public async Task PauseAsync(string infoHash, CancellationToken cancellationToken)
     {
+        if (PauseGate is { } gate)
+        {
+            await gate.Task;
+        }
         if (Failure is not null)
         {
-            return Task.FromException(Failure);
+            throw Failure;
         }
         PausedHashes.Add(infoHash);
-        return Task.CompletedTask;
     }
 
     public Task ResumeAsync(string infoHash, CancellationToken cancellationToken)

@@ -25,7 +25,7 @@ public partial class App : Application
             {
                 DataContext = mainViewModel,
             };
-            mainWindow.RestoreGeometry(mainViewModel.SavedSettings);
+            mainWindow.AttachViewModel(mainViewModel);
             // Torrents keep transferring whether or not the window is
             // visible - closing/minimizing to the tray (MainWindow's own
             // Closing/WindowState handling) must not end the process the

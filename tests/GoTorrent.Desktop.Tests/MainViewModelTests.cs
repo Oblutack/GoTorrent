@@ -436,6 +436,132 @@ public sealed class MainViewModelTests
     }
 
     [Fact]
+    public async Task PauseSelectedCommand_SetsStateOptimisticallyBeforeTheApiCallCompletes()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        var torrent = MakeTorrent("ubuntu.iso") with { State = "Downloading" };
+        client.Torrents.Add(torrent);
+        await viewModel.RefreshAsync();
+        viewModel.SelectedTorrent = viewModel.Torrents[0];
+        client.PauseGate = new TaskCompletionSource();
+
+        var pause = viewModel.PauseSelectedCommand.ExecuteAsync(null);
+
+        Assert.Equal("Paused", viewModel.SelectedTorrent.State);
+        client.PauseGate.SetResult();
+        await pause;
+    }
+
+    [Fact]
+    public async Task RunTorrentActionAsync_OnFailureRaisesAnErrorToastInsteadOfConnectionError()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        var torrent = MakeTorrent("ubuntu.iso");
+        client.Torrents.Add(torrent);
+        await viewModel.RefreshAsync();
+        viewModel.SelectedTorrent = viewModel.Torrents[0];
+        client.Failure = new InvalidOperationException("daemon said no");
+        ToastMessage? toast = null;
+        viewModel.ToastRequested += t => toast = t;
+
+        await viewModel.VerifySelectedCommand.ExecuteAsync(null);
+
+        Assert.NotNull(toast);
+        Assert.Equal(ToastSeverity.Error, toast.Severity);
+        Assert.Contains("force recheck", toast.Text);
+        Assert.Contains("daemon said no", toast.Text);
+        Assert.Null(viewModel.ConnectionError);
+    }
+
+    [Fact]
+    public async Task SetCategoryAsync_OnSuccessRaisesASuccessToast()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        var torrent = MakeTorrent("ubuntu.iso");
+        client.Torrents.Add(torrent);
+        await viewModel.RefreshAsync();
+        ToastMessage? toast = null;
+        viewModel.ToastRequested += t => toast = t;
+
+        await viewModel.SetCategoryAsync(torrent.InfoHash, "Movies");
+
+        Assert.NotNull(toast);
+        Assert.Equal(ToastSeverity.Success, toast.Severity);
+        Assert.Equal("Category set", toast.Text);
+    }
+
+    [Fact]
+    public async Task DeleteSelectedCommand_HidesTheTorrentImmediatelyWithoutCallingDeleteYet()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.UndoDeleteDelay = TimeSpan.FromHours(1);
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        var torrent = MakeTorrent("ubuntu.iso");
+        client.Torrents.Add(torrent);
+        await viewModel.RefreshAsync();
+        viewModel.SelectedTorrent = viewModel.Torrents[0];
+
+        viewModel.DeleteSelectedCommand.Execute(null);
+
+        Assert.Empty(viewModel.DisplayedTorrents);
+        Assert.Empty(client.DeletedHashes);
+    }
+
+    [Fact]
+    public async Task DeleteSelectedCommand_UndoRestoresTheTorrentAndNeverCallsDelete()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.UndoDeleteDelay = TimeSpan.FromHours(1);
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        var torrent = MakeTorrent("ubuntu.iso");
+        client.Torrents.Add(torrent);
+        await viewModel.RefreshAsync();
+        viewModel.SelectedTorrent = viewModel.Torrents[0];
+        ToastMessage? toast = null;
+        viewModel.ToastRequested += t => toast = t;
+
+        viewModel.DeleteSelectedCommand.Execute(null);
+        Assert.Empty(viewModel.DisplayedTorrents);
+        Assert.NotNull(toast?.Action);
+        toast.Action!();
+
+        Assert.Single(viewModel.DisplayedTorrents);
+        Assert.Empty(client.DeletedHashes);
+    }
+
+    [Fact]
+    public async Task DeleteSelectedCommand_CommitsTheRealDeleteOnceTheUndoWindowElapses()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.UndoDeleteDelay = TimeSpan.FromMilliseconds(10);
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        var torrent = MakeTorrent("ubuntu.iso");
+        client.Torrents.Add(torrent);
+        await viewModel.RefreshAsync();
+        viewModel.SelectedTorrent = viewModel.Torrents[0];
+
+        viewModel.DeleteSelectedCommand.Execute(null);
+        await Task.Delay(TimeSpan.FromMilliseconds(200));
+
+        Assert.Equal([(torrent.InfoHash, false)], client.DeletedHashes);
+    }
+
+    [Fact]
     public async Task PauseSelectedCommand_WithNoSelectionDoesNothing()
     {
         var (viewModel, client, _) = MakeViewModel();

@@ -1,7 +1,9 @@
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Notifications;
 using Avalonia.Input;
 using Avalonia.Interactivity;
+using GoTorrent.Desktop.Models;
 using GoTorrent.Desktop.ViewModels;
 
 namespace GoTorrent.Desktop.Views;
@@ -16,6 +18,18 @@ public partial class MainWindow : Window
     /// either way).
     /// </summary>
     private bool _reallyClose;
+
+    /// <summary>
+    /// Renders <see cref="MainViewModel.ToastRequested"/> as an in-window
+    /// overlay - Avalonia's own notification type, not a real OS toast
+    /// (see <c>Services/IDesktopNotifier</c> for the one genuine OS
+    /// notification this app sends). Created once <see cref="AttachViewModel"/>
+    /// runs, rather than in the constructor, since <see cref="WindowNotificationManager"/>
+    /// wants a real <see cref="TopLevel"/> to attach to and there's no
+    /// reason to build one before a <see cref="MainViewModel"/> exists to
+    /// actually feed it.
+    /// </summary>
+    private WindowNotificationManager? _notifications;
 
     /// <summary>
     /// The window's own last known <b>Normal</b>-state bounds - tracked
@@ -52,17 +66,49 @@ public partial class MainWindow : Window
     public void AllowRealClose() => _reallyClose = true;
 
     /// <summary>
-    /// Applies a previously-saved <see cref="Services.DesktopSettings"/>'
-    /// window geometry - called once from <c>App.axaml.cs</c> right
-    /// after <see cref="Window.DataContext"/> is set, since the
+    /// Wires up everything that needs a real <see cref="MainViewModel"/>
+    /// instance to exist first - called once from <c>App.axaml.cs</c>
+    /// right after <see cref="Window.DataContext"/> is set, since the
     /// constructor runs before an object initializer's property
-    /// assignments and so can't read it yet. A missing
-    /// <see cref="Services.DesktopSettings.WindowWidth"/>/
+    /// assignments and so can't reach it yet.
+    /// </summary>
+    public void AttachViewModel(MainViewModel mainViewModel)
+    {
+        RestoreGeometry(mainViewModel.SavedSettings);
+        _notifications = new WindowNotificationManager(this) { Position = NotificationPosition.BottomRight, MaxItems = 3 };
+        mainViewModel.ToastRequested += OnToastRequested;
+    }
+
+    /// <summary>
+    /// <see cref="Notification.OnClick"/> is Avalonia's own "the user
+    /// clicked this notification" hook - used for the delete-with-undo
+    /// toast's "Undo" affordance, since <see cref="WindowNotificationManager"/>
+    /// notifications have no separate "action button" concept of their
+    /// own. A toast with no <see cref="ToastMessage.Action"/> just omits
+    /// the handler entirely, so clicking it does nothing but dismiss it.
+    /// </summary>
+    private void OnToastRequested(ToastMessage toast)
+    {
+        var type = toast.Severity switch
+        {
+            ToastSeverity.Success => NotificationType.Success,
+            ToastSeverity.Warning => NotificationType.Warning,
+            ToastSeverity.Error => NotificationType.Error,
+            _ => NotificationType.Information,
+        };
+        var text = toast.ActionLabel is { } actionLabel ? $"{toast.Text}  ({actionLabel})" : toast.Text;
+        var notification = new Notification("GoTorrent", text, type, onClick: toast.Action);
+        _notifications?.Show(notification);
+    }
+
+    /// <summary>
+    /// Applies a previously-saved <see cref="Services.DesktopSettings"/>'
+    /// window geometry. A missing <see cref="Services.DesktopSettings.WindowWidth"/>/
     /// <see cref="Services.DesktopSettings.WindowHeight"/> (null - no
     /// saved geometry yet) leaves the window at its XAML-declared
     /// default size/position entirely untouched.
     /// </summary>
-    public void RestoreGeometry(Services.DesktopSettings settings)
+    private void RestoreGeometry(Services.DesktopSettings settings)
     {
         if (settings is { WindowWidth: { } width, WindowHeight: { } height })
         {
