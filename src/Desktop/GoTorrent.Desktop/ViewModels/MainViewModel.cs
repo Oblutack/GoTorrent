@@ -197,6 +197,7 @@ public partial class MainViewModel : ViewModelBase, IDisposable
         _desktopNotifier = desktopNotifier;
 
         var settings = _settingsStore.Load();
+        SavedSettings = settings;
         StartMinimized = settings.StartMinimized;
         AutostartEnabled = _autostartService.IsEnabled();
         FileAssociationEnabled = _fileAssociationService.IsRegistered();
@@ -332,6 +333,40 @@ public partial class MainViewModel : ViewModelBase, IDisposable
     {
         StartMinimized = value;
         _settingsStore.Save(_settingsStore.Load() with { StartMinimized = value });
+    }
+
+    /// <summary>
+    /// The window geometry <c>MainWindow</c> should restore itself to at
+    /// startup - read once, here, rather than <c>MainWindow</c> owning
+    /// an <see cref="ISettingsStore"/> of its own. Refreshed after every
+    /// <see cref="SaveWindowGeometry"/> call so a caller reading it back
+    /// (there isn't one today, but the same "re-read after every write"
+    /// shape as <see cref="StartMinimized"/> above) sees the latest value.
+    /// </summary>
+    public DesktopSettings SavedSettings { get; private set; }
+
+    /// <summary>
+    /// Persists window size/position/maximized-state and the detail-pane
+    /// splitter position - called from <c>MainWindow</c> whenever it's
+    /// about to become hidden (minimized to tray or a real close), never
+    /// on every resize/move tick. <paramref name="width"/>/
+    /// <paramref name="height"/>/<paramref name="x"/>/<paramref name="y"/>
+    /// are the window's last known <b>Normal</b>-state bounds - see
+    /// <c>MainWindow.SaveGeometry</c> for why maximized bounds are never
+    /// the ones saved here.
+    /// </summary>
+    public void SaveWindowGeometry(double width, double height, int x, int y, bool maximized, double? detailSplitFraction)
+    {
+        SavedSettings = _settingsStore.Load() with
+        {
+            WindowWidth = width,
+            WindowHeight = height,
+            WindowX = x,
+            WindowY = y,
+            WindowMaximized = maximized,
+            DetailSplitFraction = detailSplitFraction,
+        };
+        _settingsStore.Save(SavedSettings);
     }
 
     /// <summary>

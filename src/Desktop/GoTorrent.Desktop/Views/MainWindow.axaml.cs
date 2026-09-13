@@ -17,18 +17,128 @@ public partial class MainWindow : Window
     /// </summary>
     private bool _reallyClose;
 
+    /// <summary>
+    /// The window's own last known <b>Normal</b>-state bounds - tracked
+    /// continuously (see <see cref="OnPropertyChanged"/>) rather than
+    /// read at save time, since <see cref="Window.Width"/>/
+    /// <see cref="Window.Height"/>/<see cref="Window.Position"/> reflect
+    /// the *maximized* bounds while <see cref="WindowState.Maximized"/>
+    /// is active - saving those directly would mean every restart of a
+    /// maximized app "forgets" its real restored size entirely.
+    /// </summary>
+    private double _lastNormalWidth;
+    private double _lastNormalHeight;
+    private PixelPoint _lastNormalPosition;
+
+    /// <summary>
+    /// What <see cref="ShowAtRestoredState"/> (the tray "Show" handler)
+    /// should set <see cref="Window.WindowState"/> back to - without
+    /// this, showing a maximized-then-minimized-to-tray window from the
+    /// tray always reset it to <see cref="WindowState.Normal"/>, a real
+    /// (if minor) pre-existing UX bug this same geometry work now fixes
+    /// as a natural side effect of tracking Normal-vs-Maximized properly.
+    /// </summary>
+    private WindowState _restoredState = WindowState.Normal;
+
     public MainWindow()
     {
         InitializeComponent();
         Closing += OnClosing;
+        PositionChanged += OnPositionChanged;
         DragDrop.AddDropHandler(this, OnDrop);
         DragDrop.AddDragOverHandler(this, OnDragOver);
     }
 
     public void AllowRealClose() => _reallyClose = true;
 
+    /// <summary>
+    /// Applies a previously-saved <see cref="Services.DesktopSettings"/>'
+    /// window geometry - called once from <c>App.axaml.cs</c> right
+    /// after <see cref="Window.DataContext"/> is set, since the
+    /// constructor runs before an object initializer's property
+    /// assignments and so can't read it yet. A missing
+    /// <see cref="Services.DesktopSettings.WindowWidth"/>/
+    /// <see cref="Services.DesktopSettings.WindowHeight"/> (null - no
+    /// saved geometry yet) leaves the window at its XAML-declared
+    /// default size/position entirely untouched.
+    /// </summary>
+    public void RestoreGeometry(Services.DesktopSettings settings)
+    {
+        if (settings is { WindowWidth: { } width, WindowHeight: { } height })
+        {
+            Width = width;
+            Height = height;
+            _lastNormalWidth = width;
+            _lastNormalHeight = height;
+        }
+        if (settings is { WindowX: { } x, WindowY: { } y })
+        {
+            Position = new PixelPoint(x, y);
+            _lastNormalPosition = Position;
+        }
+        if (settings.WindowMaximized)
+        {
+            _restoredState = WindowState.Maximized;
+            WindowState = WindowState.Maximized;
+        }
+        if (settings.DetailSplitFraction is { } fraction && DetailSplitGrid.RowDefinitions.Count == 3)
+        {
+            DetailSplitGrid.RowDefinitions[0] = new RowDefinition(fraction, GridUnitType.Star);
+            DetailSplitGrid.RowDefinitions[2] = new RowDefinition(1 - fraction, GridUnitType.Star);
+        }
+    }
+
+    /// <summary>
+    /// The tray "Show" handler - <see cref="Window.Show()"/> alone
+    /// doesn't undo a <see cref="WindowState.Minimized"/> left over from
+    /// this app's own "minimize to tray" (see <see cref="OnPropertyChanged"/>),
+    /// and always forcing <see cref="WindowState.Normal"/> here (the
+    /// previous behaviour) meant a maximized window came back un-maximized
+    /// every time it was hidden and reshown via the tray - restoring
+    /// <see cref="_restoredState"/> instead fixes both at once.
+    /// </summary>
+    public void ShowAtRestoredState()
+    {
+        Show();
+        WindowState = _restoredState;
+        Activate();
+    }
+
+    /// <summary>
+    /// Persists the window's current geometry - called whenever the
+    /// window is about to become hidden (see <see cref="OnClosing"/> and
+    /// <see cref="OnPropertyChanged"/>'s minimize-to-tray interception),
+    /// never on every resize/move tick.
+    /// </summary>
+    private void SaveGeometry()
+    {
+        if (DataContext is not MainViewModel mainViewModel)
+        {
+            return;
+        }
+        double? splitFraction = null;
+        if (DetailSplitGrid.RowDefinitions is [{ } topRow, _, { } bottomRow] && topRow.Height.IsStar && bottomRow.Height.IsStar)
+        {
+            var total = topRow.Height.Value + bottomRow.Height.Value;
+            if (total > 0)
+            {
+                splitFraction = topRow.Height.Value / total;
+            }
+        }
+        mainViewModel.SaveWindowGeometry(_lastNormalWidth, _lastNormalHeight, _lastNormalPosition.X, _lastNormalPosition.Y, WindowState == WindowState.Maximized, splitFraction);
+    }
+
+    private void OnPositionChanged(object? sender, PixelPointEventArgs e)
+    {
+        if (WindowState == WindowState.Normal)
+        {
+            _lastNormalPosition = e.Point;
+        }
+    }
+
     private void OnClosing(object? sender, WindowClosingEventArgs e)
     {
+        SaveGeometry();
         if (_reallyClose)
         {
             return;
@@ -40,14 +150,41 @@ public partial class MainWindow : Window
     /// <summary>
     /// True "minimize to tray": the window disappears from the taskbar
     /// entirely instead of just collapsing to a taskbar button, so the
-    /// tray icon is the only way back to it while minimized.
+    /// tray icon is the only way back to it while minimized. Also where
+    /// <see cref="_lastNormalWidth"/>/<see cref="_lastNormalHeight"/>/
+    /// <see cref="_restoredState"/> are kept up to date - tracked
+    /// continuously rather than read once at save time, since by the
+    /// time <see cref="SaveGeometry"/> runs here the state being saved
+    /// *for* is already Minimized (about to Hide), not the Normal/
+    /// Maximized state that actually needs remembering.
     /// </summary>
     protected override void OnPropertyChanged(AvaloniaPropertyChangedEventArgs change)
     {
         base.OnPropertyChanged(change);
-        if (change.Property == WindowStateProperty && WindowState == WindowState.Minimized)
+        if (change.Property == WindowStateProperty)
         {
-            Hide();
+            if (WindowState == WindowState.Minimized)
+            {
+                SaveGeometry();
+                Hide();
+            }
+            else
+            {
+                _restoredState = WindowState;
+            }
+            return;
+        }
+        if (WindowState != WindowState.Normal)
+        {
+            return;
+        }
+        if (change.Property == WidthProperty)
+        {
+            _lastNormalWidth = Width;
+        }
+        else if (change.Property == HeightProperty)
+        {
+            _lastNormalHeight = Height;
         }
     }
 

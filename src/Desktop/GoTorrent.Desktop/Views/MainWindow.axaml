@@ -134,7 +134,7 @@
                 </ListBox>
             </Border>
 
-            <Grid Grid.Column="1" RowDefinitions="2*,Auto,3*" Margin="8,8,8,0">
+            <Grid Grid.Column="1" Name="DetailSplitGrid" RowDefinitions="2*,Auto,3*" Margin="8,8,8,0">
                 <DataGrid Grid.Row="0"
                           Name="TorrentsGrid"
                           ItemsSource="{Binding DisplayedTorrents}"

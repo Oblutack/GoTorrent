@@ -25,6 +25,7 @@ public partial class App : Application
             {
                 DataContext = mainViewModel,
             };
+            mainWindow.RestoreGeometry(mainViewModel.SavedSettings);
             // Torrents keep transferring whether or not the window is
             // visible - closing/minimizing to the tray (MainWindow's own
             // Closing/WindowState handling) must not end the process the
@@ -88,11 +89,9 @@ public partial class App : Application
 
     private void ShowMainWindow()
     {
-        if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime { MainWindow: { } window })
+        if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime { MainWindow: MainWindow window })
         {
-            window.Show();
-            window.WindowState = WindowState.Normal;
-            window.Activate();
+            window.ShowAtRestoredState();
         }
     }
 

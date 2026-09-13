@@ -932,6 +932,22 @@ public sealed class MainViewModelTests
     }
 
     [Fact]
+    public void Constructor_ExposesSavedSettingsForWindowGeometryRestore()
+    {
+        var settings = new FakeSettingsStore();
+        settings.Save(new DesktopSettings(null, null, WindowWidth: 1200, WindowHeight: 800, WindowX: 10, WindowY: 20, WindowMaximized: true, DetailSplitFraction: 0.25));
+
+        var viewModel = new MainViewModel(_ => new FakeEngineClient(), settings);
+
+        Assert.Equal(1200, viewModel.SavedSettings.WindowWidth);
+        Assert.Equal(800, viewModel.SavedSettings.WindowHeight);
+        Assert.Equal(10, viewModel.SavedSettings.WindowX);
+        Assert.Equal(20, viewModel.SavedSettings.WindowY);
+        Assert.True(viewModel.SavedSettings.WindowMaximized);
+        Assert.Equal(0.25, viewModel.SavedSettings.DetailSplitFraction);
+    }
+
+    [Fact]
     public void SetStartMinimized_PersistsWithoutTouchingSavedConnectionSettings()
     {
         var (viewModel, _, settings) = MakeViewModel();
@@ -945,6 +961,28 @@ public sealed class MainViewModelTests
         Assert.True(saved.StartMinimized);
         Assert.Equal("http://127.0.0.1:6880/", saved.BaseAddress);
         Assert.Equal("a-token", saved.Token);
+    }
+
+    [Fact]
+    public void SaveWindowGeometry_PersistsWithoutTouchingSavedConnectionSettings()
+    {
+        var (viewModel, _, settings) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+
+        viewModel.SaveWindowGeometry(1200, 800, 50, 60, maximized: false, detailSplitFraction: 0.4);
+
+        var saved = settings.Load();
+        Assert.Equal(1200, saved.WindowWidth);
+        Assert.Equal(800, saved.WindowHeight);
+        Assert.Equal(50, saved.WindowX);
+        Assert.Equal(60, saved.WindowY);
+        Assert.False(saved.WindowMaximized);
+        Assert.Equal(0.4, saved.DetailSplitFraction);
+        Assert.Equal("http://127.0.0.1:6880/", saved.BaseAddress);
+        Assert.Equal("a-token", saved.Token);
+        Assert.Equal(saved, viewModel.SavedSettings);
     }
 
     [Fact]
