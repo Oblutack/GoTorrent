@@ -65,6 +65,21 @@ public partial class MainViewModel : ViewModelBase, IDisposable
     [ObservableProperty]
     public partial string SearchText { get; set; } = string.Empty;
 
+    /// <summary>
+    /// Stage 3's empty-state overlays for the torrent list - two
+    /// distinct messages for two distinct reasons the grid could be
+    /// empty ("you have no torrents at all" vs. "your filter/search
+    /// matched none of the torrents you do have"), recomputed alongside
+    /// <see cref="DisplayedTorrents"/> in <see cref="ApplyFilter"/> since
+    /// XAML has no clean way to express "these two collections' counts,
+    /// compared" as a binding condition on its own.
+    /// </summary>
+    [ObservableProperty]
+    public partial bool ShowEmptyFleetMessage { get; set; }
+
+    [ObservableProperty]
+    public partial bool ShowNoMatchesMessage { get; set; }
+
     [ObservableProperty]
     public partial SessionStats? Session { get; set; }
 
@@ -669,6 +684,9 @@ public partial class MainViewModel : ViewModelBase, IDisposable
             filtered = filtered.Where(t => t.Name.Contains(search, StringComparison.OrdinalIgnoreCase));
         }
         SyncCollection(DisplayedTorrents, filtered.ToList());
+
+        ShowEmptyFleetMessage = visible.Count == 0;
+        ShowNoMatchesMessage = visible.Count > 0 && DisplayedTorrents.Count == 0;
     }
 
     /// <summary>

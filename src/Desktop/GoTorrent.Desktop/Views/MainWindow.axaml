@@ -26,6 +26,7 @@
 
     <Window.Resources>
         <sconv:StateToBrushConverter x:Key="StateToBrush" />
+        <sconv:CollectionEmptyConverter x:Key="CollectionEmpty" />
     </Window.Resources>
 
     <Grid RowDefinitions="36,Auto,Auto,*,Auto" Margin="0">
@@ -68,6 +69,8 @@
         <StackPanel Grid.Row="1" Spacing="6" IsVisible="{Binding !IsConnected}" Margin="16">
             <Image Source="/Assets/gotorrent-logo.png" Height="40" HorizontalAlignment="Left" Margin="0,0,0,10" />
             <TextBlock Text="Connect to gottrentd" FontWeight="Bold" FontSize="16" />
+            <TextBlock Text="Enter the address of a running gottrentd, or start one below if it's installed alongside this app."
+                        Foreground="{DynamicResource GtSubtle}" TextWrapping="Wrap" MaxWidth="360" Margin="0,0,0,4" />
             <TextBox PlaceholderText="Base address, e.g. http://127.0.0.1:6880/" Text="{Binding BaseAddressInput}" />
             <TextBox PlaceholderText="Bearer token" Text="{Binding TokenInput}" />
             <StackPanel Orientation="Horizontal" Spacing="8">
@@ -200,7 +203,15 @@
                     </DataGrid.Columns>
                 </DataGrid>
 
+                <TextBlock Grid.Row="0" Classes="emptyState" IsVisible="{Binding ShowEmptyFleetMessage}"
+                            Text="No torrents yet. Drop a .torrent file here, or paste a magnet link with the + button above." />
+                <TextBlock Grid.Row="0" Classes="emptyState" IsVisible="{Binding ShowNoMatchesMessage}"
+                            Text="No torrents match your search or filter." />
+
                 <GridSplitter Grid.Row="1" Height="6" HorizontalAlignment="Stretch" Background="Transparent" ResizeDirection="Rows" />
+
+                <TextBlock Grid.Row="2" Classes="emptyState" Text="Select a torrent to see its details."
+                            IsVisible="{Binding SelectedTorrent, Converter={x:Static conv:ObjectConverters.IsNull}}" />
 
                 <TabControl Grid.Row="2" IsVisible="{Binding SelectedTorrent, Converter={x:Static conv:ObjectConverters.IsNotNull}}">
                     <TabItem Header="General">
@@ -234,6 +245,7 @@
                         </Grid>
                     </TabItem>
                     <TabItem Header="Files">
+                      <Grid>
                         <DataGrid ItemsSource="{Binding DetailFiles}" IsReadOnly="True" GridLinesVisibility="Horizontal" AutoGenerateColumns="False">
                             <DataGrid.Columns>
                                 <DataGridTextColumn Header="Name" Binding="{Binding DisplayPath}" Width="3*" />
@@ -259,8 +271,12 @@
                                 </DataGridTemplateColumn>
                             </DataGrid.Columns>
                         </DataGrid>
+                        <TextBlock Classes="emptyState" IsVisible="{Binding DetailFiles, Converter={StaticResource CollectionEmpty}}"
+                                    Text="No files yet - metadata hasn't arrived." />
+                      </Grid>
                     </TabItem>
                     <TabItem Header="Peers">
+                      <Grid>
                         <DataGrid ItemsSource="{Binding DetailPeers}" IsReadOnly="True" GridLinesVisibility="Horizontal" AutoGenerateColumns="False">
                             <DataGrid.Columns>
                                 <DataGridTextColumn Header="Address" Binding="{Binding Addr}" Width="2*" />
@@ -273,6 +289,9 @@
                                 <DataGridTextColumn Header="We're Interested" Binding="{Binding AmInterested}" Width="*" />
                             </DataGrid.Columns>
                         </DataGrid>
+                        <TextBlock Classes="emptyState" IsVisible="{Binding DetailPeers, Converter={StaticResource CollectionEmpty}}"
+                                    Text="No peers connected right now." />
+                      </Grid>
                     </TabItem>
                     <TabItem Header="Trackers">
                         <Grid RowDefinitions="Auto,*" Margin="0">
@@ -289,6 +308,8 @@
                                     <DataGridTextColumn Header="Last Error" Binding="{Binding LastError}" Width="2*" />
                                 </DataGrid.Columns>
                             </DataGrid>
+                            <TextBlock Grid.Row="1" Classes="emptyState" IsVisible="{Binding DetailTrackers, Converter={StaticResource CollectionEmpty}}"
+                                        Text="No trackers - add one above, or this torrent relies on DHT/PEX/LSD alone." />
                         </Grid>
                     </TabItem>
                     <TabItem Header="Pieces">

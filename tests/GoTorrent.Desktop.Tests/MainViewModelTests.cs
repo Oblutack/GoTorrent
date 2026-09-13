@@ -1248,6 +1248,51 @@ public sealed class MainViewModelTests
     }
 
     [Fact]
+    public async Task ApplyFilter_WithNoTorrentsShowsTheEmptyFleetMessage()
+    {
+        var (viewModel, _, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+
+        await viewModel.RefreshAsync();
+
+        Assert.True(viewModel.ShowEmptyFleetMessage);
+        Assert.False(viewModel.ShowNoMatchesMessage);
+    }
+
+    [Fact]
+    public async Task ApplyFilter_WithNoSearchMatchesShowsTheNoMatchesMessageNotTheEmptyFleetMessage()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        client.Torrents.Add(MakeTorrent("ubuntu.iso"));
+        await viewModel.RefreshAsync();
+
+        viewModel.SearchText = "no-such-torrent";
+
+        Assert.True(viewModel.ShowNoMatchesMessage);
+        Assert.False(viewModel.ShowEmptyFleetMessage);
+    }
+
+    [Fact]
+    public async Task ApplyFilter_WithMatchingTorrentsShowsNeitherEmptyMessage()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        client.Torrents.Add(MakeTorrent("ubuntu.iso"));
+
+        await viewModel.RefreshAsync();
+
+        Assert.False(viewModel.ShowEmptyFleetMessage);
+        Assert.False(viewModel.ShowNoMatchesMessage);
+    }
+
+    [Fact]
     public async Task ApplyFilter_BySearchText_MatchesNameCaseInsensitively()
     {
         var (viewModel, client, _) = MakeViewModel();

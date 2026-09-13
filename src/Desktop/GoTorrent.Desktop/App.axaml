@@ -93,6 +93,20 @@
             <Setter Property="Background" Value="{StaticResource GtSurfaceHover}" />
         </Style>
 
+        <!-- Stage 3's empty/loading-state overlays (empty torrent list,
+             no search/filter matches, no torrent selected, empty Files/
+             Peers/Trackers tabs) - one consistent look for all of them,
+             gated by CollectionEmptyConverter/ObjectConverters.IsNull at
+             each call site rather than repeating these five Setters. -->
+        <Style Selector="TextBlock.emptyState">
+            <Setter Property="HorizontalAlignment" Value="Center" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="Foreground" Value="{StaticResource GtSubtle}" />
+            <Setter Property="TextAlignment" Value="Center" />
+            <Setter Property="TextWrapping" Value="Wrap" />
+            <Setter Property="MaxWidth" Value="320" />
+        </Style>
+
         <!-- Custom title bar caption buttons (MainWindow.axaml) - real Win11-style glyphs, not the native chrome. -->
         <Style Selector="Button.caption">
             <Setter Property="Width" Value="46" />
