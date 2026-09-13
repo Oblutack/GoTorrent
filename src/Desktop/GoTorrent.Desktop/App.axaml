@@ -22,6 +22,18 @@
         <SolidColorBrush x:Key="GtSubtle" Color="#8B8FA3" />
         <SolidColorBrush x:Key="GtDownload" Color="#00C6FF" />
         <SolidColorBrush x:Key="GtUpload" Color="#FF7043" />
+        <SolidColorBrush x:Key="GtWarn" Color="#FFB74D" />
+        <SolidColorBrush x:Key="GtSuccess" Color="#3CB371" />
+
+        <!-- The rest of Stage 3's "commit to a real design system" tokens:
+             GtSurfaceHover replaces three separately-duplicated inline
+             "#2A2E38" Setters below, and GtBorder replaces
+             PieceMapControl's inline missing-piece grey and doubles as
+             the speed graph's gridline colour - one token for "a subtle
+             line that isn't quite the background" wherever that need
+             comes up next, rather than a fourth hand-picked grey. -->
+        <SolidColorBrush x:Key="GtSurfaceHover" Color="#2A2E38" />
+        <SolidColorBrush x:Key="GtBorder" Color="#404040" />
 
         <!-- Real vector icon geometry (Material Symbols-style paths, 24x24 viewbox) - no icon font/package dependency, matching this project's zero-external-dependency style on the Go side. -->
         <StreamGeometry x:Key="IconAdd">M19,13H13V19H11V13H5V11H11V5H13V11H19V13Z</StreamGeometry>
@@ -51,7 +63,7 @@
             <Setter Property="VerticalContentAlignment" Value="Center" />
         </Style>
         <Style Selector="Button.toolbar:pointerover /template/ ContentPresenter">
-            <Setter Property="Background" Value="#2A2E38" />
+            <Setter Property="Background" Value="{StaticResource GtSurfaceHover}" />
         </Style>
         <Style Selector="Button.toolbar PathIcon">
             <Setter Property="Width" Value="18" />
@@ -78,7 +90,7 @@
         </Style>
 
         <Style Selector="ListBoxItem:selected /template/ ContentPresenter">
-            <Setter Property="Background" Value="#2A2E38" />
+            <Setter Property="Background" Value="{StaticResource GtSurfaceHover}" />
         </Style>
 
         <!-- Custom title bar caption buttons (MainWindow.axaml) - real Win11-style glyphs, not the native chrome. -->
@@ -93,7 +105,7 @@
             <Setter Property="VerticalContentAlignment" Value="Center" />
         </Style>
         <Style Selector="Button.caption:pointerover /template/ ContentPresenter">
-            <Setter Property="Background" Value="#2A2E38" />
+            <Setter Property="Background" Value="{StaticResource GtSurfaceHover}" />
         </Style>
         <Style Selector="Button.captionClose:pointerover /template/ ContentPresenter">
             <Setter Property="Background" Value="#E81123" />

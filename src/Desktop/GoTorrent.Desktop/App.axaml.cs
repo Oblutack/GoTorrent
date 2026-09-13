@@ -3,6 +3,7 @@ using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Interactivity;
 using Avalonia.Markup.Xaml;
+using Avalonia.Threading;
 using GoTorrent.Desktop.ViewModels;
 using GoTorrent.Desktop.Views;
 
@@ -24,7 +25,6 @@ public partial class App : Application
             {
                 DataContext = mainViewModel,
             };
-            desktop.MainWindow = mainWindow;
             // Torrents keep transferring whether or not the window is
             // visible - closing/minimizing to the tray (MainWindow's own
             // Closing/WindowState handling) must not end the process the
@@ -35,18 +35,15 @@ public partial class App : Application
             mainViewModel.StartLiveEvents();
             mainViewModel.StartPeerRefresh();
 
-            // Same "wait for the real event rather than pre-empt Avalonia's
-            // own timing" reasoning as the start-minimized fix below - the
-            // native window handle IDesktopNotifier needs to anchor a real
-            // OS notification icon to is guaranteed to exist by Opened,
-            // whether or not the window ends up actually visible.
-            mainWindow.Opened += (_, _) =>
+            // The native platform handle exists immediately once the Window
+            // is constructed - confirmed live, not assumed - so attaching
+            // here needs no Show()/Opened round trip at all, and works
+            // whether or not the window is ever actually shown (the
+            // start-minimized case below might never show it this run).
+            if (mainWindow.TryGetPlatformHandle() is { } handle)
             {
-                if (mainWindow.TryGetPlatformHandle() is { } handle)
-                {
-                    mainViewModel.AttachDesktopNotifier(handle.Handle);
-                }
-            };
+                mainViewModel.AttachDesktopNotifier(handle.Handle);
+            }
 
             // A .torrent file or magnet: link double-clicked with this app
             // registered as the handler (Services/WindowsFileAssociationService)
@@ -56,13 +53,29 @@ public partial class App : Application
                 _ = mainViewModel.AddFromArgumentAsync(argument);
             }
 
-            // Avalonia's classic desktop lifetime shows desktop.MainWindow
-            // itself once this method returns, regardless of whether Show()
-            // was called here - so "start minimized" has to undo that show
-            // right after it happens (Opened), not try to pre-empt it.
+            // Avalonia's classic desktop lifetime calls MainWindow.Show()
+            // unconditionally as soon as this method returns (confirmed
+            // against the actual framework source, not assumed) - it does
+            // not check WindowState or IsVisible first. That makes a real,
+            // confirmed-live flash unavoidable with a show-then-hide
+            // approach for "start minimized" (true minimize-to-tray, no
+            // taskbar entry). The only flash-free option is to never let
+            // the framework show it in the first place: leave
+            // desktop.MainWindow unset here and assign it from a
+            // Dispatcher.UIThread.Post callback instead, which only runs
+            // once the dispatcher's main loop is pumping - strictly after
+            // Start()'s own synchronous Show() call already ran against a
+            // still-null MainWindow (a no-op). By the time the assignment
+            // executes, the window is fully wired up but has never been
+            // shown - exactly the state a later real "Show" click from the
+            // tray should start from.
             if (mainViewModel.StartMinimized)
             {
-                mainWindow.Opened += (_, _) => mainWindow.Hide();
+                Dispatcher.UIThread.Post(() => desktop.MainWindow = mainWindow, DispatcherPriority.Background);
+            }
+            else
+            {
+                desktop.MainWindow = mainWindow;
             }
         }
 
