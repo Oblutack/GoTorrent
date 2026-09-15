@@ -71,3 +71,28 @@ func TestSetSequentialDownloadsPiecesInOrder(t *testing.T) {
 		}
 	}
 }
+
+// TestSetSequentialBeforeMetadataReturnsAnErrorRatherThanPanicking is a real
+// crash regression guard: GoTorrent.Desktop's Add Torrent dialog applies a
+// checked "Sequential download" toggle as a PATCH immediately after adding a
+// magnet, before the actor has had any chance to fetch metadata from peers.
+// t.pick doesn't exist yet at that point (only built in openMetadata) -
+// doSetSequential used to call straight into it with no nil check, unlike
+// doSetFilePriority's own "no metadata yet" guard, and calling this from a
+// real running gottrentd crashed the whole daemon process (a nil-pointer
+// panic on the actor's own goroutine, unrecoverable) - caught live, not by
+// a test, the first time this exact sequence ran for real.
+func TestSetSequentialBeforeMetadataReturnsAnErrorRatherThanPanicking(t *testing.T) {
+	mi, _ := buildTorrent(t, "magnet-sequential.bin", 16384, []fileSpec{{length: 16384 * 4}})
+
+	tr, err := NewFromInfoHash(mi.InfoHash, newTestConfig(t))
+	if err != nil {
+		t.Fatalf("NewFromInfoHash: %v", err)
+	}
+	runInBackground(t, tr)
+	waitForState(t, tr, StateFetchingMetadata, 2*time.Second)
+
+	if err := tr.SetSequential(true); err == nil {
+		t.Fatal("SetSequential before metadata is known: want an error, got nil")
+	}
+}

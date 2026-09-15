@@ -41,7 +41,8 @@ public sealed record DesktopSettings(
     double? DetailSplitFraction = null,
     bool LightTheme = false,
     bool CompactDensity = false,
-    IReadOnlyList<string>? HiddenColumns = null)
+    IReadOnlyList<string>? HiddenColumns = null,
+    IReadOnlyList<string>? RecentDownloadDirs = null)
 {
     public bool IsConfigured => !string.IsNullOrWhiteSpace(BaseAddress) && !string.IsNullOrWhiteSpace(Token);
 }

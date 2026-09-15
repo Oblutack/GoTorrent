@@ -46,21 +46,21 @@ public sealed class EngineClient : IEngineClient, IDisposable
         return stats ?? throw new InvalidOperationException("gottrentd returned an empty session response.");
     }
 
-    public async Task<string> AddMagnetAsync(string magnet, string? category, string? downloadDir, CancellationToken cancellationToken)
+    public async Task<string> AddMagnetAsync(string magnet, string? category, IReadOnlyList<string>? tags, string? downloadDir, CancellationToken cancellationToken)
     {
-        var body = new AddRequest { Magnet = magnet, Category = category, DownloadDir = downloadDir };
+        var body = new AddRequest { Magnet = magnet, Category = category, Tags = tags, DownloadDir = downloadDir };
         using var response = await _http.PostAsJsonAsync("api/v1/torrents", body, JsonOptions, cancellationToken);
         return await ReadInfoHashOrThrowAsync(response, cancellationToken);
     }
 
-    public async Task<string> AddUrlAsync(string url, string? category, string? downloadDir, CancellationToken cancellationToken)
+    public async Task<string> AddUrlAsync(string url, string? category, IReadOnlyList<string>? tags, string? downloadDir, CancellationToken cancellationToken)
     {
-        var body = new AddRequest { Url = url, Category = category, DownloadDir = downloadDir };
+        var body = new AddRequest { Url = url, Category = category, Tags = tags, DownloadDir = downloadDir };
         using var response = await _http.PostAsJsonAsync("api/v1/torrents", body, JsonOptions, cancellationToken);
         return await ReadInfoHashOrThrowAsync(response, cancellationToken);
     }
 
-    public async Task<string> AddTorrentFileAsync(byte[] fileBytes, string fileName, string? category, string? downloadDir, CancellationToken cancellationToken)
+    public async Task<string> AddTorrentFileAsync(byte[] fileBytes, string fileName, string? category, IReadOnlyList<string>? tags, string? downloadDir, CancellationToken cancellationToken)
     {
         using var content = new MultipartFormDataContent
         {
@@ -69,6 +69,13 @@ public sealed class EngineClient : IEngineClient, IDisposable
         if (!string.IsNullOrEmpty(category))
         {
             content.Add(new StringContent(category), "category");
+        }
+        if (tags is { Count: > 0 })
+        {
+            // internal/api.parseMultipartAdd splits this form field on
+            // "," - the same comma-joined shape the JSON path's Tags
+            // array becomes once it reaches the wire either way.
+            content.Add(new StringContent(string.Join(',', tags)), "tags");
         }
         if (!string.IsNullOrEmpty(downloadDir))
         {
@@ -219,6 +226,7 @@ public sealed class EngineClient : IEngineClient, IDisposable
         public string? Magnet { get; set; }
         public string? Url { get; set; }
         public string? Category { get; set; }
+        public IReadOnlyList<string>? Tags { get; set; }
         public string? DownloadDir { get; set; }
     }
 

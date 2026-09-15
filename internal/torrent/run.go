@@ -256,7 +256,19 @@ func (t *Torrent) doSetFilePriority(fileIndex int, priority picker.Priority) err
 // is a plain field write, safe here since the actor is the only goroutine
 // that ever touches t.pick. Already-active pieces are left alone; only
 // which piece nextPiece reaches for next changes.
+//
+// t.pick doesn't exist until metadata is known (a magnet still
+// FetchingMetadata) — same "no metadata yet" precondition doSetFilePriority
+// already checks, and the same error message, for the same reason: without
+// this check, a caller applying Sequential right after adding a magnet
+// (before it's had any chance to fetch metadata from peers) would panic the
+// actor's own goroutine, which is unrecoverable — a real crash this exact
+// path caused before this check existed. Config.PickerStrategy is still the
+// correct way to have a torrent start sequential from its very first piece.
 func (t *Torrent) doSetSequential(sequential bool) error {
+	if t.pick == nil {
+		return errors.New("torrent: no metadata yet")
+	}
 	strategy := picker.RarestFirst
 	if sequential {
 		strategy = picker.Sequential

@@ -29,6 +29,7 @@ public partial class AddTorrentWindow : Window
     {
         InitializeComponent();
         _mainViewModel = mainViewModel;
+        DownloadDirBox.ItemsSource = mainViewModel.RecentDownloadDirs;
     }
 
     private async void OnBrowseClick(object? sender, RoutedEventArgs e)
@@ -53,6 +54,26 @@ public partial class AddTorrentWindow : Window
         }
     }
 
+    private async void OnBrowseDirClick(object? sender, RoutedEventArgs e)
+    {
+        var topLevel = GetTopLevel(this);
+        if (topLevel is null)
+        {
+            return;
+        }
+
+        var folders = await topLevel.StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions
+        {
+            Title = "Select a save directory",
+            AllowMultiple = false,
+        });
+
+        if (folders.Count > 0)
+        {
+            DownloadDirBox.Text = folders[0].Path.LocalPath;
+        }
+    }
+
     private void OnCancelClick(object? sender, RoutedEventArgs e) => Close();
 
     private async void OnAddClick(object? sender, RoutedEventArgs e)
@@ -61,6 +82,10 @@ public partial class AddTorrentWindow : Window
         var url = UrlBox.Text?.Trim();
         var category = string.IsNullOrWhiteSpace(CategoryBox.Text) ? null : CategoryBox.Text!.Trim();
         var downloadDir = string.IsNullOrWhiteSpace(DownloadDirBox.Text) ? null : DownloadDirBox.Text!.Trim();
+        var tags = string.IsNullOrWhiteSpace(TagsBox.Text)
+            ? null
+            : TagsBox.Text!.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        var sequential = SequentialCheckBox.IsChecked == true;
 
         AddButton.IsEnabled = false;
         try
@@ -68,16 +93,16 @@ public partial class AddTorrentWindow : Window
             bool ok;
             if (!string.IsNullOrWhiteSpace(magnet))
             {
-                ok = await _mainViewModel.AddMagnetAsync(magnet, category, downloadDir);
+                ok = await _mainViewModel.AddMagnetAsync(magnet, category, downloadDir, tags, sequential);
             }
             else if (_selectedFilePath is not null)
             {
                 var bytes = await File.ReadAllBytesAsync(_selectedFilePath);
-                ok = await _mainViewModel.AddTorrentFileAsync(bytes, Path.GetFileName(_selectedFilePath), category, downloadDir);
+                ok = await _mainViewModel.AddTorrentFileAsync(bytes, Path.GetFileName(_selectedFilePath), category, downloadDir, tags, sequential);
             }
             else if (!string.IsNullOrWhiteSpace(url))
             {
-                ok = await _mainViewModel.AddUrlAsync(url, category, downloadDir);
+                ok = await _mainViewModel.AddUrlAsync(url, category, downloadDir, tags, sequential);
             }
             else
             {

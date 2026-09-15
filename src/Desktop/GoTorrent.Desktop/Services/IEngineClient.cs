@@ -14,12 +14,12 @@ public interface IEngineClient
 
     Task<SessionStats> GetSessionAsync(CancellationToken cancellationToken);
 
-    Task<string> AddMagnetAsync(string magnet, string? category, string? downloadDir, CancellationToken cancellationToken);
+    Task<string> AddMagnetAsync(string magnet, string? category, IReadOnlyList<string>? tags, string? downloadDir, CancellationToken cancellationToken);
 
     /// <summary>Has gottrentd itself fetch a .torrent file from an http/https URL, rather than uploading one from disk - mirrors <c>internal/api.AddRequest</c>'s "url" field.</summary>
-    Task<string> AddUrlAsync(string url, string? category, string? downloadDir, CancellationToken cancellationToken);
+    Task<string> AddUrlAsync(string url, string? category, IReadOnlyList<string>? tags, string? downloadDir, CancellationToken cancellationToken);
 
-    Task<string> AddTorrentFileAsync(byte[] fileBytes, string fileName, string? category, string? downloadDir, CancellationToken cancellationToken);
+    Task<string> AddTorrentFileAsync(byte[] fileBytes, string fileName, string? category, IReadOnlyList<string>? tags, string? downloadDir, CancellationToken cancellationToken);
 
     Task PauseAsync(string infoHash, CancellationToken cancellationToken);
 

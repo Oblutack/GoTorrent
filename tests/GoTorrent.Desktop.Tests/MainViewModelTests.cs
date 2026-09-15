@@ -209,6 +209,65 @@ public sealed class MainViewModelTests
     }
 
     [Fact]
+    public async Task AddMagnetAsync_WithTags_PassesThemToTheClient()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+
+        var ok = await viewModel.AddMagnetAsync("magnet:?xt=urn:btih:abc", category: null, downloadDir: null, tags: ["4K", "HDR"]);
+
+        Assert.True(ok);
+        Assert.Equal(["4K", "HDR"], client.LastAddedTags);
+    }
+
+    [Fact]
+    public async Task AddMagnetAsync_WithSequential_PatchesSequentialAfterAdding()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+
+        var ok = await viewModel.AddMagnetAsync("magnet:?xt=urn:btih:abc", category: null, downloadDir: null, sequential: true);
+
+        Assert.True(ok);
+        var (hash, options) = Assert.Single(client.PatchRequests);
+        Assert.Equal("0102030405060708090a0b0c0d0e0f1011121314", hash);
+        Assert.Equal(true, options.Sequential);
+    }
+
+    [Fact]
+    public async Task AddMagnetAsync_WithADownloadDir_RecordsItAsARecentDir()
+    {
+        var (viewModel, client, settings) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+
+        await viewModel.AddMagnetAsync("magnet:?xt=urn:btih:abc", category: null, downloadDir: "/downloads/movies");
+
+        Assert.Equal(["/downloads/movies"], viewModel.RecentDownloadDirs);
+        Assert.Equal(["/downloads/movies"], settings.Load().RecentDownloadDirs);
+    }
+
+    [Fact]
+    public async Task AddMagnetAsync_WithADownloadDirUsedBefore_MovesItToTheFrontRatherThanDuplicatingIt()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        await viewModel.AddMagnetAsync("magnet:?xt=urn:btih:aaa", category: null, downloadDir: "/downloads/a");
+        await viewModel.AddMagnetAsync("magnet:?xt=urn:btih:bbb", category: null, downloadDir: "/downloads/b");
+
+        await viewModel.AddMagnetAsync("magnet:?xt=urn:btih:ccc", category: null, downloadDir: "/downloads/a");
+
+        Assert.Equal(["/downloads/a", "/downloads/b"], viewModel.RecentDownloadDirs);
+    }
+
+    [Fact]
     public async Task AddUrlAsync_AddsAndRefreshes()
     {
         var (viewModel, client, _) = MakeViewModel();

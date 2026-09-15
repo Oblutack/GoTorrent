@@ -233,6 +233,41 @@ public partial class MainViewModel : ViewModelBase, IDisposable
     partial void OnShowQueueColumnChanged(bool value) => SaveHiddenColumns();
 
     /// <summary>
+    /// The Add Torrent dialog's "recently used" save-path suggestions -
+    /// most-recent first, capped at <see cref="MaxRecentDownloadDirs"/>.
+    /// Populated from <see cref="DesktopSettings.RecentDownloadDirs"/> at
+    /// construction and appended to by <see cref="RecordRecentDownloadDir"/>
+    /// after any successful add that named an explicit save path.
+    /// </summary>
+    [ObservableProperty]
+    public partial ObservableCollection<string> RecentDownloadDirs { get; set; } = [];
+
+    private const int MaxRecentDownloadDirs = 8;
+
+    /// <summary>
+    /// Moves <paramref name="downloadDir"/> to the front of
+    /// <see cref="RecentDownloadDirs"/> (de-duplicating a re-used path
+    /// rather than listing it twice) and persists the result. A no-op for
+    /// a blank path - "used gottrentd's default" isn't a real path worth
+    /// remembering.
+    /// </summary>
+    private void RecordRecentDownloadDir(string? downloadDir)
+    {
+        if (string.IsNullOrWhiteSpace(downloadDir))
+        {
+            return;
+        }
+        var updated = new List<string> { downloadDir };
+        updated.AddRange(RecentDownloadDirs.Where(d => d != downloadDir));
+        if (updated.Count > MaxRecentDownloadDirs)
+        {
+            updated.RemoveRange(MaxRecentDownloadDirs, updated.Count - MaxRecentDownloadDirs);
+        }
+        RecentDownloadDirs = new ObservableCollection<string>(updated);
+        _settingsStore.Save(_settingsStore.Load() with { RecentDownloadDirs = updated });
+    }
+
+    /// <summary>
     /// Re-derives the flat hidden-columns list from the 8 bools above and
     /// persists it - called from every one of their <c>OnXxxChanged</c>
     /// hooks, so a single `CheckBox` toggle in the flyout saves
@@ -362,6 +397,7 @@ public partial class MainViewModel : ViewModelBase, IDisposable
         ShowRatioColumn = !hiddenColumns.Contains("Ratio");
         ShowPeersColumn = !hiddenColumns.Contains("Peers");
         ShowQueueColumn = !hiddenColumns.Contains("Queue");
+        RecentDownloadDirs = new ObservableCollection<string>(settings.RecentDownloadDirs ?? []);
         AutostartEnabled = _autostartService.IsEnabled();
         FileAssociationEnabled = _fileAssociationService.IsRegistered();
         if (settings.IsConfigured)
@@ -1559,12 +1595,37 @@ public partial class MainViewModel : ViewModelBase, IDisposable
     }
 
     /// <summary>
+    /// gottrentd's add route has no "start sequential" option of its own
+    /// (<c>engine.AddOptions</c> only ever carries Category/Tags) - the Add
+    /// Torrent dialog's sequential checkbox is applied as a follow-up PATCH
+    /// instead, the same existing route <see cref="EnableSequentialAsync"/>
+    /// uses. Best-effort: a failure here doesn't fail or undo the add
+    /// itself, since the torrent already exists regardless - it just stays
+    /// on rarest-first, exactly as if the checkbox had never been ticked.
+    /// </summary>
+    private async Task ApplySequentialIfRequestedAsync(string infoHash, bool sequential)
+    {
+        if (!sequential || _client is null)
+        {
+            return;
+        }
+        try
+        {
+            await _client.PatchTorrentAsync(infoHash, new PatchTorrentOptions(Sequential: true), CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            Toast($"Added, but couldn't enable sequential download: {ex.Message}", ToastSeverity.Error);
+        }
+    }
+
+    /// <summary>
     /// Adds a torrent from a magnet link. Used directly by
     /// <c>MainViewModelTests</c> and by the add-torrent dialog's
     /// code-behind, which has no ViewModel of its own - a file picker
     /// is inherently UI chrome with nothing worth unit-testing.
     /// </summary>
-    public async Task<bool> AddMagnetAsync(string magnet, string? category, string? downloadDir)
+    public async Task<bool> AddMagnetAsync(string magnet, string? category, string? downloadDir, IReadOnlyList<string>? tags = null, bool sequential = false)
     {
         if (_client is null)
         {
@@ -1572,7 +1633,9 @@ public partial class MainViewModel : ViewModelBase, IDisposable
         }
         try
         {
-            await _client.AddMagnetAsync(magnet, category, downloadDir, CancellationToken.None);
+            var infoHash = await _client.AddMagnetAsync(magnet, category, tags, downloadDir, CancellationToken.None);
+            await ApplySequentialIfRequestedAsync(infoHash, sequential);
+            RecordRecentDownloadDir(downloadDir);
             AddTorrentError = null;
             await RefreshAsync();
             return true;
@@ -1585,7 +1648,7 @@ public partial class MainViewModel : ViewModelBase, IDisposable
     }
 
     /// <summary>Adds a torrent by having gottrentd itself fetch it from an http/https URL - the same code-behind reasoning as <see cref="AddMagnetAsync"/>.</summary>
-    public async Task<bool> AddUrlAsync(string url, string? category, string? downloadDir)
+    public async Task<bool> AddUrlAsync(string url, string? category, string? downloadDir, IReadOnlyList<string>? tags = null, bool sequential = false)
     {
         if (_client is null)
         {
@@ -1593,7 +1656,9 @@ public partial class MainViewModel : ViewModelBase, IDisposable
         }
         try
         {
-            await _client.AddUrlAsync(url, category, downloadDir, CancellationToken.None);
+            var infoHash = await _client.AddUrlAsync(url, category, tags, downloadDir, CancellationToken.None);
+            await ApplySequentialIfRequestedAsync(infoHash, sequential);
+            RecordRecentDownloadDir(downloadDir);
             AddTorrentError = null;
             await RefreshAsync();
             return true;
@@ -1605,7 +1670,7 @@ public partial class MainViewModel : ViewModelBase, IDisposable
         }
     }
 
-    public async Task<bool> AddTorrentFileAsync(byte[] fileBytes, string fileName, string? category, string? downloadDir)
+    public async Task<bool> AddTorrentFileAsync(byte[] fileBytes, string fileName, string? category, string? downloadDir, IReadOnlyList<string>? tags = null, bool sequential = false)
     {
         if (_client is null)
         {
@@ -1613,7 +1678,9 @@ public partial class MainViewModel : ViewModelBase, IDisposable
         }
         try
         {
-            await _client.AddTorrentFileAsync(fileBytes, fileName, category, downloadDir, CancellationToken.None);
+            var infoHash = await _client.AddTorrentFileAsync(fileBytes, fileName, category, tags, downloadDir, CancellationToken.None);
+            await ApplySequentialIfRequestedAsync(infoHash, sequential);
+            RecordRecentDownloadDir(downloadDir);
             AddTorrentError = null;
             await RefreshAsync();
             return true;

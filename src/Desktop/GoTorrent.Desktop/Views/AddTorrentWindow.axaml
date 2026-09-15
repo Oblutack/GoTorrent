@@ -45,8 +45,17 @@
             <TextBlock Text="Category (optional)" Margin="0,10,0,0" />
             <TextBox Name="CategoryBox" />
 
+            <TextBlock Text="Tags (comma-separated, optional)" Margin="0,10,0,0" />
+            <TextBox Name="TagsBox" />
+
             <TextBlock Text="Save to (optional)" Margin="0,10,0,0" />
-            <TextBox Name="DownloadDirBox" PlaceholderText="Leave blank to use gottrentd's default" />
+            <Grid ColumnDefinitions="*,Auto">
+                <AutoCompleteBox Name="DownloadDirBox" Grid.Column="0" PlaceholderText="Leave blank to use gottrentd's default"
+                                  FilterMode="Contains" MinimumPrefixLength="0" />
+                <Button Name="BrowseDirButton" Grid.Column="1" Content="Browse..." Margin="6,0,0,0" Click="OnBrowseDirClick" />
+            </Grid>
+
+            <CheckBox Name="SequentialCheckBox" Content="Sequential download" Margin="0,10,0,0" />
 
             <TextBlock Name="ErrorText" Foreground="{DynamicResource GtError}" TextWrapping="Wrap" IsVisible="False" Margin="0,10,0,0" />
 

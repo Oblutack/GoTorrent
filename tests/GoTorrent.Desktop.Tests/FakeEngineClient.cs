@@ -18,6 +18,7 @@ public sealed class FakeEngineClient : IEngineClient
     public string? LastAddedMagnet { get; private set; }
     public string? LastAddedFileName { get; private set; }
     public string? LastAddedUrl { get; private set; }
+    public IReadOnlyList<string>? LastAddedTags { get; private set; }
 
     public TorrentDetail? Detail { get; set; }
     public List<FileEntry> Files { get; set; } = [];
@@ -50,33 +51,36 @@ public sealed class FakeEngineClient : IEngineClient
     public Task<SessionStats> GetSessionAsync(CancellationToken cancellationToken) =>
         Failure is not null ? Task.FromException<SessionStats>(Failure) : Task.FromResult(Session);
 
-    public Task<string> AddMagnetAsync(string magnet, string? category, string? downloadDir, CancellationToken cancellationToken)
+    public Task<string> AddMagnetAsync(string magnet, string? category, IReadOnlyList<string>? tags, string? downloadDir, CancellationToken cancellationToken)
     {
         if (Failure is not null)
         {
             return Task.FromException<string>(Failure);
         }
         LastAddedMagnet = magnet;
+        LastAddedTags = tags;
         return Task.FromResult("0102030405060708090a0b0c0d0e0f1011121314");
     }
 
-    public Task<string> AddUrlAsync(string url, string? category, string? downloadDir, CancellationToken cancellationToken)
+    public Task<string> AddUrlAsync(string url, string? category, IReadOnlyList<string>? tags, string? downloadDir, CancellationToken cancellationToken)
     {
         if (Failure is not null)
         {
             return Task.FromException<string>(Failure);
         }
         LastAddedUrl = url;
+        LastAddedTags = tags;
         return Task.FromResult("0102030405060708090a0b0c0d0e0f1011121314");
     }
 
-    public Task<string> AddTorrentFileAsync(byte[] fileBytes, string fileName, string? category, string? downloadDir, CancellationToken cancellationToken)
+    public Task<string> AddTorrentFileAsync(byte[] fileBytes, string fileName, string? category, IReadOnlyList<string>? tags, string? downloadDir, CancellationToken cancellationToken)
     {
         if (Failure is not null)
         {
             return Task.FromException<string>(Failure);
         }
         LastAddedFileName = fileName;
+        LastAddedTags = tags;
         return Task.FromResult("0102030405060708090a0b0c0d0e0f1011121314");
     }
 
