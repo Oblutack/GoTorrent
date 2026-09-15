@@ -1,3 +1,6 @@
+using System.ComponentModel;
+using System.Diagnostics;
+using System.IO;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Notifications;
@@ -61,6 +64,15 @@ public partial class MainWindow : Window
         PositionChanged += OnPositionChanged;
         DragDrop.AddDropHandler(this, OnDrop);
         DragDrop.AddDragOverHandler(this, OnDragOver);
+        // Tunnel, not Bubble - confirmed live that Bubble alone lets the
+        // DataGrid's own internal Enter handling (row navigation/commit,
+        // even in a read-only grid) mark the event Handled before it
+        // ever reaches this Window-level handler, so "Open Containing
+        // Folder" on Enter silently never fired. Tunnel runs this first,
+        // before any child control gets a chance to swallow the key -
+        // the explicit "skip while a TextBox has focus" check below is
+        // what keeps that safe for normal typing, not the routing phase.
+        AddHandler(KeyDownEvent, OnKeyDown, RoutingStrategies.Tunnel);
     }
 
     public void AllowRealClose() => _reallyClose = true;
@@ -260,6 +272,164 @@ public partial class MainWindow : Window
         }
         var dialog = new AddTorrentWindow(mainViewModel);
         await dialog.ShowDialog(this);
+    }
+
+    /// <summary>
+    /// Stage 4's keyboard shortcuts - Delete/Space/F5/Ctrl+F/Enter/Ctrl+N,
+    /// none of which existed before. Deliberately guarded on "does a
+    /// TextBox currently have focus" rather than trusting every key to
+    /// arrive pre-marked <c>Handled</c> by whatever has focus: a plain
+    /// <see cref="TextBox"/> reliably consumes Delete/Backspace (it has
+    /// to, to actually delete a character), but plain Space or Enter -
+    /// both real shortcuts here - have no default action in a single-line
+    /// TextBox and would otherwise silently bubble up here while a user
+    /// is just typing a search query. Multi-select (and so a real Ctrl+A)
+    /// doesn't exist yet - see ROADMAP.md's own Stage 4 entry - so it's
+    /// deliberately not wired to anything here rather than bound to a
+    /// single-item "select all" that wouldn't mean anything.
+    /// </summary>
+    private void OnKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (DataContext is not MainViewModel mainViewModel)
+        {
+            return;
+        }
+        if (FocusManager?.GetFocusedElement() is TextBox)
+        {
+            return;
+        }
+
+        switch (e.Key, e.KeyModifiers)
+        {
+            case (Key.Delete, KeyModifiers.None):
+                mainViewModel.DeleteSelectedCommand.Execute(null);
+                e.Handled = true;
+                break;
+            case (Key.Space, KeyModifiers.None):
+                TogglePauseResume(mainViewModel);
+                e.Handled = true;
+                break;
+            case (Key.F5, KeyModifiers.None):
+                _ = mainViewModel.RefreshAsync();
+                e.Handled = true;
+                break;
+            case (Key.F, KeyModifiers.Control):
+                SearchBox.Focus();
+                e.Handled = true;
+                break;
+            case (Key.Enter, KeyModifiers.None):
+                OpenContainingFolder(mainViewModel);
+                e.Handled = true;
+                break;
+            case (Key.N, KeyModifiers.Control):
+                OnAddTorrentClick(sender, e);
+                e.Handled = true;
+                break;
+        }
+    }
+
+    private static void TogglePauseResume(MainViewModel mainViewModel)
+    {
+        if (mainViewModel.SelectedTorrent is not { } torrent)
+        {
+            return;
+        }
+        if (torrent.State == "Paused")
+        {
+            mainViewModel.ResumeSelectedCommand.Execute(null);
+        }
+        else
+        {
+            mainViewModel.PauseSelectedCommand.Execute(null);
+        }
+    }
+
+    private void OnOpenContainingFolderClick(object? sender, RoutedEventArgs e)
+    {
+        if (DataContext is MainViewModel mainViewModel)
+        {
+            OpenContainingFolder(mainViewModel);
+        }
+    }
+
+    /// <summary>
+    /// "The single most-used context-menu item in any torrent client"
+    /// per ROADMAP.md - <c>explorer.exe /select,"path"</c> both opens the
+    /// folder and highlights the item, working the same way whether
+    /// <see cref="Models.TorrentDetail.ContentPath"/> is a single file or
+    /// a multi-file torrent's own subfolder. Needs
+    /// <see cref="MainViewModel.DetailTorrent"/> (the selected torrent's
+    /// already-loaded detail), not just <see cref="MainViewModel.SelectedTorrent"/> -
+    /// the content path isn't part of the list-view summary. Silently
+    /// does nothing if the path is missing or doesn't exist yet (a
+    /// torrent that's still <c>FetchingMetadata</c>, or has downloaded
+    /// nothing at all) rather than showing an error for what's a very
+    /// ordinary, expected state.
+    /// </summary>
+    private static void OpenContainingFolder(MainViewModel mainViewModel)
+    {
+        var path = mainViewModel.DetailTorrent?.ContentPath;
+        if (string.IsNullOrEmpty(path))
+        {
+            return;
+        }
+        try
+        {
+            if (File.Exists(path) || Directory.Exists(path))
+            {
+                Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{path}\"") { UseShellExecute = true });
+            }
+        }
+        catch (Exception ex) when (ex is Win32Exception or InvalidOperationException)
+        {
+            // Best-effort - explorer.exe missing/unreachable isn't worth a toast.
+        }
+    }
+
+    private async void OnCopyMagnetClick(object? sender, RoutedEventArgs e)
+    {
+        if (DataContext is not MainViewModel mainViewModel || mainViewModel.SelectedTorrent is not { } torrent)
+        {
+            return;
+        }
+        var magnet = $"magnet:?xt=urn:btih:{torrent.InfoHash}&dn={Uri.EscapeDataString(torrent.Name)}";
+        await CopyToClipboardAsync(magnet);
+    }
+
+    private async void OnCopyInfoHashClick(object? sender, RoutedEventArgs e)
+    {
+        if (DataContext is MainViewModel { SelectedTorrent: { } torrent })
+        {
+            await CopyToClipboardAsync(torrent.InfoHash);
+        }
+    }
+
+    private async void OnCopyNameClick(object? sender, RoutedEventArgs e)
+    {
+        if (DataContext is MainViewModel { SelectedTorrent: { } torrent })
+        {
+            await CopyToClipboardAsync(torrent.Name);
+        }
+    }
+
+    /// <summary>
+    /// Avalonia 12's real clipboard API (confirmed against this project's
+    /// actual installed package, not a remembered older version - the
+    /// same "check the assembly/XML docs directly" discipline 6.3's
+    /// drag-and-drop rewrite already established for this exact kind of
+    /// API drift): <c>IClipboard.SetTextAsync</c> no longer exists.
+    /// <see cref="DataTransfer"/> is a "mutable implementation of both
+    /// <c>IDataTransfer</c> and <c>IAsyncDataTransfer</c>" per its own
+    /// doc comment, so it can be built with a single
+    /// <see cref="DataTransferItem.CreateText"/> item and handed to
+    /// <c>IClipboard.SetDataAsync</c> directly - no separate sync-to-async
+    /// wrapper needed despite one existing in the framework for other cases.
+    /// </summary>
+    private Task CopyToClipboardAsync(string text)
+    {
+        var transfer = new DataTransfer();
+        transfer.Add(DataTransferItem.CreateText(text));
+        return Clipboard?.SetDataAsync(transfer) ?? Task.CompletedTask;
     }
 
     private async void OnPreferencesClick(object? sender, RoutedEventArgs e)

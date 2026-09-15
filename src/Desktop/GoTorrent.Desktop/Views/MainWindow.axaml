@@ -99,7 +99,7 @@
             </Button>
             <PathIcon Grid.Column="4" Data="{StaticResource IconSearch}" Width="15" Height="15"
                        Foreground="{DynamicResource GtSubtle}" Margin="10,0,6,0" />
-            <TextBox Grid.Column="5" PlaceholderText="Search torrents..." Text="{Binding SearchText}"
+            <TextBox Grid.Column="5" Name="SearchBox" PlaceholderText="Search torrents..." Text="{Binding SearchText}"
                       VerticalAlignment="Center" Margin="0,0,12,0" MaxWidth="320" HorizontalAlignment="Left" MinWidth="200" />
             <TextBlock Grid.Column="6" VerticalAlignment="Center" Margin="0,0,12,0" Foreground="{DynamicResource GtSubtle}"
                         Text="{Binding Session.TorrentCount, StringFormat='{}{0} torrents'}" />
@@ -152,6 +152,11 @@
                             <MenuItem Header="Pause" Command="{Binding PauseSelectedCommand}" />
                             <MenuItem Header="Resume" Command="{Binding ResumeSelectedCommand}" />
                             <MenuItem Header="Force Start" Command="{Binding ToggleForceStartCommand}" />
+                            <Separator />
+                            <MenuItem Header="Open Containing Folder" Click="OnOpenContainingFolderClick" />
+                            <MenuItem Header="Copy Magnet Link" Click="OnCopyMagnetClick" />
+                            <MenuItem Header="Copy Info Hash" Click="OnCopyInfoHashClick" />
+                            <MenuItem Header="Copy Name" Click="OnCopyNameClick" />
                             <Separator />
                             <MenuItem Header="Force Recheck" Command="{Binding VerifySelectedCommand}" />
                             <MenuItem Header="Reannounce" Command="{Binding ReannounceSelectedCommand}" />
