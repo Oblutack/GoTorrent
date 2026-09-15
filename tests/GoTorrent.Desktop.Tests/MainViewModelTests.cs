@@ -1115,6 +1115,36 @@ public sealed class MainViewModelTests
     }
 
     [Fact]
+    public void HidingAColumn_PersistsItAndLeavesOthersVisible()
+    {
+        var (viewModel, _, settings) = MakeViewModel();
+
+        viewModel.ShowTagsColumn = false;
+
+        Assert.Equal(["Tags"], settings.Load().HiddenColumns);
+        Assert.True(viewModel.ShowSizeColumn);
+        Assert.True(viewModel.ShowCategoryColumn);
+    }
+
+    [Fact]
+    public void Constructor_WithSavedHiddenColumns_RestoresThem()
+    {
+        var settings = new FakeSettingsStore();
+        settings.Save(new DesktopSettings(null, null, HiddenColumns: ["Tags", "Queue"]));
+
+        var viewModel = new MainViewModel(_ => new FakeEngineClient(), settings);
+
+        Assert.False(viewModel.ShowTagsColumn);
+        Assert.False(viewModel.ShowQueueColumn);
+        Assert.True(viewModel.ShowSizeColumn);
+        Assert.True(viewModel.ShowCategoryColumn);
+        Assert.True(viewModel.ShowDownloadedColumn);
+        Assert.True(viewModel.ShowUploadedColumn);
+        Assert.True(viewModel.ShowRatioColumn);
+        Assert.True(viewModel.ShowPeersColumn);
+    }
+
+    [Fact]
     public void Constructor_WithSavedSettings_LoadsThemeAndDensity()
     {
         var settings = new FakeSettingsStore();

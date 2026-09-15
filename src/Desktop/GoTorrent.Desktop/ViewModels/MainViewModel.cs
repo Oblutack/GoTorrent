@@ -165,6 +165,103 @@ public partial class MainViewModel : ViewModelBase, IDisposable
 
     private const double CompactRowHeight = 24;
 
+    /// <summary>
+    /// Stage 4's column chooser - one bool per optional torrent-list
+    /// column (Name/State/Progress stay always visible), each backing a
+    /// <c>CheckBox</c> in a toolbar flyout and persisted via
+    /// <see cref="DesktopSettings.HiddenColumns"/>. Plain properties
+    /// rather than a keyed collection - simpler to bind directly from
+    /// XAML (<c>$parent[Window].DataContext.ShowXxxColumn</c>, the same
+    /// idiom the Files tab's priority <c>ComboBox</c> already uses to
+    /// reach the Window's DataContext from inside a DataGrid cell
+    /// template) than indexing into a collection would be.
+    /// </summary>
+    [ObservableProperty]
+    public partial bool ShowSizeColumn { get; set; } = true;
+
+    [ObservableProperty]
+    public partial bool ShowCategoryColumn { get; set; } = true;
+
+    [ObservableProperty]
+    public partial bool ShowTagsColumn { get; set; } = true;
+
+    [ObservableProperty]
+    public partial bool ShowDownloadedColumn { get; set; } = true;
+
+    [ObservableProperty]
+    public partial bool ShowUploadedColumn { get; set; } = true;
+
+    [ObservableProperty]
+    public partial bool ShowRatioColumn { get; set; } = true;
+
+    [ObservableProperty]
+    public partial bool ShowPeersColumn { get; set; } = true;
+
+    [ObservableProperty]
+    public partial bool ShowQueueColumn { get; set; } = true;
+
+    partial void OnShowSizeColumnChanged(bool value) => SaveHiddenColumns();
+
+    partial void OnShowCategoryColumnChanged(bool value) => SaveHiddenColumns();
+
+    partial void OnShowTagsColumnChanged(bool value) => SaveHiddenColumns();
+
+    partial void OnShowDownloadedColumnChanged(bool value) => SaveHiddenColumns();
+
+    partial void OnShowUploadedColumnChanged(bool value) => SaveHiddenColumns();
+
+    partial void OnShowRatioColumnChanged(bool value) => SaveHiddenColumns();
+
+    partial void OnShowPeersColumnChanged(bool value) => SaveHiddenColumns();
+
+    partial void OnShowQueueColumnChanged(bool value) => SaveHiddenColumns();
+
+    /// <summary>
+    /// Re-derives the flat hidden-columns list from the 8 bools above and
+    /// persists it - called from every one of their <c>OnXxxChanged</c>
+    /// hooks, so a single `CheckBox` toggle in the flyout saves
+    /// immediately rather than needing a separate "Save" action the
+    /// column chooser (deliberately a lightweight flyout, not a dialog)
+    /// has no natural place for.
+    /// </summary>
+    private void SaveHiddenColumns()
+    {
+        var hidden = new List<string>();
+        if (!ShowSizeColumn)
+        {
+            hidden.Add("Size");
+        }
+        if (!ShowCategoryColumn)
+        {
+            hidden.Add("Category");
+        }
+        if (!ShowTagsColumn)
+        {
+            hidden.Add("Tags");
+        }
+        if (!ShowDownloadedColumn)
+        {
+            hidden.Add("Downloaded");
+        }
+        if (!ShowUploadedColumn)
+        {
+            hidden.Add("Uploaded");
+        }
+        if (!ShowRatioColumn)
+        {
+            hidden.Add("Ratio");
+        }
+        if (!ShowPeersColumn)
+        {
+            hidden.Add("Peers");
+        }
+        if (!ShowQueueColumn)
+        {
+            hidden.Add("Queue");
+        }
+        _settingsStore.Save(_settingsStore.Load() with { HiddenColumns = hidden });
+    }
+
     public MainViewModel() : this(options => new EngineClient(options), new FileSettingsStore(), new WebSocketEventStream(), TimeProvider.System, new WindowsAutostartService(), new WindowsFileAssociationService(), new DaemonLauncher(), new WindowsDesktopNotifier())
     {
     }
@@ -240,6 +337,15 @@ public partial class MainViewModel : ViewModelBase, IDisposable
         StartMinimized = settings.StartMinimized;
         LightTheme = settings.LightTheme;
         CompactDensity = settings.CompactDensity;
+        var hiddenColumns = settings.HiddenColumns ?? [];
+        ShowSizeColumn = !hiddenColumns.Contains("Size");
+        ShowCategoryColumn = !hiddenColumns.Contains("Category");
+        ShowTagsColumn = !hiddenColumns.Contains("Tags");
+        ShowDownloadedColumn = !hiddenColumns.Contains("Downloaded");
+        ShowUploadedColumn = !hiddenColumns.Contains("Uploaded");
+        ShowRatioColumn = !hiddenColumns.Contains("Ratio");
+        ShowPeersColumn = !hiddenColumns.Contains("Peers");
+        ShowQueueColumn = !hiddenColumns.Contains("Queue");
         AutostartEnabled = _autostartService.IsEnabled();
         FileAssociationEnabled = _fileAssociationService.IsRegistered();
         if (settings.IsConfigured)

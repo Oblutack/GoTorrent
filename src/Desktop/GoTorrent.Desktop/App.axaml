@@ -72,6 +72,7 @@
             <StreamGeometry x:Key="IconTag">M5.5,7A1.5,1.5 0 0,1 4,5.5A1.5,1.5 0 0,1 5.5,4A1.5,1.5 0 0,1 7,5.5A1.5,1.5 0 0,1 5.5,7M21.41,11.58L12.41,2.58C12.05,2.22 11.55,2 11,2H4C2.89,2 2,2.89 2,4V11C2,11.55 2.22,12.05 2.59,12.41L11.58,21.41C11.95,21.77 12.45,22 13,22C13.55,22 14.05,21.77 14.41,21.41L21.41,14.41C21.78,14.05 22,13.55 22,13C22,12.44 21.77,11.94 21.41,11.58Z</StreamGeometry>
             <StreamGeometry x:Key="IconTracker">M12,11A2,2 0 0,1 14,13A2,2 0 0,1 12,15A2,2 0 0,1 10,13A2,2 0 0,1 12,11M12,4.5C17,4.5 21.27,7.61 23,12C21.27,16.39 17,19.5 12,19.5C7,19.5 2.73,16.39 1,12C2.73,7.61 7,4.5 12,4.5M12,7A5,5 0 0,0 7,12A5,5 0 0,0 12,17A5,5 0 0,0 17,12A5,5 0 0,0 12,7Z</StreamGeometry>
             <StreamGeometry x:Key="IconForward">M4,18L12.5,12L4,6V18M13,6V18L21.5,12L13,6Z</StreamGeometry>
+            <StreamGeometry x:Key="IconColumns">M4,5H8V19H4V5M10,5H14V19H10V5M16,5H20V19H16V5Z</StreamGeometry>
         </ResourceDictionary>
     </Application.Resources>
 

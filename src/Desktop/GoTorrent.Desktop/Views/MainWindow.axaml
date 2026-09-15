@@ -27,6 +27,7 @@
     <Window.Resources>
         <sconv:StateToBrushConverter x:Key="StateToBrush" />
         <sconv:CollectionEmptyConverter x:Key="CollectionEmpty" />
+        <sconv:StringListJoinConverter x:Key="StringListJoin" />
     </Window.Resources>
 
     <Grid RowDefinitions="36,Auto,Auto,*,Auto" Margin="0">
@@ -83,7 +84,7 @@
         </StackPanel>
 
         <!-- Toolbar: shown once connected. -->
-        <Grid Grid.Row="1" IsVisible="{Binding IsConnected}" ColumnDefinitions="Auto,Auto,Auto,Auto,Auto,*,Auto,Auto"
+        <Grid Grid.Row="1" IsVisible="{Binding IsConnected}" ColumnDefinitions="Auto,Auto,Auto,Auto,Auto,*,Auto,Auto,Auto"
               Background="{DynamicResource GtPanel}" Height="48">
             <Button Grid.Column="0" Classes="toolbar" ToolTip.Tip="Add Torrent" Click="OnAddTorrentClick" Margin="4,0,0,0">
                 <PathIcon Data="{StaticResource IconAdd}" />
@@ -103,7 +104,25 @@
                       VerticalAlignment="Center" Margin="0,0,12,0" MaxWidth="320" HorizontalAlignment="Left" MinWidth="200" />
             <TextBlock Grid.Column="6" VerticalAlignment="Center" Margin="0,0,12,0" Foreground="{DynamicResource GtSubtle}"
                         Text="{Binding Session.TorrentCount, StringFormat='{}{0} torrents'}" />
-            <Button Grid.Column="7" Classes="toolbar" ToolTip.Tip="Preferences" Click="OnPreferencesClick" Margin="0,0,8,0">
+            <Button Grid.Column="7" Classes="toolbar" ToolTip.Tip="Choose Columns">
+                <PathIcon Data="{StaticResource IconColumns}" />
+                <Button.Flyout>
+                    <Flyout>
+                        <StackPanel Spacing="4" MinWidth="160">
+                            <TextBlock Text="Columns" FontWeight="Bold" Margin="0,0,0,4" />
+                            <CheckBox Content="Size" IsChecked="{Binding ShowSizeColumn}" />
+                            <CheckBox Content="Category" IsChecked="{Binding ShowCategoryColumn}" />
+                            <CheckBox Content="Tags" IsChecked="{Binding ShowTagsColumn}" />
+                            <CheckBox Content="Downloaded" IsChecked="{Binding ShowDownloadedColumn}" />
+                            <CheckBox Content="Uploaded" IsChecked="{Binding ShowUploadedColumn}" />
+                            <CheckBox Content="Ratio" IsChecked="{Binding ShowRatioColumn}" />
+                            <CheckBox Content="Peers" IsChecked="{Binding ShowPeersColumn}" />
+                            <CheckBox Content="Queue" IsChecked="{Binding ShowQueueColumn}" />
+                        </StackPanel>
+                    </Flyout>
+                </Button.Flyout>
+            </Button>
+            <Button Grid.Column="8" Classes="toolbar" ToolTip.Tip="Preferences" Click="OnPreferencesClick" Margin="0,0,8,0">
                 <PathIcon Data="{StaticResource IconSettings}" />
             </Button>
         </Grid>
@@ -146,6 +165,7 @@
                           IsReadOnly="True"
                           GridLinesVisibility="Horizontal"
                           RowHeight="{Binding RowHeight}"
+                          CanUserSortColumns="True"
                           AutoGenerateColumns="False">
                     <DataGrid.ContextMenu>
                         <ContextMenu>
@@ -179,7 +199,7 @@
                     </DataGrid.ContextMenu>
                     <DataGrid.Columns>
                         <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="3*" />
-                        <DataGridTemplateColumn Header="State" Width="110">
+                        <DataGridTemplateColumn Header="State" Width="110" SortMemberPath="State">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate DataType="vm:TorrentRowViewModel">
                                     <Border Background="{Binding State, Converter={StaticResource StateToBrush}}"
@@ -189,7 +209,7 @@
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
-                        <DataGridTemplateColumn Header="Progress" Width="140">
+                        <DataGridTemplateColumn Header="Progress" Width="140" SortMemberPath="ProgressFraction">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
                                     <Grid>
@@ -201,11 +221,14 @@
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
-                        <DataGridTextColumn Header="Category" Binding="{Binding Category}" Width="*" />
-                        <DataGridTextColumn Header="Downloaded" Binding="{Binding Downloaded}" Width="*" />
-                        <DataGridTextColumn Header="Uploaded" Binding="{Binding Uploaded}" Width="*" />
-                        <DataGridTextColumn Header="Peers" Binding="{Binding PeerCount}" Width="60" />
-                        <DataGridTextColumn Header="Queue" Binding="{Binding QueuePosition}" Width="50" />
+                        <DataGridTextColumn Header="Size" Binding="{Binding TotalLength}" Width="*" IsVisible="{Binding $parent[Window].DataContext.ShowSizeColumn}" />
+                        <DataGridTextColumn Header="Category" Binding="{Binding Category}" Width="*" IsVisible="{Binding $parent[Window].DataContext.ShowCategoryColumn}" />
+                        <DataGridTextColumn Header="Tags" Binding="{Binding Tags, Converter={StaticResource StringListJoin}}" Width="*" IsVisible="{Binding $parent[Window].DataContext.ShowTagsColumn}" />
+                        <DataGridTextColumn Header="Downloaded" Binding="{Binding Downloaded}" Width="*" IsVisible="{Binding $parent[Window].DataContext.ShowDownloadedColumn}" />
+                        <DataGridTextColumn Header="Uploaded" Binding="{Binding Uploaded}" Width="*" IsVisible="{Binding $parent[Window].DataContext.ShowUploadedColumn}" />
+                        <DataGridTextColumn Header="Ratio" Binding="{Binding SeedRatio, StringFormat='{}{0:F2}'}" Width="60" IsVisible="{Binding $parent[Window].DataContext.ShowRatioColumn}" />
+                        <DataGridTextColumn Header="Peers" Binding="{Binding PeerCount}" Width="60" IsVisible="{Binding $parent[Window].DataContext.ShowPeersColumn}" />
+                        <DataGridTextColumn Header="Queue" Binding="{Binding QueuePosition}" Width="50" IsVisible="{Binding $parent[Window].DataContext.ShowQueueColumn}" />
                     </DataGrid.Columns>
                 </DataGrid>
 

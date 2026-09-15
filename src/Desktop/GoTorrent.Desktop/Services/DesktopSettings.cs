@@ -21,6 +21,14 @@ namespace GoTorrent.Desktop.Services;
 /// top row's fraction of the split grid's total height (0..1). Null
 /// means "use the XAML-declared 2*/3* default".
 /// </param>
+/// <param name="HiddenColumns">
+/// Stage 4's column chooser - the header text of each optional torrent-
+/// list column currently hidden ("Size", "Category", "Tags", etc.; Name/
+/// State/Progress are always shown). Null/empty means every column is
+/// visible, matching the app's original fixed set - a flat string list
+/// rather than one bool field per column, so a future column doesn't
+/// need its own settings-schema change to be toggleable.
+/// </param>
 public sealed record DesktopSettings(
     string? BaseAddress,
     string? Token,
@@ -32,7 +40,8 @@ public sealed record DesktopSettings(
     bool WindowMaximized = false,
     double? DetailSplitFraction = null,
     bool LightTheme = false,
-    bool CompactDensity = false)
+    bool CompactDensity = false,
+    IReadOnlyList<string>? HiddenColumns = null)
 {
     public bool IsConfigured => !string.IsNullOrWhiteSpace(BaseAddress) && !string.IsNullOrWhiteSpace(Token);
 }
