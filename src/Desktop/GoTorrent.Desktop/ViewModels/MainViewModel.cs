@@ -100,6 +100,22 @@ public partial class MainViewModel : ViewModelBase, IDisposable
     [ObservableProperty]
     public partial TorrentRowViewModel? SelectedTorrent { get; set; }
 
+    /// <summary>
+    /// Stage 4's multi-select - every torrent currently selected in the
+    /// grid, kept in sync from <c>MainWindow.OnTorrentSelectionChanged</c>
+    /// reading the DataGrid's own <c>SelectedItems</c> (a get-only list,
+    /// not something Avalonia's DataGrid exposes as a bindable property -
+    /// confirmed against the installed package's XML docs rather than
+    /// assumed, so this is synced imperatively from code-behind instead
+    /// of a XAML binding). <see cref="SelectedTorrent"/> keeps meaning
+    /// "the one torrent the detail pane shows" (the grid's own concept of
+    /// the primary/anchor selection) even when this has more than one
+    /// entry - the General/Files/Peers/Trackers tabs only ever show one
+    /// torrent's detail regardless of how many rows are selected.
+    /// </summary>
+    [ObservableProperty]
+    public partial ObservableCollection<TorrentRowViewModel> SelectedTorrents { get; set; } = [];
+
     [ObservableProperty]
     public partial string? AddTorrentError { get; set; }
 
@@ -1143,11 +1159,11 @@ public partial class MainViewModel : ViewModelBase, IDisposable
     [RelayCommand]
     private Task PauseSelectedAsync()
     {
-        if (SelectedTorrent is { } torrent)
+        foreach (var torrent in SelectedTorrents)
         {
             torrent.State = "Paused";
         }
-        return RunTorrentActionAsync(client => client.PauseAsync(SelectedTorrent!.InfoHash, CancellationToken.None), "pause");
+        return RunTorrentActionAsync((client, torrent) => client.PauseAsync(torrent.InfoHash, CancellationToken.None), "pause");
     }
 
     [RelayCommand]
@@ -1159,11 +1175,14 @@ public partial class MainViewModel : ViewModelBase, IDisposable
         // doing something" for a torrent that isn't already complete,
         // and gets corrected to Seeding by the same reconciliation
         // PauseSelectedAsync relies on if it's wrong.
-        if (SelectedTorrent is { State: "Paused" } torrent)
+        foreach (var torrent in SelectedTorrents)
         {
-            torrent.State = "Downloading";
+            if (torrent.State == "Paused")
+            {
+                torrent.State = "Downloading";
+            }
         }
-        return RunTorrentActionAsync(client => client.ResumeAsync(SelectedTorrent!.InfoHash, CancellationToken.None), "resume");
+        return RunTorrentActionAsync((client, torrent) => client.ResumeAsync(torrent.InfoHash, CancellationToken.None), "resume");
     }
 
     /// <summary>
@@ -1181,22 +1200,29 @@ public partial class MainViewModel : ViewModelBase, IDisposable
     [RelayCommand]
     private void DeleteSelected()
     {
-        if (SelectedTorrent is not { } torrent)
+        var torrents = SelectedTorrents.ToList();
+        if (torrents.Count == 0)
         {
             return;
         }
-        var infoHash = torrent.InfoHash;
-        var name = torrent.Name;
-        _pendingDeleteHashes.Add(infoHash);
+        var hashes = torrents.Select(t => t.InfoHash).ToList();
+        foreach (var hash in hashes)
+        {
+            _pendingDeleteHashes.Add(hash);
+        }
         ApplyFilter();
 
         var cts = new CancellationTokenSource();
-        _pendingDeleteCancellations[infoHash] = cts;
-        Toast($"\"{name}\" removed", ToastSeverity.Info, "Undo", () => UndoDelete(infoHash));
-        _ = CommitPendingDeleteAsync(infoHash, cts.Token);
+        foreach (var hash in hashes)
+        {
+            _pendingDeleteCancellations[hash] = cts;
+        }
+        var label = torrents.Count == 1 ? $"\"{torrents[0].Name}\" removed" : $"{torrents.Count} torrents removed";
+        Toast(label, ToastSeverity.Info, "Undo", () => UndoDelete(hashes));
+        _ = CommitPendingDeleteAsync(hashes, cts.Token);
     }
 
-    private async Task CommitPendingDeleteAsync(string infoHash, CancellationToken cancellationToken)
+    private async Task CommitPendingDeleteAsync(IReadOnlyList<string> hashes, CancellationToken cancellationToken)
     {
         try
         {
@@ -1207,64 +1233,82 @@ public partial class MainViewModel : ViewModelBase, IDisposable
             // Undo cancelled this exact delay - nothing to commit.
             return;
         }
-        _pendingDeleteCancellations.Remove(infoHash);
+        foreach (var hash in hashes)
+        {
+            _pendingDeleteCancellations.Remove(hash);
+        }
         if (_client is null)
         {
-            _pendingDeleteHashes.Remove(infoHash);
+            foreach (var hash in hashes)
+            {
+                _pendingDeleteHashes.Remove(hash);
+            }
             ApplyFilter();
             return;
         }
-        try
+        var client = _client;
+        var failures = 0;
+        foreach (var hash in hashes)
         {
-            await _client.DeleteAsync(infoHash, deleteData: false, CancellationToken.None);
-            _pendingDeleteHashes.Remove(infoHash);
-            await RefreshAsync();
+            try
+            {
+                await client.DeleteAsync(hash, deleteData: false, CancellationToken.None);
+            }
+            catch (Exception)
+            {
+                // Never actually removed server-side for this one -
+                // ApplyFilter below restores it to view rather than
+                // leaving it stuck hidden.
+                failures++;
+            }
+            _pendingDeleteHashes.Remove(hash);
         }
-        catch (Exception ex)
+        await RefreshAsync();
+        ApplyFilter();
+        if (failures > 0)
         {
-            // Never actually removed server-side - restore it to view
-            // rather than leaving it stuck hidden.
-            _pendingDeleteHashes.Remove(infoHash);
-            Toast($"Couldn't remove torrent: {ex.Message}", ToastSeverity.Error);
-            ApplyFilter();
+            Toast(failures == hashes.Count ? "Couldn't remove torrent(s)" : $"Couldn't remove {failures} of {hashes.Count} torrents", ToastSeverity.Error);
         }
     }
 
-    private void UndoDelete(string infoHash)
+    private void UndoDelete(IReadOnlyList<string> hashes)
     {
-        if (_pendingDeleteCancellations.Remove(infoHash, out var cts))
+        foreach (var hash in hashes)
         {
-            cts.Cancel();
-            cts.Dispose();
+            if (_pendingDeleteCancellations.Remove(hash, out var cts))
+            {
+                cts.Cancel();
+                cts.Dispose();
+            }
+            _pendingDeleteHashes.Remove(hash);
         }
-        _pendingDeleteHashes.Remove(infoHash);
         ApplyFilter();
     }
 
     [RelayCommand]
-    private Task DeleteSelectedWithDataAsync() => RunTorrentActionAsync(client => client.DeleteAsync(SelectedTorrent!.InfoHash, deleteData: true, CancellationToken.None), "delete with data");
+    private Task DeleteSelectedWithDataAsync() => RunTorrentActionAsync((client, torrent) => client.DeleteAsync(torrent.InfoHash, deleteData: true, CancellationToken.None), "delete with data");
 
     [RelayCommand]
-    private Task VerifySelectedAsync() => RunTorrentActionAsync(client => client.VerifyAsync(SelectedTorrent!.InfoHash, CancellationToken.None), "force recheck");
+    private Task VerifySelectedAsync() => RunTorrentActionAsync((client, torrent) => client.VerifyAsync(torrent.InfoHash, CancellationToken.None), "force recheck");
 
     [RelayCommand]
-    private Task ReannounceSelectedAsync() => RunTorrentActionAsync(client => client.ReannounceAsync(SelectedTorrent!.InfoHash, CancellationToken.None), "reannounce");
+    private Task ReannounceSelectedAsync() => RunTorrentActionAsync((client, torrent) => client.ReannounceAsync(torrent.InfoHash, CancellationToken.None), "reannounce");
 
     [RelayCommand]
-    private Task ToggleForceStartAsync() => RunTorrentActionAsync(client =>
-        client.PatchTorrentAsync(SelectedTorrent!.InfoHash, new PatchTorrentOptions(ForceStart: !SelectedTorrent!.ForceStart), CancellationToken.None), "toggle force start");
+    private Task ToggleForceStartAsync() => RunTorrentActionAsync((client, torrent) =>
+        client.PatchTorrentAsync(torrent.InfoHash, new PatchTorrentOptions(ForceStart: !torrent.ForceStart), CancellationToken.None), "toggle force start");
 
     [RelayCommand]
-    private Task MoveQueueTopAsync() => RunTorrentActionAsync(client =>
-        client.PatchTorrentAsync(SelectedTorrent!.InfoHash, new PatchTorrentOptions(QueuePosition: 0), CancellationToken.None), "move to top");
+    private Task MoveQueueTopAsync() => RunTorrentActionAsync((client, torrent) =>
+        client.PatchTorrentAsync(torrent.InfoHash, new PatchTorrentOptions(QueuePosition: 0), CancellationToken.None), "move to top");
 
     [RelayCommand]
-    private Task MoveQueueUpAsync() => RunTorrentActionAsync(client =>
-        client.PatchTorrentAsync(SelectedTorrent!.InfoHash, new PatchTorrentOptions(QueuePosition: Math.Max(0, SelectedTorrent!.QueuePosition - 1)), CancellationToken.None), "move up");
+    private Task MoveQueueUpAsync() => RunTorrentActionAsync((client, torrent) =>
+        client.PatchTorrentAsync(torrent.InfoHash, new PatchTorrentOptions(QueuePosition: Math.Max(0, torrent.QueuePosition - 1)), CancellationToken.None), "move up");
 
     [RelayCommand]
-    private Task MoveQueueDownAsync() => RunTorrentActionAsync(client =>
-        client.PatchTorrentAsync(SelectedTorrent!.InfoHash, new PatchTorrentOptions(QueuePosition: SelectedTorrent!.QueuePosition + 1), CancellationToken.None), "move down");
+    private Task MoveQueueDownAsync() => RunTorrentActionAsync((client, torrent) =>
+        client.PatchTorrentAsync(torrent.InfoHash, new PatchTorrentOptions(QueuePosition: torrent.QueuePosition + 1), CancellationToken.None), "move down");
 
     /// <summary>
     /// gottrentd doesn't report a torrent's current picker strategy
@@ -1274,32 +1318,56 @@ public partial class MainViewModel : ViewModelBase, IDisposable
     /// blind toggle.
     /// </summary>
     [RelayCommand]
-    private Task EnableSequentialAsync() => RunTorrentActionAsync(client =>
-        client.PatchTorrentAsync(SelectedTorrent!.InfoHash, new PatchTorrentOptions(Sequential: true), CancellationToken.None), "enable sequential download");
+    private Task EnableSequentialAsync() => RunTorrentActionAsync((client, torrent) =>
+        client.PatchTorrentAsync(torrent.InfoHash, new PatchTorrentOptions(Sequential: true), CancellationToken.None), "enable sequential download");
 
     [RelayCommand]
-    private Task DisableSequentialAsync() => RunTorrentActionAsync(client =>
-        client.PatchTorrentAsync(SelectedTorrent!.InfoHash, new PatchTorrentOptions(Sequential: false), CancellationToken.None), "disable sequential download");
+    private Task DisableSequentialAsync() => RunTorrentActionAsync((client, torrent) =>
+        client.PatchTorrentAsync(torrent.InfoHash, new PatchTorrentOptions(Sequential: false), CancellationToken.None), "disable sequential download");
 
-    /// <summary>Sets a torrent's category. Used by the "Set Category..." context menu prompt's code-behind (no ViewModel of its own, same reasoning as every other small dialog).</summary>
-    public async Task<bool> SetCategoryAsync(string infoHash, string category)
+    /// <summary>
+    /// Sets a category on every currently-selected torrent - Stage 4's
+    /// "set-category across a selection," the one bulk action ROADMAP.md
+    /// names explicitly by itself. Used by the "Set Category..." context
+    /// menu prompt's code-behind (no ViewModel of its own, same reasoning
+    /// as every other small dialog). Applying the same value to every
+    /// selected torrent is a straightforward, unambiguous bulk semantic -
+    /// unlike Pause/Resume/Delete there's no per-torrent state to read
+    /// first, just one value written everywhere.
+    /// </summary>
+    public async Task<bool> SetCategoryForSelectedAsync(string category)
     {
-        if (_client is null)
+        if (_client is null || SelectedTorrents.Count == 0)
         {
             return false;
         }
-        try
+        var client = _client;
+        var torrents = SelectedTorrents.ToList();
+        var failures = 0;
+        foreach (var torrent in torrents)
         {
-            await _client.PatchTorrentAsync(infoHash, new PatchTorrentOptions(Category: category), CancellationToken.None);
+            try
+            {
+                await client.PatchTorrentAsync(torrent.InfoHash, new PatchTorrentOptions(Category: category), CancellationToken.None);
+            }
+            catch (Exception)
+            {
+                failures++;
+            }
+        }
+        // See RunTorrentActionAsync's own comment - only refresh when at
+        // least one torrent's category was actually set.
+        if (failures < torrents.Count)
+        {
             await RefreshAsync();
-            Toast("Category set", ToastSeverity.Success);
+        }
+        if (failures == 0)
+        {
+            Toast(torrents.Count == 1 ? "Category set" : $"Category set on {torrents.Count} torrents", ToastSeverity.Success);
             return true;
         }
-        catch (Exception ex)
-        {
-            Toast($"Couldn't set category: {ex.Message}", ToastSeverity.Error);
-            return false;
-        }
+        Toast(failures == torrents.Count ? "Couldn't set category" : $"Couldn't set category on {failures} of {torrents.Count}", ToastSeverity.Error);
+        return false;
     }
 
     /// <summary>Replaces a torrent's tag set entirely (not a merge - the Go side's own <c>SetTags</c> works the same way). Used by the "Set Tags..." context menu prompt's code-behind.</summary>
@@ -1433,20 +1501,60 @@ public partial class MainViewModel : ViewModelBase, IDisposable
     /// is the success feedback, and a toast on every single click of a
     /// frequent action would just be noise.
     /// </summary>
-    private async Task RunTorrentActionAsync(Func<IEngineClient, Task> action, string actionLabel)
+    /// <summary>
+    /// The shared implementation behind every simple torrent action
+    /// (Pause, Verify, move-queue, …) - Stage 4's multi-select made this
+    /// genuinely per-torrent rather than closing over a single
+    /// <c>SelectedTorrent</c>, since several of its callers (move-queue,
+    /// force-start toggle) need each torrent's own current state, not
+    /// one shared value, even before multi-select existed. Runs
+    /// sequentially, not fanned out with <c>Task.WhenAll</c> - a local
+    /// daemon on the same machine has no real need for that concurrency
+    /// machinery, the same reasoning this project's plain (non-resilience-
+    /// wrapped) <c>HttpClient</c> choice already rests on. Only one
+    /// failure toast for the whole batch, not one per torrent - a
+    /// selection-wide action failing for 2 of 12 torrents shouldn't
+    /// paper the screen in toasts.
+    /// </summary>
+    private async Task RunTorrentActionAsync(Func<IEngineClient, TorrentRowViewModel, Task> action, string actionLabel)
     {
-        if (_client is null || SelectedTorrent is null)
+        if (_client is null || SelectedTorrents.Count == 0)
         {
             return;
         }
-        try
+        var client = _client;
+        var torrents = SelectedTorrents.ToList();
+        var failures = 0;
+        Exception? lastFailure = null;
+        foreach (var torrent in torrents)
         {
-            await action(_client);
+            try
+            {
+                await action(client, torrent);
+            }
+            catch (Exception ex)
+            {
+                failures++;
+                lastFailure = ex;
+            }
+        }
+        // Only refresh when at least one action actually succeeded -
+        // matching the pre-multi-select behavior of never refreshing
+        // after a single torrent's action failed. A refresh after a
+        // total failure risks folding the same underlying problem into
+        // ConnectionError too (a real RefreshAsync failure sets it),
+        // which would misattribute a per-action failure as a lost
+        // connection instead of leaving it to this method's own toast.
+        if (failures < torrents.Count)
+        {
             await RefreshAsync();
         }
-        catch (Exception ex)
+        if (failures > 0)
         {
-            Toast($"Couldn't {actionLabel}: {ex.Message}", ToastSeverity.Error);
+            var message = torrents.Count == 1
+                ? $"Couldn't {actionLabel}: {lastFailure!.Message}"
+                : $"Couldn't {actionLabel} {failures} of {torrents.Count}: {lastFailure!.Message}";
+            Toast(message, ToastSeverity.Error);
         }
     }
 

@@ -444,11 +444,15 @@ public partial class MainWindow : Window
 
     private async void OnSetCategoryClick(object? sender, RoutedEventArgs e)
     {
-        if (DataContext is not MainViewModel mainViewModel || mainViewModel.SelectedTorrent is null)
+        if (DataContext is not MainViewModel mainViewModel || mainViewModel.SelectedTorrents.Count == 0)
         {
             return;
         }
-        var dialog = new SetCategoryWindow(mainViewModel, mainViewModel.SelectedTorrent.InfoHash, mainViewModel.SelectedTorrent.Category);
+        // Only pre-fill from a real current value when exactly one
+        // torrent is selected - a multi-select's categories might differ,
+        // and there's no single "current" value to show.
+        var currentCategory = mainViewModel.SelectedTorrents.Count == 1 ? mainViewModel.SelectedTorrents[0].Category : null;
+        var dialog = new SetCategoryWindow(mainViewModel, currentCategory);
         await dialog.ShowDialog(this);
     }
 
@@ -544,6 +548,19 @@ public partial class MainWindow : Window
     {
         if (DataContext is MainViewModel mainViewModel)
         {
+            // DataGrid.SelectedItems is get-only, not a bindable Avalonia
+            // property - the live selection has to be copied into the
+            // ViewModel's own collection imperatively here rather than
+            // through a binding.
+            mainViewModel.SelectedTorrents.Clear();
+            foreach (var item in TorrentsGrid.SelectedItems)
+            {
+                if (item is TorrentRowViewModel row)
+                {
+                    mainViewModel.SelectedTorrents.Add(row);
+                }
+            }
+
             await mainViewModel.LoadSelectedDetailAsync();
             await mainViewModel.RefreshPeerRatesAsync();
         }

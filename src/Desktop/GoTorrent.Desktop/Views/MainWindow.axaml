@@ -166,6 +166,7 @@
                           GridLinesVisibility="Horizontal"
                           RowHeight="{Binding RowHeight}"
                           CanUserSortColumns="True"
+                          SelectionMode="Extended"
                           AutoGenerateColumns="False">
                     <DataGrid.ContextMenu>
                         <ContextMenu>

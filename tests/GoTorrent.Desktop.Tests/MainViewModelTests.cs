@@ -47,6 +47,21 @@ public sealed class MainViewModelTests
         InEndgame: false,
         SeedingDurationSeconds: 0);
 
+    /// <summary>
+    /// Selects exactly one torrent the way a real DataGrid selection does -
+    /// both <see cref="MainViewModel.SelectedTorrent"/> (the detail pane's
+    /// anchor) and <see cref="MainViewModel.SelectedTorrents"/> (what the
+    /// bulk-action commands actually operate on), which
+    /// <c>MainWindow.OnTorrentSelectionChanged</c> keeps in sync in the
+    /// real app but a ViewModel-only test has to do itself.
+    /// </summary>
+    private static void SelectOnly(MainViewModel viewModel, TorrentRowViewModel torrent)
+    {
+        viewModel.SelectedTorrent = torrent;
+        viewModel.SelectedTorrents.Clear();
+        viewModel.SelectedTorrents.Add(torrent);
+    }
+
     private static (MainViewModel ViewModel, FakeEngineClient Client, FakeSettingsStore Settings) MakeViewModel()
     {
         var client = new FakeEngineClient();
@@ -360,11 +375,54 @@ public sealed class MainViewModelTests
         var torrent = MakeTorrent("ubuntu.iso");
         client.Torrents.Add(torrent);
         await viewModel.RefreshAsync();
-        viewModel.SelectedTorrent = viewModel.Torrents[0];
+        SelectOnly(viewModel, viewModel.Torrents[0]);
 
         await viewModel.PauseSelectedCommand.ExecuteAsync(null);
 
         Assert.Equal([torrent.InfoHash], client.PausedHashes);
+    }
+
+    [Fact]
+    public async Task PauseSelectedCommand_WithTwoTorrentsSelected_PausesBoth()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        var torrentA = MakeTorrent("a") with { InfoHash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" };
+        var torrentB = MakeTorrent("b") with { InfoHash = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" };
+        client.Torrents.Add(torrentA);
+        client.Torrents.Add(torrentB);
+        await viewModel.RefreshAsync();
+        viewModel.SelectedTorrents.Add(viewModel.Torrents[0]);
+        viewModel.SelectedTorrents.Add(viewModel.Torrents[1]);
+
+        await viewModel.PauseSelectedCommand.ExecuteAsync(null);
+
+        Assert.Equal([torrentA.InfoHash, torrentB.InfoHash], client.PausedHashes.OrderBy(h => h));
+    }
+
+    [Fact]
+    public async Task DeleteSelectedCommand_WithTwoTorrentsSelected_DeletesBothAfterTheUndoWindow()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.UndoDeleteDelay = TimeSpan.FromMilliseconds(10);
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        var torrentA = MakeTorrent("a") with { InfoHash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" };
+        var torrentB = MakeTorrent("b") with { InfoHash = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" };
+        client.Torrents.Add(torrentA);
+        client.Torrents.Add(torrentB);
+        await viewModel.RefreshAsync();
+        viewModel.SelectedTorrents.Add(viewModel.Torrents[0]);
+        viewModel.SelectedTorrents.Add(viewModel.Torrents[1]);
+
+        viewModel.DeleteSelectedCommand.Execute(null);
+        Assert.Empty(viewModel.DisplayedTorrents);
+        await Task.Delay(TimeSpan.FromMilliseconds(200));
+
+        Assert.Equal([(torrentA.InfoHash, false), (torrentB.InfoHash, false)], client.DeletedHashes.OrderBy(h => h.InfoHash));
     }
 
     [Fact]
@@ -377,7 +435,7 @@ public sealed class MainViewModelTests
         var torrent = MakeTorrent("ubuntu.iso");
         client.Torrents.Add(torrent);
         await viewModel.RefreshAsync();
-        viewModel.SelectedTorrent = viewModel.Torrents[0];
+        SelectOnly(viewModel, viewModel.Torrents[0]);
 
         await viewModel.ResumeSelectedCommand.ExecuteAsync(null);
 
@@ -394,7 +452,7 @@ public sealed class MainViewModelTests
         var torrent = MakeTorrent("ubuntu.iso");
         client.Torrents.Add(torrent);
         await viewModel.RefreshAsync();
-        viewModel.SelectedTorrent = viewModel.Torrents[0];
+        SelectOnly(viewModel, viewModel.Torrents[0]);
 
         await viewModel.VerifySelectedCommand.ExecuteAsync(null);
 
@@ -411,7 +469,7 @@ public sealed class MainViewModelTests
         var torrent = MakeTorrent("ubuntu.iso");
         client.Torrents.Add(torrent);
         await viewModel.RefreshAsync();
-        viewModel.SelectedTorrent = viewModel.Torrents[0];
+        SelectOnly(viewModel, viewModel.Torrents[0]);
 
         await viewModel.ReannounceSelectedCommand.ExecuteAsync(null);
 
@@ -428,7 +486,7 @@ public sealed class MainViewModelTests
         var torrent = MakeTorrent("ubuntu.iso");
         client.Torrents.Add(torrent);
         await viewModel.RefreshAsync();
-        viewModel.SelectedTorrent = viewModel.Torrents[0];
+        SelectOnly(viewModel, viewModel.Torrents[0]);
 
         await viewModel.DeleteSelectedWithDataCommand.ExecuteAsync(null);
 
@@ -445,12 +503,12 @@ public sealed class MainViewModelTests
         var torrent = MakeTorrent("ubuntu.iso") with { State = "Downloading" };
         client.Torrents.Add(torrent);
         await viewModel.RefreshAsync();
-        viewModel.SelectedTorrent = viewModel.Torrents[0];
+        SelectOnly(viewModel, viewModel.Torrents[0]);
         client.PauseGate = new TaskCompletionSource();
 
         var pause = viewModel.PauseSelectedCommand.ExecuteAsync(null);
 
-        Assert.Equal("Paused", viewModel.SelectedTorrent.State);
+        Assert.Equal("Paused", viewModel.SelectedTorrent!.State);
         client.PauseGate.SetResult();
         await pause;
     }
@@ -465,7 +523,7 @@ public sealed class MainViewModelTests
         var torrent = MakeTorrent("ubuntu.iso");
         client.Torrents.Add(torrent);
         await viewModel.RefreshAsync();
-        viewModel.SelectedTorrent = viewModel.Torrents[0];
+        SelectOnly(viewModel, viewModel.Torrents[0]);
         client.Failure = new InvalidOperationException("daemon said no");
         ToastMessage? toast = null;
         viewModel.ToastRequested += t => toast = t;
@@ -480,7 +538,7 @@ public sealed class MainViewModelTests
     }
 
     [Fact]
-    public async Task SetCategoryAsync_OnSuccessRaisesASuccessToast()
+    public async Task SetCategoryForSelectedAsync_OnSuccessRaisesASuccessToast()
     {
         var (viewModel, client, _) = MakeViewModel();
         viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
@@ -489,10 +547,11 @@ public sealed class MainViewModelTests
         var torrent = MakeTorrent("ubuntu.iso");
         client.Torrents.Add(torrent);
         await viewModel.RefreshAsync();
+        SelectOnly(viewModel, viewModel.Torrents[0]);
         ToastMessage? toast = null;
         viewModel.ToastRequested += t => toast = t;
 
-        await viewModel.SetCategoryAsync(torrent.InfoHash, "Movies");
+        await viewModel.SetCategoryForSelectedAsync("Movies");
 
         Assert.NotNull(toast);
         Assert.Equal(ToastSeverity.Success, toast.Severity);
@@ -510,7 +569,7 @@ public sealed class MainViewModelTests
         var torrent = MakeTorrent("ubuntu.iso");
         client.Torrents.Add(torrent);
         await viewModel.RefreshAsync();
-        viewModel.SelectedTorrent = viewModel.Torrents[0];
+        SelectOnly(viewModel, viewModel.Torrents[0]);
 
         viewModel.DeleteSelectedCommand.Execute(null);
 
@@ -529,7 +588,7 @@ public sealed class MainViewModelTests
         var torrent = MakeTorrent("ubuntu.iso");
         client.Torrents.Add(torrent);
         await viewModel.RefreshAsync();
-        viewModel.SelectedTorrent = viewModel.Torrents[0];
+        SelectOnly(viewModel, viewModel.Torrents[0]);
         ToastMessage? toast = null;
         viewModel.ToastRequested += t => toast = t;
 
@@ -553,7 +612,7 @@ public sealed class MainViewModelTests
         var torrent = MakeTorrent("ubuntu.iso");
         client.Torrents.Add(torrent);
         await viewModel.RefreshAsync();
-        viewModel.SelectedTorrent = viewModel.Torrents[0];
+        SelectOnly(viewModel, viewModel.Torrents[0]);
 
         viewModel.DeleteSelectedCommand.Execute(null);
         await Task.Delay(TimeSpan.FromMilliseconds(200));
@@ -1467,7 +1526,7 @@ public sealed class MainViewModelTests
         var torrent = MakeTorrent("a") with { ForceStart = false };
         client.Torrents.Add(torrent);
         await viewModel.RefreshAsync();
-        viewModel.SelectedTorrent = viewModel.Torrents[0];
+        SelectOnly(viewModel, viewModel.Torrents[0]);
 
         await viewModel.ToggleForceStartCommand.ExecuteAsync(null);
 
@@ -1483,7 +1542,7 @@ public sealed class MainViewModelTests
         viewModel.ConnectCommand.Execute(null);
         client.Torrents.Add(MakeTorrent("a") with { QueuePosition = 3 });
         await viewModel.RefreshAsync();
-        viewModel.SelectedTorrent = viewModel.Torrents[0];
+        SelectOnly(viewModel, viewModel.Torrents[0]);
 
         await viewModel.MoveQueueTopCommand.ExecuteAsync(null);
 
@@ -1499,7 +1558,7 @@ public sealed class MainViewModelTests
         viewModel.ConnectCommand.Execute(null);
         client.Torrents.Add(MakeTorrent("a") with { QueuePosition = 3 });
         await viewModel.RefreshAsync();
-        viewModel.SelectedTorrent = viewModel.Torrents[0];
+        SelectOnly(viewModel, viewModel.Torrents[0]);
 
         await viewModel.MoveQueueUpCommand.ExecuteAsync(null);
 
@@ -1515,7 +1574,7 @@ public sealed class MainViewModelTests
         viewModel.ConnectCommand.Execute(null);
         client.Torrents.Add(MakeTorrent("a") with { QueuePosition = 3 });
         await viewModel.RefreshAsync();
-        viewModel.SelectedTorrent = viewModel.Torrents[0];
+        SelectOnly(viewModel, viewModel.Torrents[0]);
 
         await viewModel.MoveQueueDownCommand.ExecuteAsync(null);
 
@@ -1523,7 +1582,7 @@ public sealed class MainViewModelTests
     }
 
     [Fact]
-    public async Task SetCategoryAsync_SetsTheCategory()
+    public async Task SetCategoryForSelectedAsync_SetsTheCategory()
     {
         var (viewModel, client, _) = MakeViewModel();
         viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
@@ -1532,11 +1591,33 @@ public sealed class MainViewModelTests
         var torrent = MakeTorrent("a");
         client.Torrents.Add(torrent);
         await viewModel.RefreshAsync();
+        SelectOnly(viewModel, viewModel.Torrents[0]);
 
-        var ok = await viewModel.SetCategoryAsync(torrent.InfoHash, "Movies");
+        var ok = await viewModel.SetCategoryForSelectedAsync("Movies");
 
         Assert.True(ok);
         Assert.Equal("Movies", client.Torrents[0].Category);
+    }
+
+    [Fact]
+    public async Task SetCategoryForSelectedAsync_WithTwoTorrentsSelected_SetsBoth()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        var torrentA = MakeTorrent("a") with { InfoHash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" };
+        var torrentB = MakeTorrent("b") with { InfoHash = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" };
+        client.Torrents.Add(torrentA);
+        client.Torrents.Add(torrentB);
+        await viewModel.RefreshAsync();
+        viewModel.SelectedTorrents.Add(viewModel.Torrents[0]);
+        viewModel.SelectedTorrents.Add(viewModel.Torrents[1]);
+
+        var ok = await viewModel.SetCategoryForSelectedAsync("Movies");
+
+        Assert.True(ok);
+        Assert.All(client.Torrents, t => Assert.Equal("Movies", t.Category));
     }
 
     [Fact]
