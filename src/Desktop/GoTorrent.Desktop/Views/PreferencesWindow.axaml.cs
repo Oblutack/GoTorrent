@@ -28,6 +28,8 @@ public partial class PreferencesWindow : Window
         StartMinimizedCheckBox.IsChecked = mainViewModel.StartMinimized;
         AutostartCheckBox.IsChecked = mainViewModel.AutostartEnabled;
         FileAssociationCheckBox.IsChecked = mainViewModel.FileAssociationEnabled;
+        LightThemeCheckBox.IsChecked = mainViewModel.LightTheme;
+        CompactDensityCheckBox.IsChecked = mainViewModel.CompactDensity;
         Opened += async (_, _) => await LoadCurrentLimitsAsync();
     }
 
@@ -67,6 +69,8 @@ public partial class PreferencesWindow : Window
             _mainViewModel.SetStartMinimized(StartMinimizedCheckBox.IsChecked ?? false);
             _mainViewModel.SetAutostart(AutostartCheckBox.IsChecked ?? false);
             _mainViewModel.SetFileAssociation(FileAssociationCheckBox.IsChecked ?? false);
+            _mainViewModel.SetLightTheme(LightThemeCheckBox.IsChecked ?? false);
+            _mainViewModel.SetCompactDensity(CompactDensityCheckBox.IsChecked ?? false);
             Close();
         }
         catch (Exception ex)

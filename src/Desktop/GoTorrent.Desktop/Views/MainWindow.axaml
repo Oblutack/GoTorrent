@@ -145,6 +145,7 @@
                           SelectionChanged="OnTorrentSelectionChanged"
                           IsReadOnly="True"
                           GridLinesVisibility="Horizontal"
+                          RowHeight="{Binding RowHeight}"
                           AutoGenerateColumns="False">
                     <DataGrid.ContextMenu>
                         <ContextMenu>
@@ -246,7 +247,7 @@
                     </TabItem>
                     <TabItem Header="Files">
                       <Grid>
-                        <DataGrid ItemsSource="{Binding DetailFiles}" IsReadOnly="True" GridLinesVisibility="Horizontal" AutoGenerateColumns="False">
+                        <DataGrid ItemsSource="{Binding DetailFiles}" IsReadOnly="True" GridLinesVisibility="Horizontal" RowHeight="{Binding RowHeight}" AutoGenerateColumns="False">
                             <DataGrid.Columns>
                                 <DataGridTextColumn Header="Name" Binding="{Binding DisplayPath}" Width="3*" />
                                 <DataGridTextColumn Header="Size" Binding="{Binding Length}" Width="*" />
@@ -277,7 +278,7 @@
                     </TabItem>
                     <TabItem Header="Peers">
                       <Grid>
-                        <DataGrid ItemsSource="{Binding DetailPeers}" IsReadOnly="True" GridLinesVisibility="Horizontal" AutoGenerateColumns="False">
+                        <DataGrid ItemsSource="{Binding DetailPeers}" IsReadOnly="True" GridLinesVisibility="Horizontal" RowHeight="{Binding RowHeight}" AutoGenerateColumns="False">
                             <DataGrid.Columns>
                                 <DataGridTextColumn Header="Address" Binding="{Binding Addr}" Width="2*" />
                                 <DataGridTextColumn Header="Outbound" Binding="{Binding Outbound}" Width="*" />
@@ -299,7 +300,7 @@
                                 <TextBox Grid.Column="0" Name="NewTrackerBox" PlaceholderText="Add a tracker URL..." />
                                 <Button Grid.Column="1" Content="Add" Margin="6,0,0,0" Click="OnAddTrackerClick" />
                             </Grid>
-                            <DataGrid Grid.Row="1" ItemsSource="{Binding DetailTrackers}" IsReadOnly="True" GridLinesVisibility="Horizontal" AutoGenerateColumns="False">
+                            <DataGrid Grid.Row="1" ItemsSource="{Binding DetailTrackers}" IsReadOnly="True" GridLinesVisibility="Horizontal" RowHeight="{Binding RowHeight}" AutoGenerateColumns="False">
                                 <DataGrid.Columns>
                                     <DataGridTextColumn Header="URL" Binding="{Binding Url}" Width="3*" />
                                     <DataGridTextColumn Header="Seeders" Binding="{Binding Seeders}" Width="*" />

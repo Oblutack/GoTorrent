@@ -30,7 +30,9 @@ public sealed record DesktopSettings(
     int? WindowX = null,
     int? WindowY = null,
     bool WindowMaximized = false,
-    double? DetailSplitFraction = null)
+    double? DetailSplitFraction = null,
+    bool LightTheme = false,
+    bool CompactDensity = false)
 {
     public bool IsConfigured => !string.IsNullOrWhiteSpace(BaseAddress) && !string.IsNullOrWhiteSpace(Token);
 }

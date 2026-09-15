@@ -3,6 +3,7 @@ using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Interactivity;
 using Avalonia.Markup.Xaml;
+using Avalonia.Styling;
 using Avalonia.Threading;
 using GoTorrent.Desktop.ViewModels;
 using GoTorrent.Desktop.Views;
@@ -21,6 +22,10 @@ public partial class App : Application
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
             var mainViewModel = new MainViewModel();
+            // Set before the window is constructed, so the very first
+            // paint already uses the right theme instead of flashing
+            // dark-then-light for a user who saved the light preference.
+            RequestedThemeVariant = mainViewModel.LightTheme ? ThemeVariant.Light : ThemeVariant.Dark;
             var mainWindow = new MainWindow
             {
                 DataContext = mainViewModel,

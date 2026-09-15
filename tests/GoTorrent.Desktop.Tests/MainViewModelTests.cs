@@ -1090,6 +1090,44 @@ public sealed class MainViewModelTests
     }
 
     [Fact]
+    public void SetLightTheme_PersistsAndUpdatesTheProperty()
+    {
+        var (viewModel, _, settings) = MakeViewModel();
+
+        viewModel.SetLightTheme(true);
+
+        Assert.True(viewModel.LightTheme);
+        Assert.True(settings.Load().LightTheme);
+    }
+
+    [Fact]
+    public void SetCompactDensity_PersistsAndUpdatesRowHeight()
+    {
+        var (viewModel, _, settings) = MakeViewModel();
+
+        Assert.True(double.IsNaN(viewModel.RowHeight));
+
+        viewModel.SetCompactDensity(true);
+
+        Assert.True(viewModel.CompactDensity);
+        Assert.True(settings.Load().CompactDensity);
+        Assert.Equal(24, viewModel.RowHeight);
+    }
+
+    [Fact]
+    public void Constructor_WithSavedSettings_LoadsThemeAndDensity()
+    {
+        var settings = new FakeSettingsStore();
+        settings.Save(new DesktopSettings(null, null, LightTheme: true, CompactDensity: true));
+
+        var viewModel = new MainViewModel(_ => new FakeEngineClient(), settings);
+
+        Assert.True(viewModel.LightTheme);
+        Assert.True(viewModel.CompactDensity);
+        Assert.Equal(24, viewModel.RowHeight);
+    }
+
+    [Fact]
     public void SaveWindowGeometry_PersistsWithoutTouchingSavedConnectionSettings()
     {
         var (viewModel, _, settings) = MakeViewModel();

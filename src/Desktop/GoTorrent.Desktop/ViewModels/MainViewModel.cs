@@ -1,6 +1,8 @@
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Linq;
+using Avalonia;
+using Avalonia.Styling;
 using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -143,6 +145,26 @@ public partial class MainViewModel : ViewModelBase, IDisposable
     [ObservableProperty]
     public partial bool DaemonStarting { get; set; }
 
+    [ObservableProperty]
+    public partial bool LightTheme { get; set; }
+
+    /// <summary>
+    /// Stage 3's density toggle. <see cref="RowHeight"/> is what the four
+    /// torrent-related <c>DataGrid</c>s (Torrents/Files/Peers/Trackers)
+    /// actually bind to - <c>[NotifyPropertyChangedFor]</c> is what makes
+    /// changing this bool also notify that derived property, since
+    /// CommunityToolkit.Mvvm doesn't infer a computed property's
+    /// dependencies on its own.
+    /// </summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(RowHeight))]
+    public partial bool CompactDensity { get; set; }
+
+    /// <summary>NaN lets a DataGrid fall back to its own default (comfortable) row height; a real value overrides it for compact mode.</summary>
+    public double RowHeight => CompactDensity ? CompactRowHeight : double.NaN;
+
+    private const double CompactRowHeight = 24;
+
     public MainViewModel() : this(options => new EngineClient(options), new FileSettingsStore(), new WebSocketEventStream(), TimeProvider.System, new WindowsAutostartService(), new WindowsFileAssociationService(), new DaemonLauncher(), new WindowsDesktopNotifier())
     {
     }
@@ -216,6 +238,8 @@ public partial class MainViewModel : ViewModelBase, IDisposable
         var settings = _settingsStore.Load();
         SavedSettings = settings;
         StartMinimized = settings.StartMinimized;
+        LightTheme = settings.LightTheme;
+        CompactDensity = settings.CompactDensity;
         AutostartEnabled = _autostartService.IsEnabled();
         FileAssociationEnabled = _fileAssociationService.IsRegistered();
         if (settings.IsConfigured)
@@ -376,6 +400,35 @@ public partial class MainViewModel : ViewModelBase, IDisposable
     {
         StartMinimized = value;
         _settingsStore.Save(_settingsStore.Load() with { StartMinimized = value });
+    }
+
+    /// <summary>
+    /// Persists the light/dark theme preference and flips it live via
+    /// <see cref="Application.RequestedThemeVariant"/> - App.axaml's
+    /// ThemeDictionaries (the GtXxx tokens, referenced everywhere as
+    /// <c>{DynamicResource ...}</c>, never <c>{StaticResource ...}</c>)
+    /// react to that change immediately, no restart needed. Guarded with
+    /// <c>Application.Current is { }</c> rather than <c>Current!</c> so
+    /// this stays callable from a ViewModel-only test with no real
+    /// Avalonia <see cref="Application"/> running - the setting still
+    /// persists and <see cref="LightTheme"/> still updates either way,
+    /// just the visual half is a no-op outside a real app.
+    /// </summary>
+    public void SetLightTheme(bool value)
+    {
+        LightTheme = value;
+        _settingsStore.Save(_settingsStore.Load() with { LightTheme = value });
+        if (Application.Current is { } app)
+        {
+            app.RequestedThemeVariant = value ? ThemeVariant.Light : ThemeVariant.Dark;
+        }
+    }
+
+    /// <summary>Persists the comfortable/compact row-density preference - see <see cref="RowHeight"/>.</summary>
+    public void SetCompactDensity(bool value)
+    {
+        CompactDensity = value;
+        _settingsStore.Save(_settingsStore.Load() with { CompactDensity = value });
     }
 
     /// <summary>
