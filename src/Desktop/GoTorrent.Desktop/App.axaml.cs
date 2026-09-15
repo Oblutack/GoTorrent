@@ -5,6 +5,7 @@ using Avalonia.Interactivity;
 using Avalonia.Markup.Xaml;
 using Avalonia.Styling;
 using Avalonia.Threading;
+using GoTorrent.Desktop.Services;
 using GoTorrent.Desktop.ViewModels;
 using GoTorrent.Desktop.Views;
 
@@ -12,6 +13,18 @@ namespace GoTorrent.Desktop;
 
 public partial class App : Application
 {
+    /// <summary>
+    /// Set by <see cref="Program.Main"/> before starting the classic
+    /// desktop lifetime - only ever non-null for the primary instance,
+    /// since a secondary launch returns from <c>Main</c> before this
+    /// class is ever touched. A plain static rather than threading it
+    /// through <see cref="AppBuilder"/>/a constructor parameter, since
+    /// Avalonia's designer and <c>AppBuilder.Configure&lt;App&gt;()</c>
+    /// both need <see cref="App"/>'s parameterless constructor to keep
+    /// working unchanged.
+    /// </summary>
+    public static SingleInstanceGuard? SingleInstanceGuard { get; set; }
+
     public override void Initialize()
     {
         AvaloniaXamlLoader.Load(this);
@@ -53,11 +66,32 @@ public partial class App : Application
 
             // A .torrent file or magnet: link double-clicked with this app
             // registered as the handler (Services/WindowsFileAssociationService)
-            // arrives here as the first command-line argument.
-            if (desktop.Args is [var argument, ..])
+            // arrives here as the command-line arguments - every one of
+            // them, not just Args[0] (a real, previously-silent bug: a
+            // multi-file Explorer selection dropped everything after the
+            // first).
+            foreach (var argument in desktop.Args ?? [])
             {
                 _ = mainViewModel.AddFromArgumentAsync(argument);
             }
+
+            // Stage 4's single-instance enforcement - a later launch that
+            // found this instance already running forwards its own
+            // arguments here instead of starting a second full app. Each
+            // one is dispatched onto the UI thread (this callback itself
+            // runs on the pipe server's background listen loop) and the
+            // window is brought to front either way, matching what every
+            // other single-instance app does for a bare re-launch with no
+            // arguments at all (SingleInstanceGuard.ShowSignal).
+            SingleInstanceGuard?.StartListening(forwardedArgument =>
+                Dispatcher.UIThread.Post(() =>
+                {
+                    if (forwardedArgument != Services.SingleInstanceGuard.ShowSignal)
+                    {
+                        _ = mainViewModel.AddFromArgumentAsync(forwardedArgument);
+                    }
+                    ShowMainWindow();
+                }));
 
             // Avalonia's classic desktop lifetime calls MainWindow.Show()
             // unconditionally as soon as this method returns (confirmed
