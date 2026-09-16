@@ -252,6 +252,27 @@ public partial class MainViewModel : ViewModelBase, IDisposable
     [ObservableProperty]
     public partial bool ShowQueueColumn { get; set; } = true;
 
+    /// <summary>
+    /// Down/Up rate and ETA columns - Stage 6's "per-torrent speed and
+    /// ETA, computed client-side" (see <see cref="TorrentRowViewModel"/>'s
+    /// own doc comments on <c>DownloadRateKBps</c>/<c>EtaDisplay</c> for
+    /// how). Shown by default like every other optional column.
+    /// </summary>
+    [ObservableProperty]
+    public partial bool ShowDownRateColumn { get; set; } = true;
+
+    [ObservableProperty]
+    public partial bool ShowUpRateColumn { get; set; } = true;
+
+    [ObservableProperty]
+    public partial bool ShowEtaColumn { get; set; } = true;
+
+    partial void OnShowDownRateColumnChanged(bool value) => SaveHiddenColumns();
+
+    partial void OnShowUpRateColumnChanged(bool value) => SaveHiddenColumns();
+
+    partial void OnShowEtaColumnChanged(bool value) => SaveHiddenColumns();
+
     partial void OnShowSizeColumnChanged(bool value) => SaveHiddenColumns();
 
     partial void OnShowCategoryColumnChanged(bool value) => SaveHiddenColumns();
@@ -353,6 +374,18 @@ public partial class MainViewModel : ViewModelBase, IDisposable
         {
             hidden.Add("Queue");
         }
+        if (!ShowDownRateColumn)
+        {
+            hidden.Add("DownRate");
+        }
+        if (!ShowUpRateColumn)
+        {
+            hidden.Add("UpRate");
+        }
+        if (!ShowEtaColumn)
+        {
+            hidden.Add("Eta");
+        }
         _settingsStore.Save(_settingsStore.Load() with { HiddenColumns = hidden });
     }
 
@@ -440,6 +473,9 @@ public partial class MainViewModel : ViewModelBase, IDisposable
         ShowRatioColumn = !hiddenColumns.Contains("Ratio");
         ShowPeersColumn = !hiddenColumns.Contains("Peers");
         ShowQueueColumn = !hiddenColumns.Contains("Queue");
+        ShowDownRateColumn = !hiddenColumns.Contains("DownRate");
+        ShowUpRateColumn = !hiddenColumns.Contains("UpRate");
+        ShowEtaColumn = !hiddenColumns.Contains("Eta");
         RecentDownloadDirs = new ObservableCollection<string>(settings.RecentDownloadDirs ?? []);
         AutostartEnabled = _autostartService.IsEnabled();
         FileAssociationEnabled = _fileAssociationService.IsRegistered();
@@ -780,7 +816,7 @@ public partial class MainViewModel : ViewModelBase, IDisposable
             }
             else
             {
-                row = new TorrentRowViewModel(summary);
+                row = new TorrentRowViewModel(summary, _timeProvider);
             }
             updatedOrder.Add(row);
         }

@@ -28,6 +28,7 @@
         <sconv:StateToBrushConverter x:Key="StateToBrush" />
         <sconv:CollectionEmptyConverter x:Key="CollectionEmpty" />
         <sconv:StringListJoinConverter x:Key="StringListJoin" />
+        <sconv:KBpsDisplayConverter x:Key="KBpsDisplay" />
     </Window.Resources>
 
     <Grid RowDefinitions="36,Auto,Auto,*,Auto" Margin="0">
@@ -118,6 +119,9 @@
                             <CheckBox Content="Ratio" IsChecked="{Binding ShowRatioColumn}" />
                             <CheckBox Content="Peers" IsChecked="{Binding ShowPeersColumn}" />
                             <CheckBox Content="Queue" IsChecked="{Binding ShowQueueColumn}" />
+                            <CheckBox Content="Down Speed" IsChecked="{Binding ShowDownRateColumn}" />
+                            <CheckBox Content="Up Speed" IsChecked="{Binding ShowUpRateColumn}" />
+                            <CheckBox Content="ETA" IsChecked="{Binding ShowEtaColumn}" />
                         </StackPanel>
                     </Flyout>
                 </Button.Flyout>
@@ -233,6 +237,21 @@
                         <DataGridTextColumn Header="Ratio" Binding="{Binding SeedRatio, StringFormat='{}{0:F2}'}" Width="60" IsVisible="{Binding $parent[Window].DataContext.ShowRatioColumn}" />
                         <DataGridTextColumn Header="Peers" Binding="{Binding PeerCount}" Width="60" IsVisible="{Binding $parent[Window].DataContext.ShowPeersColumn}" />
                         <DataGridTextColumn Header="Queue" Binding="{Binding QueuePosition}" Width="50" IsVisible="{Binding $parent[Window].DataContext.ShowQueueColumn}" />
+                        <DataGridTemplateColumn Header="Down" Width="80" SortMemberPath="DownloadRateKBps" IsVisible="{Binding $parent[Window].DataContext.ShowDownRateColumn}">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate DataType="vm:TorrentRowViewModel">
+                                    <TextBlock Text="{Binding DownloadRateKBps, Converter={StaticResource KBpsDisplay}}" VerticalAlignment="Center" />
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
+                        <DataGridTemplateColumn Header="Up" Width="80" SortMemberPath="UploadRateKBps" IsVisible="{Binding $parent[Window].DataContext.ShowUpRateColumn}">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate DataType="vm:TorrentRowViewModel">
+                                    <TextBlock Text="{Binding UploadRateKBps, Converter={StaticResource KBpsDisplay}}" VerticalAlignment="Center" />
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
+                        <DataGridTextColumn Header="ETA" Binding="{Binding EtaDisplay}" Width="80" IsVisible="{Binding $parent[Window].DataContext.ShowEtaColumn}" />
                     </DataGrid.Columns>
                 </DataGrid>
 

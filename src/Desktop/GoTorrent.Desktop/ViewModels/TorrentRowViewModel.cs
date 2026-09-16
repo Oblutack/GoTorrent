@@ -80,8 +80,48 @@ public sealed partial class TorrentRowViewModel : ViewModelBase
     [ObservableProperty]
     public partial double ProgressFraction { get; set; }
 
-    public TorrentRowViewModel(TorrentSummary summary)
+    /// <summary>
+    /// Down/up rate in KiB/s, derived client-side the same way
+    /// <c>MainViewModel.RecordSpeedSample</c> (fleet-wide) and
+    /// <c>RefreshPeerRatesAsync</c> (per-peer) already turn two consecutive
+    /// cumulative totals into a rate - gottrentd's <c>TorrentSummary</c>
+    /// has no per-torrent rate field at all, only running
+    /// Downloaded/Uploaded totals, so this needs zero Go-side changes.
+    /// 0 until a second sample has actually arrived (no baseline yet),
+    /// matching the fleet graph's and peer rows' own "first sample" behavior.
+    /// </summary>
+    [ObservableProperty]
+    public partial double DownloadRateKBps { get; set; }
+
+    [ObservableProperty]
+    public partial double UploadRateKBps { get; set; }
+
+    /// <summary>
+    /// A formatted, already-invariant-culture ETA string ("-" not
+    /// applicable, "∞" downloading but no measurable rate yet, otherwise a
+    /// compact duration) - a string rather than a bound
+    /// <c>TimeSpan</c>/double + XAML <c>StringFormat</c>, the same fix this
+    /// project already applied to <c>SessionRatioDisplay</c> for the
+    /// identical reason: <c>StringFormat</c> is locale-sensitive (a
+    /// comma-decimal machine renders "0,50" instead of "0.50"), and
+    /// <c>double.PositiveInfinity</c>/an unformattable case needs its own
+    /// explicit handling a bare numeric binding can't express anyway.
+    /// </summary>
+    [ObservableProperty]
+    public partial string EtaDisplay { get; set; } = "-";
+
+    private readonly TimeProvider _timeProvider;
+    private DateTimeOffset? _lastSampleTime;
+    private long _lastDownloaded;
+    private long _lastUploaded;
+
+    public TorrentRowViewModel(TorrentSummary summary) : this(summary, TimeProvider.System)
     {
+    }
+
+    public TorrentRowViewModel(TorrentSummary summary, TimeProvider timeProvider)
+    {
+        _timeProvider = timeProvider;
         InfoHash = summary.InfoHash;
         Name = summary.Name;
         State = summary.State;
@@ -114,5 +154,59 @@ public sealed partial class TorrentRowViewModel : ViewModelBase
         QueuePosition = summary.QueuePosition;
         ForceStart = summary.ForceStart;
         ProgressFraction = summary.ProgressFraction;
+
+        var now = _timeProvider.GetUtcNow();
+        if (_lastSampleTime is { } last)
+        {
+            var elapsedSeconds = (now - last).TotalSeconds;
+            if (elapsedSeconds > 0)
+            {
+                DownloadRateKBps = Math.Max(0, (summary.Downloaded - _lastDownloaded) / elapsedSeconds / 1024.0);
+                UploadRateKBps = Math.Max(0, (summary.Uploaded - _lastUploaded) / elapsedSeconds / 1024.0);
+            }
+        }
+        _lastDownloaded = summary.Downloaded;
+        _lastUploaded = summary.Uploaded;
+        _lastSampleTime = now;
+
+        EtaDisplay = ComputeEtaDisplay(summary.State, summary.Left, DownloadRateKBps);
+    }
+
+    /// <summary>
+    /// "-" outside <c>Downloading</c> (a completed, seeding, paused, or
+    /// still-verifying/fetching-metadata torrent has no download ETA to
+    /// show) or with nothing left; "∞" while downloading but with no
+    /// measurable rate yet (no second sample, or a genuinely stalled
+    /// transfer); otherwise <paramref name="left"/> divided by the current
+    /// rate, formatted compactly.
+    /// </summary>
+    private static string ComputeEtaDisplay(string state, long left, double downloadRateKBps)
+    {
+        if (state != "Downloading" || left <= 0)
+        {
+            return "-";
+        }
+        if (downloadRateKBps <= 0)
+        {
+            return "∞";
+        }
+        return FormatDuration(TimeSpan.FromSeconds(left / (downloadRateKBps * 1024.0)));
+    }
+
+    private static string FormatDuration(TimeSpan span)
+    {
+        if (span.TotalDays >= 1)
+        {
+            return FormattableString.Invariant($"{(int)span.TotalDays}d {span.Hours}h");
+        }
+        if (span.TotalHours >= 1)
+        {
+            return FormattableString.Invariant($"{(int)span.TotalHours}h {span.Minutes}m");
+        }
+        if (span.TotalMinutes >= 1)
+        {
+            return FormattableString.Invariant($"{(int)span.TotalMinutes}m {span.Seconds}s");
+        }
+        return FormattableString.Invariant($"{Math.Max(0, (int)span.TotalSeconds)}s");
     }
 }
