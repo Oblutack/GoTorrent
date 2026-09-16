@@ -15,6 +15,16 @@ import (
 // read/write failure.
 var ErrClosed = errors.New("ws: connection closed")
 
+// ErrQueueFull is send's error when outbound is already at
+// outboundQueueSize — a sentinel (wrapped, not a bare fmt.Errorf string)
+// so a caller that actually wants to know "was this just transient
+// backpressure, or is the connection really gone" can tell the two apart
+// with errors.Is, rather than string-matching. A caller delivering a known
+// batch to one client (unlike EventsHandler's per-event broadcast, which
+// deliberately wants send's default drop-under-backpressure behavior) can
+// use this to retry after a short pause instead of giving up outright.
+var ErrQueueFull = errors.New("ws: outbound queue full")
+
 // outboundQueueSize bounds how many not-yet-written frames Conn will queue
 // before send starts dropping — small on purpose: this is a live push
 // stream (4.2's event feed), where a slow subscriber missing a message is
@@ -103,7 +113,7 @@ func (c *Conn) send(data []byte) error {
 	case c.outbound <- data:
 		return nil
 	default:
-		return fmt.Errorf("ws: outbound queue full for %s, dropping frame", c.remoteAddr)
+		return fmt.Errorf("%w: dropping frame for %s", ErrQueueFull, c.remoteAddr)
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -220,6 +221,27 @@ func TestConnHandlesCloseHandshake(t *testing.T) {
 		t.Fatalf("opcode = %#x, want OpClose (the required close handshake echo)", f.opcode)
 	}
 	<-serverSawClose
+}
+
+// TestSendReturnsErrQueueFullWhenQueueIsFull is a deterministic, white-box
+// test of send's backpressure contract — a Conn built directly (bypassing
+// newConn, so sendLoop is never started to drain it) rather than a real
+// connection, since a real one's sendLoop drains into the OS socket buffer
+// fast enough on loopback that a tight-loop test racing it to fill 32
+// slots first would be unreliably flaky. ErrQueueFull is a sentinel
+// (errors.Is), not a string a caller would have to match — added
+// specifically so internal/api's LogsHandler can tell "momentarily full,
+// worth retrying" apart from "the connection is actually gone."
+func TestSendReturnsErrQueueFullWhenQueueIsFull(t *testing.T) {
+	c := &Conn{outbound: make(chan []byte, outboundQueueSize)}
+	for i := 0; i < outboundQueueSize; i++ {
+		if err := c.send([]byte("x")); err != nil {
+			t.Fatalf("send %d: unexpected error filling the queue: %v", i, err)
+		}
+	}
+	if err := c.send([]byte("overflow")); !errors.Is(err, ErrQueueFull) {
+		t.Fatalf("send on a full queue: got %v, want ErrQueueFull", err)
+	}
 }
 
 func TestUpgradeRejectsNonWebSocketRequest(t *testing.T) {
