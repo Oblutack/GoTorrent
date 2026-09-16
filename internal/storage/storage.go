@@ -283,6 +283,15 @@ func writeZeros(ctx context.Context, f *os.File, length int64) error {
 	return f.Sync()
 }
 
+// AvailableSpace reports the free bytes usable by this process on the
+// volume holding path — the exported counterpart of the same OS-specific
+// availableSpace checkFreeSpace already uses internally, for a caller
+// (internal/api's session status, Stage 5) that wants a free-disk-space
+// figure for a directory with no *Storage of its own yet.
+func AvailableSpace(path string) (int64, error) {
+	return availableSpace(path)
+}
+
 // checkFreeSpace refuses to start a download that obviously cannot fit. It is
 // advisory: the check can be wrong on network filesystems, and other processes
 // are free to consume the space afterwards.

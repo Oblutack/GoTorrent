@@ -25,6 +25,17 @@ type SessionStats struct {
 	// can show the toggle's current state on initial load, before ever
 	// PATCHing anything.
 	AltSpeedEnabled bool `json:"altSpeedEnabled"`
+	// The remaining fields mirror engine.DaemonInfo field-for-field — the
+	// rest of what Stage 5's "session/daemon info for a real status bar"
+	// asked for, alongside the fleet rollup above.
+	ListenPort    uint16 `json:"listenPort"`
+	ExternalPort  uint16 `json:"externalPort"`
+	PortMapped    bool   `json:"portMapped"`
+	DHTRunning    bool   `json:"dhtRunning"`
+	DHTNodeCount  int    `json:"dhtNodeCount"`
+	LSDRunning    bool   `json:"lsdRunning"`
+	PEXEnabled    bool   `json:"pexEnabled"`
+	FreeDiskBytes int64  `json:"freeDiskBytes"`
 }
 
 // sessionStatsSnapshot computes the current fleet-wide rollup — shared by
@@ -33,7 +44,19 @@ type SessionStats struct {
 // definitions of "session stats."
 func sessionStatsSnapshot(e *engine.Engine) SessionStats {
 	list := e.List()
-	stats := SessionStats{TorrentCount: len(list), AltSpeedEnabled: e.AltSpeedEnabled()}
+	info := e.Info()
+	stats := SessionStats{
+		TorrentCount:    len(list),
+		AltSpeedEnabled: e.AltSpeedEnabled(),
+		ListenPort:      info.ListenPort,
+		ExternalPort:    info.ExternalPort,
+		PortMapped:      info.PortMapped,
+		DHTRunning:      info.DHTRunning,
+		DHTNodeCount:    info.DHTNodeCount,
+		LSDRunning:      info.LSDRunning,
+		PEXEnabled:      info.PEXEnabled,
+		FreeDiskBytes:   info.FreeDiskBytes,
+	}
 	for _, s := range list {
 		stats.TotalDownloaded += s.Stats.Downloaded
 		stats.TotalUploaded += s.Stats.Uploaded

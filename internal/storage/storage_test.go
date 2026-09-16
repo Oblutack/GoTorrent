@@ -472,3 +472,22 @@ func TestAvailableSpaceReportsSomething(t *testing.T) {
 		t.Fatalf("availableSpace returned %d bytes", n)
 	}
 }
+
+// TestExportedAvailableSpaceDelegates proves the exported AvailableSpace
+// (added for internal/engine's DaemonInfo, Stage 5) is really just
+// availableSpace under a public name, not a second implementation that
+// could drift from it.
+func TestExportedAvailableSpaceDelegates(t *testing.T) {
+	dir := t.TempDir()
+	got, err := AvailableSpace(dir)
+	if err != nil {
+		t.Skipf("free space is not queryable here: %v", err)
+	}
+	want, err := availableSpace(dir)
+	if err != nil {
+		t.Fatalf("availableSpace: %v", err)
+	}
+	if got != want {
+		t.Fatalf("AvailableSpace = %d, want %d (same as the internal availableSpace)", got, want)
+	}
+}
