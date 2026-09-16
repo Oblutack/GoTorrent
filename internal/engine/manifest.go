@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"time"
 
 	"github.com/Oblutack/GoTorrent/internal/bencode"
 	"github.com/Oblutack/GoTorrent/internal/logger"
@@ -23,7 +24,11 @@ import (
 // build (see readManifest's version check) — the fleet it recorded has to
 // be re-Added by hand, though nothing about the actual downloaded data or
 // the .torrent files/magnets themselves is touched or lost.
-const manifestVersion = 3
+// v4: added added_at/completed_at (Stage 5's timestamps) — same "not
+// worth reconstructing, just start fresh" treatment as the v2->v3 bump;
+// an older manifest's torrents come back with a fresh AddedAt (the moment
+// of the reload) rather than a fabricated history.
+const manifestVersion = 4
 
 var manifestMagic = [4]byte{'G', 'T', 'F', 'L'}
 
@@ -35,18 +40,25 @@ type manifestEntry struct {
 	DownloadDir string
 	Category    string
 	Tags        []string
+	AddedAt     time.Time
+	CompletedAt time.Time
 }
 
 // manifestEntryWire and manifestWire are the exact bencoded shapes, kept
 // separate from manifestEntry so metainfo.Hash round-trips as hex text
 // (readable in the file on disk) rather than needing bencode to know about
-// the type.
+// the type. AddedAt/CompletedAt are unix seconds, not RFC3339 text — bencode
+// has no native time type either way, and a plain integer is simplest;
+// CompletedAt of 0 means "not completed yet" (matching CompletedAt's own
+// time.Time zero-value convention everywhere else in this package).
 type manifestEntryWire struct {
 	InfoHash    string   `bencode:"info_hash"`
 	Source      string   `bencode:"source"`
 	DownloadDir string   `bencode:"download_dir"`
 	Category    string   `bencode:"category,omitempty"`
 	Tags        []string `bencode:"tags,omitempty"`
+	AddedAt     int64    `bencode:"added_at"`
+	CompletedAt int64    `bencode:"completed_at,omitempty"`
 }
 
 type manifestWire struct {
@@ -69,12 +81,18 @@ func (e *Engine) saveManifestLocked() error {
 
 	wire := manifestWire{Magic: string(manifestMagic[:]), Version: manifestVersion}
 	for hash, mt := range e.torrents {
+		var completedAt int64
+		if !mt.completedAt.IsZero() {
+			completedAt = mt.completedAt.Unix()
+		}
 		wire.Entries = append(wire.Entries, manifestEntryWire{
 			InfoHash:    hash.String(),
 			Source:      mt.source,
 			DownloadDir: mt.downloadDir,
 			Category:    mt.category,
 			Tags:        mt.tags,
+			AddedAt:     mt.addedAt.Unix(),
+			CompletedAt: completedAt,
 		})
 	}
 	sort.Slice(wire.Entries, func(i, j int) bool { return wire.Entries[i].InfoHash < wire.Entries[j].InfoHash })
@@ -131,13 +149,18 @@ func (e *Engine) readManifest() ([]manifestEntry, error) {
 		if err != nil {
 			return nil, fmt.Errorf("engine: manifest entry %q: %w", we.Source, err)
 		}
-		entries = append(entries, manifestEntry{
+		entry := manifestEntry{
 			InfoHash:    hash,
 			Source:      we.Source,
 			DownloadDir: we.DownloadDir,
 			Category:    we.Category,
 			Tags:        we.Tags,
-		})
+			AddedAt:     time.Unix(we.AddedAt, 0),
+		}
+		if we.CompletedAt != 0 {
+			entry.CompletedAt = time.Unix(we.CompletedAt, 0)
+		}
+		entries = append(entries, entry)
 	}
 	return entries, nil
 }

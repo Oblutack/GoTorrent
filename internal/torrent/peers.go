@@ -1,5 +1,7 @@
 package torrent
 
+import "fmt"
+
 // PeerSnapshot is one connected peer's state, for a caller (4.2's GET
 // .../peers route) that wants to see the live swarm rather than just the
 // aggregate PeerCount Stats already reports.
@@ -18,6 +20,14 @@ type PeerSnapshot struct {
 	// Progress is the fraction of pieces this peer has advertised having,
 	// in [0, 1] — 0 if metadata (and so a piece count) isn't known yet.
 	Progress float64
+	// PeerID is the remote's BEP 20 handshake peer ID, lowercase hex (20
+	// bytes, so always exactly 40 characters) — the same raw-bytes-as-hex
+	// convention metainfo.Hash's own MarshalText already uses elsewhere in
+	// this codebase. Decoding the well-known client-identifying prefixes
+	// (e.g. "-qB4650-" -> "qBittorrent 4.6.5") is deliberately left to the
+	// caller - this package only ever hands back what the wire protocol
+	// actually said, not a guess about what it means.
+	PeerID string
 }
 
 // Peers returns a snapshot of every currently connected peer. Safe to call
@@ -58,6 +68,7 @@ func (t *Torrent) peersSnapshot() []PeerSnapshot {
 			PeerChoking:    pc.client.PeerChoking(),
 			PeerInterested: pc.client.PeerInterested(),
 			Progress:       progress,
+			PeerID:         fmt.Sprintf("%x", pc.client.RemoteID),
 		})
 	}
 	return out

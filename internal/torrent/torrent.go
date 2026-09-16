@@ -48,6 +48,18 @@ type Stats struct {
 	HavePieces  int
 	PeerCount   int
 	InEndgame   bool
+	// SeedCount and LeechCount split PeerCount by the remote peer's own
+	// completeness — a peer whose advertised bitfield is entirely full
+	// counts as a seed, everyone else (including one whose bitfield isn't
+	// known yet) counts as a leech. SeedCount+LeechCount always equals
+	// PeerCount.
+	SeedCount  int
+	LeechCount int
+	// MinAvailability is the lowest copy count across every piece this
+	// torrent's peers collectively hold — see picker.Availability.MinCount.
+	// 0 before metadata is known (no picker yet) or when no connected peer
+	// has anything at all.
+	MinAvailability int
 	// FilePriorities is one entry per file, in file order — nil until
 	// metadata is known (see Torrent.SetFilePriority).
 	FilePriorities []picker.Priority
@@ -581,6 +593,9 @@ func (t *Torrent) Stats() Stats {
 		s.HavePieces = fromActor.HavePieces
 		s.PeerCount = fromActor.PeerCount
 		s.InEndgame = fromActor.InEndgame
+		s.SeedCount = fromActor.SeedCount
+		s.LeechCount = fromActor.LeechCount
+		s.MinAvailability = fromActor.MinAvailability
 		s.FilePriorities = fromActor.FilePriorities
 		s.SeedRatio = fromActor.SeedRatio
 		s.SeedingDuration = fromActor.SeedingDuration

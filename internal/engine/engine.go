@@ -200,6 +200,13 @@ type Summary struct {
 	// QueuePosition/ForceStart.
 	Category string
 	Tags     []string
+	// AddedAt is when this torrent was first added — persisted in the
+	// manifest (unlike QueuePosition), so a reload restores the original
+	// value instead of resetting to the moment of the restart.
+	AddedAt time.Time
+	// CompletedAt is when this torrent first reached StateSeeding, or the
+	// zero value if it hasn't yet — see recordCompletedAt. Also persisted.
+	CompletedAt time.Time
 }
 
 // managedTorrent is what the Engine tracks per torrent beyond what Torrent
@@ -241,6 +248,16 @@ type managedTorrent struct {
 	// the hook is dispatched, checked by the same OnStateChange callback
 	// queue.go already wires for every Added torrent.
 	completionHookFired bool
+
+	// addedAt and completedAt back Summary's own AddedAt/CompletedAt (Stage
+	// 5's timestamps) — persisted in the manifest, unlike queuePos/
+	// forceStart/queueHeld above. addedAt is always set (AddWithOptions
+	// defaults it to time.Now() unless a caller — only Load — supplies a
+	// restored value); completedAt stays the zero value until
+	// recordCompletedAt fires the first time this torrent reaches
+	// StateSeeding.
+	addedAt     time.Time
+	completedAt time.Time
 }
 
 // displayNameFor picks the best name available for mt — see Summary.Name.
@@ -383,6 +400,14 @@ type AddOptions struct {
 	// nothing in this package filters or groups by them today. Copied, not
 	// aliased, so the caller's slice can be reused.
 	Tags []string
+	// AddedAt and CompletedAt exist purely for Load to restore what the
+	// manifest already recorded — a real, external Add call has no
+	// business setting either: AddedAt zero means "use time.Now()" (the
+	// normal case for a fresh Add), and CompletedAt is never set by a
+	// fresh Add at all, since a torrent obviously hasn't completed the
+	// instant it's added.
+	AddedAt     time.Time
+	CompletedAt time.Time
 }
 
 // Add starts a torrent running under the engine's management from either a
@@ -461,10 +486,15 @@ func (e *Engine) AddWithOptions(source, downloadDir string, opts AddOptions) (me
 		return metainfo.Hash{}, fmt.Errorf("engine: creating torrent: %w", err)
 	}
 
+	addedAt := opts.AddedAt
+	if addedAt.IsZero() {
+		addedAt = time.Now()
+	}
 	mt := &managedTorrent{
 		t: tr, source: source, downloadDir: downloadDir, displayName: dn,
 		queuePos: e.nextQueuePos, downLimit: downLimit, upLimit: upLimit,
 		category: opts.Category, tags: append([]string(nil), opts.Tags...),
+		addedAt: addedAt, completedAt: opts.CompletedAt,
 	}
 	e.nextQueuePos++
 	e.torrents[hash] = mt
@@ -484,9 +514,10 @@ func (e *Engine) AddWithOptions(source, downloadDir string, opts AddOptions) (me
 	tr.OnStateChange(func(s torrent.State) {
 		go e.reevaluateQueue()
 		go e.dispatchCompletionHook(hash, s)
+		go e.recordCompletedAt(hash, s)
 		// broadcast only touches eventMu and non-blocking channel sends —
-		// it never calls back into tr, so unlike the two goroutines above
-		// it needs no go of its own to stay safe on the actor goroutine.
+		// it never calls back into tr, so unlike the goroutines above it
+		// needs no go of its own to stay safe on the actor goroutine.
 		e.broadcast(Event{Kind: EventTorrentStateChanged, InfoHash: hash, State: s})
 	})
 	// Same constraint as OnStateChange above — must not block or call back
@@ -528,7 +559,7 @@ func (e *Engine) Load() error {
 		return fmt.Errorf("engine: reading manifest: %w", err)
 	}
 	for _, ent := range entries {
-		opts := AddOptions{Category: ent.Category, Tags: ent.Tags}
+		opts := AddOptions{Category: ent.Category, Tags: ent.Tags, AddedAt: ent.AddedAt, CompletedAt: ent.CompletedAt}
 		if _, err := e.AddWithOptions(ent.Source, ent.DownloadDir, opts); err != nil {
 			logger.Warning.Printf("engine: could not reload %s: %v\n", ent.Source, err)
 		}
@@ -623,6 +654,8 @@ func summaryLocked(hash metainfo.Hash, mt *managedTorrent) Summary {
 		ForceStart:    mt.forceStart,
 		Category:      mt.category,
 		Tags:          append([]string(nil), mt.tags...),
+		AddedAt:       mt.addedAt,
+		CompletedAt:   mt.completedAt,
 	}
 }
 

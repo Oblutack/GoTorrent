@@ -63,6 +63,14 @@ func (t *Torrent) handleControl(msg controlMsg) {
 		if t.pick != nil {
 			s.HavePieces = t.pick.Have().Count()
 			s.InEndgame = t.pick.InEndgame()
+			s.MinAvailability = t.pick.Availability().MinCount()
+		}
+		for _, pc := range t.peers {
+			if info := pc.client.BitfieldSnapshot(); info != nil && info.Len() > 0 && info.Count() == info.Len() {
+				s.SeedCount++
+			} else {
+				s.LeechCount++
+			}
 		}
 		if t.filePriorities != nil {
 			s.FilePriorities = append([]picker.Priority(nil), t.filePriorities...)

@@ -78,6 +78,29 @@ func (a *Availability) Count(index int) int {
 	return int(a.counts[index])
 }
 
+// MinCount returns the lowest copy count across every piece — the swarm's
+// weakest link, in the sense that no piece is scarcer than this. Skips
+// pieces with a zero count (unobtainable, same "not rare, unobtainable"
+// distinction Rarest already draws) so a torrent with even one piece
+// nobody has yet doesn't always report 0 regardless of how well-seeded
+// everything else is. Returns 0 for an empty index or when every piece
+// is unobtainable.
+func (a *Availability) MinCount() int {
+	min := int32(-1)
+	for _, c := range a.counts {
+		if c == 0 {
+			continue
+		}
+		if min < 0 || c < min {
+			min = c
+		}
+	}
+	if min < 0 {
+		return 0
+	}
+	return int(min)
+}
+
 // Rarest returns the index of the least available piece for which want
 // reports true, or -1 if there is none. Pieces nobody has are skipped: they
 // are not rare, they are unobtainable.

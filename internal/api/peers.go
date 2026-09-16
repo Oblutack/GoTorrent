@@ -19,6 +19,11 @@ type PeerEntry struct {
 	PeerChoking    bool    `json:"peerChoking"`
 	PeerInterested bool    `json:"peerInterested"`
 	Progress       float64 `json:"progress"`
+	// PeerID is the remote's BEP 20 handshake peer ID, lowercase hex -
+	// decoding it into a display name ("qBittorrent 4.6.5") is left to the
+	// caller, same reasoning as torrent.PeerSnapshot.PeerID's own doc
+	// comment.
+	PeerID string `json:"peerId"`
 }
 
 func peerEntryDTO(p torrent.PeerSnapshot) PeerEntry {
@@ -32,6 +37,7 @@ func peerEntryDTO(p torrent.PeerSnapshot) PeerEntry {
 		PeerChoking:    p.PeerChoking,
 		PeerInterested: p.PeerInterested,
 		Progress:       p.Progress,
+		PeerID:         p.PeerID,
 	}
 }
 

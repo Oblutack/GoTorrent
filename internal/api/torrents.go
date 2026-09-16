@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/Oblutack/GoTorrent/internal/engine"
 	"github.com/Oblutack/GoTorrent/internal/metainfo"
@@ -16,22 +17,35 @@ import (
 // needs (as it already has, e.g. QueuePosition/ForceStart's persistence
 // caveats) without that becoming a breaking API change.
 type TorrentSummary struct {
-	InfoHash      metainfo.Hash `json:"infoHash"`
-	Name          string        `json:"name"`
-	State         torrent.State `json:"state"`
-	Downloaded    int64         `json:"downloaded"`
-	Uploaded      int64         `json:"uploaded"`
-	Left          int64         `json:"left"`
-	TotalLength   int64         `json:"totalLength"`
-	NumPieces     int           `json:"numPieces"`
-	HavePieces    int           `json:"havePieces"`
-	PeerCount     int           `json:"peerCount"`
-	SeedRatio     float64       `json:"seedRatio"`
-	Private       bool          `json:"private"`
-	Category      string        `json:"category,omitempty"`
-	Tags          []string      `json:"tags,omitempty"`
-	QueuePosition int           `json:"queuePosition"`
-	ForceStart    bool          `json:"forceStart"`
+	InfoHash        metainfo.Hash `json:"infoHash"`
+	Name            string        `json:"name"`
+	State           torrent.State `json:"state"`
+	Downloaded      int64         `json:"downloaded"`
+	Uploaded        int64         `json:"uploaded"`
+	Left            int64         `json:"left"`
+	TotalLength     int64         `json:"totalLength"`
+	NumPieces       int           `json:"numPieces"`
+	HavePieces      int           `json:"havePieces"`
+	PeerCount       int           `json:"peerCount"`
+	SeedCount       int           `json:"seedCount"`
+	LeechCount      int           `json:"leechCount"`
+	MinAvailability int           `json:"minAvailability"`
+	SeedRatio       float64       `json:"seedRatio"`
+	Private         bool          `json:"private"`
+	Category        string        `json:"category,omitempty"`
+	Tags            []string      `json:"tags,omitempty"`
+	QueuePosition   int           `json:"queuePosition"`
+	ForceStart      bool          `json:"forceStart"`
+	// AddedOn is when this torrent was first added - persisted in the
+	// manifest (see engine.Summary.AddedAt), so it survives a restart
+	// rather than resetting to "now" on every reload.
+	AddedOn time.Time `json:"addedOn"`
+	// CompletedOn is when this torrent first reached Seeding, or nil if it
+	// hasn't yet (or completed before this field existed - the manifest
+	// only started recording it once this field was added, so an
+	// already-complete torrent reloaded from an older manifest reports nil
+	// rather than a guessed value).
+	CompletedOn *time.Time `json:"completedOn,omitempty"`
 }
 
 // TorrentDetail is the single-torrent view - TorrentSummary plus the
@@ -43,27 +57,45 @@ type TorrentDetail struct {
 	ContentPath            string  `json:"contentPath,omitempty"`
 	InEndgame              bool    `json:"inEndgame"`
 	SeedingDurationSeconds float64 `json:"seedingDurationSeconds"`
+	// Comment, CreatedBy, CreationDate, and PieceLength come straight from
+	// the torrent's own metainfo.MetaInfo - all zero-valued until metadata
+	// is known (a magnet still FetchingMetadata). CreationDate is BEP 3's
+	// own unix-seconds convention, round-tripped as-is rather than
+	// reinterpreted.
+	Comment      string     `json:"comment,omitempty"`
+	CreatedBy    string     `json:"createdBy,omitempty"`
+	CreationDate *time.Time `json:"creationDate,omitempty"`
+	PieceLength  int64      `json:"pieceLength,omitempty"`
 }
 
 func summaryDTO(s engine.Summary) TorrentSummary {
-	return TorrentSummary{
-		InfoHash:      s.InfoHash,
-		Name:          s.Name,
-		State:         s.Stats.State,
-		Downloaded:    s.Stats.Downloaded,
-		Uploaded:      s.Stats.Uploaded,
-		Left:          s.Stats.Left,
-		TotalLength:   s.Stats.TotalLength,
-		NumPieces:     s.Stats.NumPieces,
-		HavePieces:    s.Stats.HavePieces,
-		PeerCount:     s.Stats.PeerCount,
-		SeedRatio:     s.Stats.SeedRatio,
-		Private:       s.Private,
-		Category:      s.Category,
-		Tags:          s.Tags,
-		QueuePosition: s.QueuePosition,
-		ForceStart:    s.ForceStart,
+	summary := TorrentSummary{
+		InfoHash:        s.InfoHash,
+		Name:            s.Name,
+		State:           s.Stats.State,
+		Downloaded:      s.Stats.Downloaded,
+		Uploaded:        s.Stats.Uploaded,
+		Left:            s.Stats.Left,
+		TotalLength:     s.Stats.TotalLength,
+		NumPieces:       s.Stats.NumPieces,
+		HavePieces:      s.Stats.HavePieces,
+		PeerCount:       s.Stats.PeerCount,
+		SeedCount:       s.Stats.SeedCount,
+		LeechCount:      s.Stats.LeechCount,
+		MinAvailability: s.Stats.MinAvailability,
+		SeedRatio:       s.Stats.SeedRatio,
+		Private:         s.Private,
+		Category:        s.Category,
+		Tags:            s.Tags,
+		QueuePosition:   s.QueuePosition,
+		ForceStart:      s.ForceStart,
+		AddedOn:         s.AddedAt,
 	}
+	if !s.CompletedAt.IsZero() {
+		completedAt := s.CompletedAt
+		summary.CompletedOn = &completedAt
+	}
+	return summary
 }
 
 // ListTorrentsHandler serves GET /api/v1/torrents.
@@ -123,14 +155,24 @@ func TorrentDetailHandler(e *engine.Engine) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		writeJSON(w, http.StatusOK, TorrentDetail{
+		detail := TorrentDetail{
 			TorrentSummary:         summaryDTO(summary),
 			Source:                 summary.Source,
 			DownloadDir:            summary.DownloadDir,
 			ContentPath:            tr.ContentPath(),
 			InEndgame:              summary.Stats.InEndgame,
 			SeedingDurationSeconds: summary.Stats.SeedingDuration.Seconds(),
-		})
+		}
+		if mi := tr.Metadata(); mi != nil {
+			detail.Comment = mi.Comment
+			detail.CreatedBy = mi.CreatedBy
+			if mi.CreationDate != 0 {
+				creationDate := time.Unix(mi.CreationDate, 0).UTC()
+				detail.CreationDate = &creationDate
+			}
+			detail.PieceLength = mi.Info.PieceLength
+		}
+		writeJSON(w, http.StatusOK, detail)
 	}
 }
 

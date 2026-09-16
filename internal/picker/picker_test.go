@@ -516,6 +516,31 @@ func TestAvailability(t *testing.T) {
 	a.Add(99)
 }
 
+func TestAvailabilityMinCount(t *testing.T) {
+	a := NewAvailability(4)
+	if got := a.MinCount(); got != 0 {
+		t.Fatalf("MinCount() on an empty index = %d, want 0", got)
+	}
+
+	// Piece 2 stays at 0 (nobody has it) - MinCount must skip it as
+	// unobtainable rather than reporting the swarm's floor as 0 just
+	// because one piece is missing entirely.
+	a.Add(0)
+	a.Add(0)
+	a.Add(1)
+	a.Add(3)
+	a.Add(3)
+	a.Add(3)
+	if got := a.MinCount(); got != 1 {
+		t.Fatalf("MinCount() = %d, want 1 (piece 1's count, piece 2 skipped as unobtainable)", got)
+	}
+
+	a.Add(1)
+	if got := a.MinCount(); got != 2 {
+		t.Fatalf("MinCount() after raising piece 1 to 2 = %d, want 2 (now piece 0's count)", got)
+	}
+}
+
 func TestAvailabilityRarest(t *testing.T) {
 	a := NewAvailability(5)
 	for i := 0; i < 5; i++ {
