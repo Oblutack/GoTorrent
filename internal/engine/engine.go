@@ -317,6 +317,13 @@ type Engine struct {
 	normalDownBps int64
 	normalUpBps   int64
 
+	// altSpeedActive is the alt-speed state actually in effect right now —
+	// set by setAltSpeed, read back by AltSpeedEnabled. Kept explicit
+	// rather than inferred by comparing the limiter's current rate against
+	// Defaults.AltDownLimit/AltUpLimit, since the normal and alt rates
+	// could coincidentally be equal.
+	altSpeedActive bool
+
 	// ipFilter is one shared *ipfilter.Filter for the whole fleet — the
 	// same "one instance, several owners" reasoning as dhtNode/listener:
 	// blocking a range is a property of the process, not of one torrent.

@@ -20,6 +20,11 @@ type SessionStats struct {
 	TotalDownloaded  int64 `json:"totalDownloaded"`
 	TotalUploaded    int64 `json:"totalUploaded"`
 	TotalPeerCount   int   `json:"totalPeerCount"`
+	// AltSpeedEnabled mirrors engine.Engine.AltSpeedEnabled — included here
+	// too (not just in PatchSessionHandler's own response) so a status bar
+	// can show the toggle's current state on initial load, before ever
+	// PATCHing anything.
+	AltSpeedEnabled bool `json:"altSpeedEnabled"`
 }
 
 // sessionStatsSnapshot computes the current fleet-wide rollup — shared by
@@ -28,7 +33,7 @@ type SessionStats struct {
 // definitions of "session stats."
 func sessionStatsSnapshot(e *engine.Engine) SessionStats {
 	list := e.List()
-	stats := SessionStats{TorrentCount: len(list)}
+	stats := SessionStats{TorrentCount: len(list), AltSpeedEnabled: e.AltSpeedEnabled()}
 	for _, s := range list {
 		stats.TotalDownloaded += s.Stats.Downloaded
 		stats.TotalUploaded += s.Stats.Uploaded
@@ -50,9 +55,8 @@ func sessionStatsSnapshot(e *engine.Engine) SessionStats {
 	return stats
 }
 
-// SessionHandler serves GET /api/v1/session. PATCH /api/v1/session
-// (limits, port, DHT/PEX/LSD toggles) is a 4.2 mutation route, not built
-// yet - this is read-only.
+// SessionHandler serves GET /api/v1/session — read-only; PATCH
+// /api/v1/session (session_patch.go) is the mutation counterpart.
 func SessionHandler(e *engine.Engine) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, sessionStatsSnapshot(e))

@@ -66,10 +66,30 @@ func (e *Engine) SetGlobalRateLimit(downBytesPerSec, upBytesPerSec int64) {
 }
 
 // GlobalRateLimit is SetGlobalRateLimit's read-side counterpart, for the
-// same partial-update reason TorrentRateLimit exists.
+// same partial-update reason TorrentRateLimit exists. Reads the live rate
+// actually in effect right now — which, while alt-speed (altspeed.go) is
+// active, is the alt rate, not the normal configured one. Use
+// NormalRateLimit instead for "what did the user configure as the normal
+// cap," the same distinction Defaults.AltDownLimit/AltUpLimit's own
+// existence already implies.
 func (e *Engine) GlobalRateLimit() (downBytesPerSec, upBytesPerSec int64) {
 	e.mu.Lock()
 	down, up := e.defaults.DownLimit, e.defaults.UpLimit
 	e.mu.Unlock()
 	return down.Limit(), up.Limit()
+}
+
+// NormalRateLimit reports the fleet-wide rate limit as configured via
+// SetGlobalRateLimit (or Defaults.DownLimit/UpLimit at construction),
+// independent of whatever setAltSpeed may currently have the live
+// *ratelimit.Limiter temporarily set to. Callers that read back "the
+// current limit" purely to redisplay or resubmit it (a preferences dialog
+// PATCHing back whatever GET just returned, say) want this, not
+// GlobalRateLimit — reading the live rate there would capture the alt
+// rate while alt-speed happens to be on and silently write it back as the
+// new "normal" cap the next time that value is submitted.
+func (e *Engine) NormalRateLimit() (downBytesPerSec, upBytesPerSec int64) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.normalDownBps, e.normalUpBps
 }

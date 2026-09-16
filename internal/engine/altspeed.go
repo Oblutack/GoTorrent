@@ -154,22 +154,57 @@ func (e *Engine) altSpeedLoop(ctx context.Context) {
 }
 
 // applyAltSpeed sets Defaults.DownLimit/UpLimit to the alt rate if now is
-// inside the schedule, or restores the normal rate otherwise. SetLimit is
-// cheap and idempotent, so this doesn't bother tracking which state was
-// last applied — every tick just asserts the correct one.
+// inside the schedule, or restores the normal rate otherwise — a no-op
+// with no schedule configured, since there is then nothing to decide.
 func (e *Engine) applyAltSpeed(now time.Time) {
 	e.mu.Lock()
 	sched := e.defaults.AltSchedule
-	down, up := e.defaults.DownLimit, e.defaults.UpLimit
-	altDown, altUp := e.defaults.AltDownLimit, e.defaults.AltUpLimit
-	normalDown, normalUp := e.normalDownBps, e.normalUpBps
 	e.mu.Unlock()
 	if sched == nil {
 		return
 	}
+	e.setAltSpeed(sched.active(now))
+}
+
+// SetAltSpeedEnabled turns the alternative speed limits on or off right
+// now — the one-click toggle every real BitTorrent client's status bar
+// has, which StartAltSpeedSchedule alone never exposed (only the automatic
+// schedule could flip it). Works with or without Defaults.AltSchedule
+// configured: with no schedule, this is the only thing that ever decides
+// alt-speed state. With one configured, a manual call here is a temporary
+// override — the schedule's own next tick (altSpeedCheckInterval, 30s
+// later at most) re-asserts whatever it thinks should be true, the same
+// way applyAltSpeed always has; this deliberately doesn't try to suspend
+// or override the schedule's own authority once one exists.
+func (e *Engine) SetAltSpeedEnabled(enabled bool) {
+	e.setAltSpeed(enabled)
+}
+
+// AltSpeedEnabled reports whether the alternative speed limits are
+// currently in effect — true either because SetAltSpeedEnabled(true) was
+// called, or because the schedule's own last check found the current time
+// inside its window.
+func (e *Engine) AltSpeedEnabled() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.altSpeedActive
+}
+
+// setAltSpeed is applyAltSpeed/SetAltSpeedEnabled's shared implementation:
+// asserts the given state's rates on Defaults.DownLimit/UpLimit and
+// records it so AltSpeedEnabled reports what's actually in effect. Cheap
+// and idempotent (SetLimit is), so callers don't bother tracking whether
+// this would be a no-op before calling it.
+func (e *Engine) setAltSpeed(active bool) {
+	e.mu.Lock()
+	down, up := e.defaults.DownLimit, e.defaults.UpLimit
+	altDown, altUp := e.defaults.AltDownLimit, e.defaults.AltUpLimit
+	normalDown, normalUp := e.normalDownBps, e.normalUpBps
+	e.altSpeedActive = active
+	e.mu.Unlock()
 
 	wantDown, wantUp := normalDown, normalUp
-	if sched.active(now) {
+	if active {
 		wantDown, wantUp = altDown, altUp
 	}
 	if down != nil {

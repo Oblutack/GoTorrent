@@ -18,9 +18,10 @@ import (
 // saveTorrentBytes for why that has to be a stable location, not a temp
 // directory.
 //
-// PATCH /api/v1/session covers rate limits only, not the port/DHT/PEX/LSD
-// toggles ROADMAP.md's sketch also mentions — see PatchSessionRequest's own
-// doc comment for why those need their own design pass. GET /api/v1/events
+// PATCH /api/v1/session covers rate limits and the alt-speed toggle only,
+// not the port/DHT/PEX/LSD toggles ROADMAP.md's sketch also mentions — see
+// PatchSessionRequest's own doc comment for why those need their own
+// design pass. GET /api/v1/events
 // is a WebSocket upgrade (internal/ws, hand-rolled RFC 6455), not an
 // ordinary JSON response — see EventsHandler.
 func Routes(e *engine.Engine, userAgent, uploadDir string) *http.ServeMux {

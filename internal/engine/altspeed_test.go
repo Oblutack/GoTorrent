@@ -137,6 +137,84 @@ func TestStartAltSpeedScheduleNoopWithoutASchedule(t *testing.T) {
 	e.StartAltSpeedSchedule(ctx) // must not panic or spawn anything harmful
 }
 
+// TestSetAltSpeedEnabledWorksWithNoScheduleConfigured proves the manual
+// runtime toggle (Stage 5 - "nothing exposes turn alternative speed on
+// right now") is useful entirely on its own, not just as an override for
+// an already-configured schedule: an Engine with no Defaults.AltSchedule
+// at all still switches real rates when told to.
+func TestSetAltSpeedEnabledWorksWithNoScheduleConfigured(t *testing.T) {
+	e, err := New(t.TempDir(), Defaults{
+		DownloadDir:  t.TempDir(),
+		ResumeDir:    t.TempDir(),
+		DownLimit:    ratelimit.New(1000),
+		UpLimit:      ratelimit.New(2000),
+		AltDownLimit: 100,
+		AltUpLimit:   200,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(e.Shutdown)
+
+	if e.AltSpeedEnabled() {
+		t.Fatal("AltSpeedEnabled() = true before ever being set, want false")
+	}
+
+	e.SetAltSpeedEnabled(true)
+	if !e.AltSpeedEnabled() {
+		t.Fatal("AltSpeedEnabled() = false right after SetAltSpeedEnabled(true)")
+	}
+	if got := e.defaults.DownLimit.Limit(); got != 100 {
+		t.Fatalf("DownLimit = %d, want alt rate 100", got)
+	}
+	if got := e.defaults.UpLimit.Limit(); got != 200 {
+		t.Fatalf("UpLimit = %d, want alt rate 200", got)
+	}
+
+	e.SetAltSpeedEnabled(false)
+	if e.AltSpeedEnabled() {
+		t.Fatal("AltSpeedEnabled() = true right after SetAltSpeedEnabled(false)")
+	}
+	if got := e.defaults.DownLimit.Limit(); got != 1000 {
+		t.Fatalf("DownLimit = %d, want normal rate 1000 restored", got)
+	}
+	if got := e.defaults.UpLimit.Limit(); got != 2000 {
+		t.Fatalf("UpLimit = %d, want normal rate 2000 restored", got)
+	}
+}
+
+// TestApplyAltSpeedReflectsInAltSpeedEnabled proves the schedule-driven
+// path (applyAltSpeed, on StartAltSpeedSchedule's own ticker) keeps
+// AltSpeedEnabled's reported state in sync too, not just the manual
+// SetAltSpeedEnabled path - the two share one underlying setAltSpeed.
+func TestApplyAltSpeedReflectsInAltSpeedEnabled(t *testing.T) {
+	always := Schedule{Days: [7]bool{true, true, true, true, true, true, true}, Start: 0, End: 23*time.Hour + 59*time.Minute}
+	e, err := New(t.TempDir(), Defaults{
+		DownloadDir:  t.TempDir(),
+		ResumeDir:    t.TempDir(),
+		DownLimit:    ratelimit.New(1000),
+		UpLimit:      ratelimit.New(2000),
+		AltDownLimit: 100,
+		AltUpLimit:   200,
+		AltSchedule:  &always,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(e.Shutdown)
+
+	e.applyAltSpeed(time.Date(2024, 1, 3, 12, 0, 0, 0, time.UTC))
+	if !e.AltSpeedEnabled() {
+		t.Fatal("AltSpeedEnabled() = false while inside an always-on schedule window")
+	}
+
+	e.defaults.AltSchedule = &Schedule{Days: [7]bool{true, true, true, true, true, true, true}, Start: 0, End: 1 * time.Hour}
+	e.applyAltSpeed(time.Date(2024, 1, 3, 12, 0, 0, 0, time.UTC))
+	if e.AltSpeedEnabled() {
+		t.Fatal("AltSpeedEnabled() = true while outside the (now narrowed) schedule window")
+	}
+}
+
 func TestSetTorrentRateLimitAppliesImmediately(t *testing.T) {
 	e := newTestEngine(t)
 	torrentDir := t.TempDir()

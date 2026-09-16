@@ -45,3 +45,21 @@ func TestSessionHandlerEmptyFleet(t *testing.T) {
 		t.Fatalf("TorrentCount = %d, want 0", got.TorrentCount)
 	}
 }
+
+// TestSessionHandlerReportsAltSpeedEnabled proves GET /api/v1/session
+// reflects the engine's real alt-speed state on the very first load, not
+// just PatchSessionHandler's own response - a status bar has to be able
+// to show the toggle's current state before it has ever PATCHed anything.
+func TestSessionHandlerReportsAltSpeedEnabled(t *testing.T) {
+	e := newTestEngine(t)
+	e.SetAltSpeedEnabled(true)
+
+	rec := doRequest(t, SessionHandler(e), http.MethodGet, "/api/v1/session")
+	var got SessionStats
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !got.AltSpeedEnabled {
+		t.Fatal("AltSpeedEnabled = false, want true (set directly on the engine before the request)")
+	}
+}
