@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/Oblutack/GoTorrent/internal/engine"
+	"github.com/Oblutack/GoTorrent/internal/picker"
 )
 
 func addTorrentMux(e *engine.Engine, uploadDir string) *http.ServeMux {
@@ -188,5 +189,136 @@ func TestAddTorrentHandlerDuplicateReturns409(t *testing.T) {
 		if rec.Code != wantCode {
 			t.Fatalf("attempt %d: status = %d, want %d, body=%s", i, rec.Code, wantCode, rec.Body.String())
 		}
+	}
+}
+
+// TestAddTorrentHandlerJSONFilePrioritiesReachesTheEngine proves
+// AddRequest.FilePriorities (Stage 5) reaches a real managed torrent
+// through the JSON add path - picker.Priority round-trips through JSON as
+// its own name via MarshalText/UnmarshalText, so the wire body just uses
+// plain strings. Uses the "url" add path (real metadata known
+// immediately), not a magnet: Stats().FilePriorities only reflects real
+// values once openMetadata has run, which a magnet with no real peers
+// never reaches.
+func TestAddTorrentHandlerJSONFilePrioritiesReachesTheEngine(t *testing.T) {
+	e := newTestEngine(t)
+	mux := addTorrentMux(e, t.TempDir())
+
+	path, hash := writeTorrentFile(t, t.TempDir(), "jsonfilepriorities")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read fixture .torrent: %v", err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(data)
+	}))
+	defer srv.Close()
+
+	body, _ := json.Marshal(AddRequest{
+		URL:            srv.URL + "/jsonfilepriorities.torrent",
+		FilePriorities: []picker.Priority{picker.PriorityHigh},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/torrents", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201, body=%s", rec.Code, rec.Body.String())
+	}
+
+	tr, ok := e.Get(hash)
+	if !ok {
+		t.Fatal("torrent was not actually added to the engine")
+	}
+	got := tr.Stats().FilePriorities
+	if len(got) != 1 || got[0] != picker.PriorityHigh {
+		t.Fatalf("FilePriorities = %v, want [high]", got)
+	}
+}
+
+// TestAddTorrentHandlerMultipartFilePrioritiesReachesTheEngine proves the
+// same field also works on the file-upload path, as a comma-separated
+// form field the same shape "tags" already uses.
+func TestAddTorrentHandlerMultipartFilePrioritiesReachesTheEngine(t *testing.T) {
+	e := newTestEngine(t)
+	uploadDir := t.TempDir()
+	mux := addTorrentMux(e, uploadDir)
+
+	path, hash := writeTorrentFile(t, t.TempDir(), "multipartfilepriorities")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read fixture .torrent: %v", err)
+	}
+
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	fw, err := mw.CreateFormFile("torrent", "multipartfilepriorities.torrent")
+	if err != nil {
+		t.Fatalf("CreateFormFile: %v", err)
+	}
+	if _, err := fw.Write(data); err != nil {
+		t.Fatalf("write file field: %v", err)
+	}
+	if err := mw.WriteField("filePriorities", "skip"); err != nil {
+		t.Fatalf("write filePriorities field: %v", err)
+	}
+	if err := mw.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/torrents", &buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201, body=%s", rec.Code, rec.Body.String())
+	}
+
+	tr, ok := e.Get(hash)
+	if !ok {
+		t.Fatal("torrent was not actually added to the engine")
+	}
+	got := tr.Stats().FilePriorities
+	if len(got) != 1 || got[0] != picker.PrioritySkip {
+		t.Fatalf("FilePriorities = %v, want [skip]", got)
+	}
+}
+
+// TestAddTorrentHandlerMultipartFilePrioritiesRejectsInvalidName proves an
+// unrecognized priority name in the form field is a clean 400, not a
+// silently-ignored value or a panic.
+func TestAddTorrentHandlerMultipartFilePrioritiesRejectsInvalidName(t *testing.T) {
+	e := newTestEngine(t)
+	uploadDir := t.TempDir()
+	mux := addTorrentMux(e, uploadDir)
+
+	path, _ := writeTorrentFile(t, t.TempDir(), "badpriorityname")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read fixture .torrent: %v", err)
+	}
+
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	fw, err := mw.CreateFormFile("torrent", "badpriorityname.torrent")
+	if err != nil {
+		t.Fatalf("CreateFormFile: %v", err)
+	}
+	if _, err := fw.Write(data); err != nil {
+		t.Fatalf("write file field: %v", err)
+	}
+	if err := mw.WriteField("filePriorities", "urgent"); err != nil {
+		t.Fatalf("write filePriorities field: %v", err)
+	}
+	if err := mw.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/torrents", &buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for an unrecognized priority name, body=%s", rec.Code, rec.Body.String())
 	}
 }

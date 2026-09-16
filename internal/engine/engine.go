@@ -412,6 +412,19 @@ type AddOptions struct {
 	// comments on each for what they actually do.
 	StartPaused   bool
 	SkipHashCheck bool
+	// FilePriorities sets each file's initial download priority at
+	// construction, threaded straight through to torrent.Config's own
+	// field of the same name — see its doc comment. nil means every file
+	// is Normal, the same "not set" default Config.FilePriorities itself
+	// already has. Works for a magnet add too, not just a real .torrent
+	// file: Config.FilePriorities is read again once metadata is known
+	// (openMetadata's own normalizedFilePriorities call), whether that
+	// happens immediately at construction or later via BEP 9 - a caller
+	// just has to already know the eventual file order and count, which in
+	// practice means this is realistically only usable together with a
+	// real .torrent file (via a preview first, say), not a magnet whose
+	// file list isn't knowable ahead of time either way.
+	FilePriorities []picker.Priority
 	// AddedAt and CompletedAt exist purely for Load to restore what the
 	// manifest already recorded — a real, external Add call has no
 	// business setting either: AddedAt zero means "use time.Now()" (the
@@ -478,6 +491,7 @@ func (e *Engine) AddWithOptions(source, downloadDir string, opts AddOptions) (me
 	cfg.Trackers = trackers
 	cfg.StartPaused = opts.StartPaused
 	cfg.SkipHashCheck = opts.SkipHashCheck
+	cfg.FilePriorities = opts.FilePriorities
 
 	// Every torrent gets its own rate-cap pair, unlimited until
 	// SetTorrentRateLimit says otherwise, appended alongside the fleet-wide

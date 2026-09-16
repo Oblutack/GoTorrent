@@ -15,6 +15,7 @@ import (
 
 	"github.com/Oblutack/GoTorrent/internal/engine"
 	"github.com/Oblutack/GoTorrent/internal/metainfo"
+	"github.com/Oblutack/GoTorrent/internal/picker"
 )
 
 // AddRequest is POST /api/v1/torrents's JSON body shape - used when the
@@ -28,6 +29,14 @@ type AddRequest struct {
 	DownloadDir   string   `json:"downloadDir,omitempty"`
 	Paused        bool     `json:"paused,omitempty"`
 	SkipHashCheck bool     `json:"skipHashCheck,omitempty"`
+	// FilePriorities sets each file's initial priority, in file order -
+	// see engine.AddOptions.FilePriorities. picker.Priority round-trips as
+	// its own name ("skip"/"low"/"normal"/"high") via MarshalText/
+	// UnmarshalText, so this is just an array of those strings in JSON.
+	// Realistically only usable together with a real .torrent file (via a
+	// preview first), never a magnet, whose file list isn't knowable
+	// ahead of time either way.
+	FilePriorities []picker.Priority `json:"filePriorities,omitempty"`
 }
 
 // AddResponse is POST /api/v1/torrents's success body.
@@ -111,7 +120,31 @@ func parseMultipartAdd(w http.ResponseWriter, r *http.Request, uploadDir string)
 	}
 	opts.StartPaused = formBool(r.FormValue("paused"))
 	opts.SkipHashCheck = formBool(r.FormValue("skipHashCheck"))
+	if fp := r.FormValue("filePriorities"); fp != "" {
+		priorities, err := parseFilePrioritiesForm(fp)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return "", opts, "", false
+		}
+		opts.FilePriorities = priorities
+	}
 	return path, opts, r.FormValue("downloadDir"), true
+}
+
+// parseFilePrioritiesForm parses "filePriorities" the same comma-separated
+// shape "tags" already uses on this form, one picker.Priority name per
+// file in file order (e.g. "skip,normal,high") - reusing Priority's own
+// UnmarshalText rather than a second name-to-value mapping that could
+// drift from it.
+func parseFilePrioritiesForm(s string) ([]picker.Priority, error) {
+	parts := strings.Split(s, ",")
+	out := make([]picker.Priority, len(parts))
+	for i, p := range parts {
+		if err := out[i].UnmarshalText([]byte(strings.TrimSpace(p))); err != nil {
+			return nil, fmt.Errorf("filePriorities[%d]: %w", i, err)
+		}
+	}
+	return out, nil
 }
 
 // formBool parses a plain multipart form field the same lenient way
@@ -132,6 +165,7 @@ func parseJSONAdd(w http.ResponseWriter, r *http.Request, uploadDir string) (sou
 	opts.Tags = req.Tags
 	opts.StartPaused = req.Paused
 	opts.SkipHashCheck = req.SkipHashCheck
+	opts.FilePriorities = req.FilePriorities
 
 	switch {
 	case req.Magnet != "":
