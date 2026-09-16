@@ -1,0 +1,84 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:GoTorrent.Desktop.ViewModels"
+        xmlns:chrome="using:Avalonia.Controls.Chrome"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d" d:DesignWidth="380" d:DesignHeight="420"
+        x:Class="GoTorrent.Desktop.Views.StatisticsWindow"
+        x:DataType="vm:MainViewModel"
+        Width="380" SizeToContent="Height" CanResize="False"
+        WindowStartupLocation="CenterOwner"
+        Background="{DynamicResource GtBackground}"
+        Icon="/Assets/app-icon.ico"
+        ExtendClientAreaToDecorationsHint="True"
+        WindowDecorations="None"
+        ExtendClientAreaTitleBarHeightHint="-1"
+        Title="Statistics">
+
+    <!-- Live-binds directly to MainViewModel (like MainWindow's own detail
+         tabs), not the no-ViewModel code-behind pattern the one-shot form
+         dialogs (AddTorrentWindow, PreferencesWindow, ...) use - this
+         window is a read-only live display, not a form with a Save
+         action, so there is nothing to unit-test independently of
+         MainViewModel's own already-tested Session/SessionRatioDisplay
+         properties. Session updates every 2s (auto-refresh) and on every
+         WS sessionStats event, so every row here stays live with no
+         window-owned timer of its own - except "Connected for", which a
+         plain binding can't express (elapsed time needs to keep
+         re-evaluating as wall-clock time passes, not just when Session
+         changes), so that one line is ticked from code-behind instead. -->
+    <Grid RowDefinitions="32,*">
+        <Grid Grid.Row="0" ColumnDefinitions="Auto,*,Auto"
+              Background="{DynamicResource GtTitleBar}"
+              chrome:WindowDecorationProperties.ElementRole="TitleBar">
+            <Image Grid.Column="0" Source="/Assets/app-icon.ico" Width="14" Height="14" Margin="10,0,6,0" />
+            <TextBlock Grid.Column="1" Text="Statistics" VerticalAlignment="Center" FontSize="12" Foreground="{DynamicResource GtSubtle}" />
+            <Button Grid.Column="2" Classes="caption captionClose" Click="OnCloseClick"
+                    chrome:WindowDecorationProperties.ElementRole="CloseButton">
+                <Path Data="M0,0 L10,10 M10,0 L0,10" StrokeThickness="1" />
+            </Button>
+        </Grid>
+
+        <StackPanel Grid.Row="1" Margin="16" Spacing="14">
+            <StackPanel Spacing="6">
+                <TextBlock Text="Transfer" FontWeight="Bold" />
+                <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto,Auto" RowSpacing="4" ColumnSpacing="8">
+                    <TextBlock Grid.Row="0" Grid.Column="0" Foreground="{DynamicResource GtSubtle}" Text="All-time downloaded" />
+                    <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding Session.TotalDownloaded}" />
+                    <TextBlock Grid.Row="1" Grid.Column="0" Foreground="{DynamicResource GtSubtle}" Text="All-time uploaded" />
+                    <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding Session.TotalUploaded}" />
+                    <TextBlock Grid.Row="2" Grid.Column="0" Foreground="{DynamicResource GtSubtle}" Text="Share ratio" />
+                    <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding SessionRatioDisplay}" />
+                </Grid>
+            </StackPanel>
+
+            <StackPanel Spacing="6">
+                <TextBlock Text="Torrents" FontWeight="Bold" />
+                <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto" RowSpacing="4" ColumnSpacing="8">
+                    <TextBlock Grid.Row="0" Grid.Column="0" Foreground="{DynamicResource GtSubtle}" Text="Total" />
+                    <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding Session.TorrentCount}" />
+                    <TextBlock Grid.Row="1" Grid.Column="0" Foreground="{DynamicResource GtSubtle}" Text="Downloading" />
+                    <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding Session.DownloadingCount}" />
+                    <TextBlock Grid.Row="2" Grid.Column="0" Foreground="{DynamicResource GtSubtle}" Text="Seeding" />
+                    <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding Session.SeedingCount}" />
+                    <TextBlock Grid.Row="3" Grid.Column="0" Foreground="{DynamicResource GtSubtle}" Text="Paused" />
+                    <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding Session.PausedCount}" />
+                    <TextBlock Grid.Row="4" Grid.Column="0" Foreground="{DynamicResource GtSubtle}" Text="Error" />
+                    <TextBlock Grid.Row="4" Grid.Column="1" Text="{Binding Session.ErrorCount}" />
+                </Grid>
+            </StackPanel>
+
+            <StackPanel Spacing="6">
+                <TextBlock Text="Connection" FontWeight="Bold" />
+                <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto" RowSpacing="4" ColumnSpacing="8">
+                    <TextBlock Grid.Row="0" Grid.Column="0" Foreground="{DynamicResource GtSubtle}" Text="Peers connected" />
+                    <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding Session.TotalPeerCount}" />
+                    <TextBlock Grid.Row="1" Grid.Column="0" Foreground="{DynamicResource GtSubtle}" Text="Connected for" />
+                    <TextBlock Grid.Row="1" Grid.Column="1" Name="ConnectedForText" />
+                </Grid>
+            </StackPanel>
+        </StackPanel>
+    </Grid>
+
+</Window>

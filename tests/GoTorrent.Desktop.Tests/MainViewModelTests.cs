@@ -179,6 +179,72 @@ public sealed class MainViewModelTests
     }
 
     [Fact]
+    public async Task SessionRatioDisplay_WithNothingTransferredYet_ShowsZero()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        client.Session = new SessionStats(0, 0, 0, 0, 0, TotalDownloaded: 0, TotalUploaded: 0, 0);
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        await viewModel.RefreshAsync();
+
+        Assert.Equal("0.00", viewModel.SessionRatioDisplay);
+    }
+
+    [Fact]
+    public async Task SessionRatioDisplay_WithDownloadAndUpload_ShowsTheComputedRatio()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        client.Session = new SessionStats(0, 0, 0, 0, 0, TotalDownloaded: 1000, TotalUploaded: 500, 0);
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        await viewModel.RefreshAsync();
+
+        Assert.Equal("0.50", viewModel.SessionRatioDisplay);
+    }
+
+    [Fact]
+    public async Task SessionRatioDisplay_WithUploadButNoDownload_ShowsInfinity()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        client.Session = new SessionStats(0, 0, 0, 0, 0, TotalDownloaded: 0, TotalUploaded: 500, 0);
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        await viewModel.RefreshAsync();
+
+        Assert.Equal("∞", viewModel.SessionRatioDisplay);
+    }
+
+    [Fact]
+    public void Connect_SetsConnectedSince()
+    {
+        var (viewModel, _, clock) = MakeViewModelWithClock();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+
+        viewModel.ConnectCommand.Execute(null);
+
+        Assert.Equal(clock.Now, viewModel.ConnectedSince);
+    }
+
+    [Fact]
+    public void Connect_CalledTwice_DoesNotResetConnectedSince()
+    {
+        var (viewModel, _, clock) = MakeViewModelWithClock();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        var firstConnectedSince = viewModel.ConnectedSince;
+        clock.Now = clock.Now.AddMinutes(5);
+
+        viewModel.ConnectCommand.Execute(null);
+
+        Assert.Equal(firstConnectedSince, viewModel.ConnectedSince);
+    }
+
+    [Fact]
     public async Task RefreshAsync_WhenTheClientFails_SetsAnErrorWithoutThrowing()
     {
         var (viewModel, client, _) = MakeViewModel();

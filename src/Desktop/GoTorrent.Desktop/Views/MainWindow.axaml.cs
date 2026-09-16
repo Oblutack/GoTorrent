@@ -442,6 +442,16 @@ public partial class MainWindow : Window
         await dialog.ShowDialog(this);
     }
 
+    private async void OnStatisticsClick(object? sender, RoutedEventArgs e)
+    {
+        if (DataContext is not MainViewModel mainViewModel)
+        {
+            return;
+        }
+        var dialog = new StatisticsWindow(mainViewModel);
+        await dialog.ShowDialog(this);
+    }
+
     private async void OnSetCategoryClick(object? sender, RoutedEventArgs e)
     {
         if (DataContext is not MainViewModel mainViewModel || mainViewModel.SelectedTorrents.Count == 0)

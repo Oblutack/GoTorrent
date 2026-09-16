@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using Avalonia;
@@ -82,8 +83,43 @@ public partial class MainViewModel : ViewModelBase, IDisposable
     [ObservableProperty]
     public partial bool ShowNoMatchesMessage { get; set; }
 
+    /// <summary>
+    /// <see cref="SessionRatioDisplay"/> is derived from this and has to be
+    /// notified explicitly (same <c>[NotifyPropertyChangedFor]</c> pattern
+    /// as <see cref="RowHeight"/>/<see cref="CompactDensity"/>) since
+    /// CommunityToolkit.Mvvm can't infer a computed property's own
+    /// dependency on its own.
+    /// </summary>
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(SessionRatioDisplay))]
     public partial SessionStats? Session { get; set; }
+
+    /// <summary>
+    /// The Statistics window's share-ratio line. A plain string, not a
+    /// double + XAML <c>StringFormat</c>, specifically so the "nothing
+    /// downloaded yet but something was uploaded" case (an initial seed)
+    /// can render "∞" instead of a bare division producing
+    /// <see cref="double.PositiveInfinity"/> and a StringFormat rendering
+    /// that as the word "Infinity".
+    /// </summary>
+    public string SessionRatioDisplay => Session switch
+    {
+        { TotalDownloaded: > 0 } s => ((double)s.TotalUploaded / s.TotalDownloaded).ToString("F2", CultureInfo.InvariantCulture),
+        { TotalUploaded: > 0 } => "∞",
+        _ => "0.00",
+    };
+
+    /// <summary>
+    /// When this Desktop last successfully connected to the currently-
+    /// attached gottrentd, for the Statistics window's "session uptime"
+    /// line - set once, the first time <see cref="TryConnect"/> succeeds
+    /// in this process run, and never reset by a later reconnect (a brief
+    /// drop-and-recover shouldn't restart the clock). This is genuinely
+    /// "how long this Desktop instance has been talking to a daemon," not
+    /// gottrentd's own process uptime - the control API has no uptime
+    /// field of its own to read.
+    /// </summary>
+    public DateTimeOffset? ConnectedSince { get; private set; }
 
     [ObservableProperty]
     public partial bool IsConnected { get; set; }
@@ -469,6 +505,7 @@ public partial class MainViewModel : ViewModelBase, IDisposable
             _connectedOptions = options;
             IsConnected = true;
             ConnectionError = null;
+            ConnectedSince ??= _timeProvider.GetUtcNow();
             if (persist)
             {
                 // `with` rather than a fresh DesktopSettings - this must not
