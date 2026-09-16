@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -20,11 +21,13 @@ import (
 // request is not a multipart upload (see AddTorrentHandler). Exactly one
 // of Magnet or URL should be set.
 type AddRequest struct {
-	Magnet      string   `json:"magnet,omitempty"`
-	URL         string   `json:"url,omitempty"`
-	Category    string   `json:"category,omitempty"`
-	Tags        []string `json:"tags,omitempty"`
-	DownloadDir string   `json:"downloadDir,omitempty"`
+	Magnet        string   `json:"magnet,omitempty"`
+	URL           string   `json:"url,omitempty"`
+	Category      string   `json:"category,omitempty"`
+	Tags          []string `json:"tags,omitempty"`
+	DownloadDir   string   `json:"downloadDir,omitempty"`
+	Paused        bool     `json:"paused,omitempty"`
+	SkipHashCheck bool     `json:"skipHashCheck,omitempty"`
 }
 
 // AddResponse is POST /api/v1/torrents's success body.
@@ -106,7 +109,16 @@ func parseMultipartAdd(w http.ResponseWriter, r *http.Request, uploadDir string)
 	if tags := r.FormValue("tags"); tags != "" {
 		opts.Tags = strings.Split(tags, ",")
 	}
+	opts.StartPaused = formBool(r.FormValue("paused"))
+	opts.SkipHashCheck = formBool(r.FormValue("skipHashCheck"))
 	return path, opts, r.FormValue("downloadDir"), true
+}
+
+// formBool parses a plain multipart form field the same lenient way
+// ?deleteData= already does on the DELETE route - "true" or "1", anything
+// else (including absent, the normal case) is false.
+func formBool(v string) bool {
+	return v == "true" || v == "1"
 }
 
 // parseJSONAdd handles the magnet/URL half of AddTorrentHandler.
@@ -118,6 +130,8 @@ func parseJSONAdd(w http.ResponseWriter, r *http.Request, uploadDir string) (sou
 	}
 	opts.Category = req.Category
 	opts.Tags = req.Tags
+	opts.StartPaused = req.Paused
+	opts.SkipHashCheck = req.SkipHashCheck
 
 	switch {
 	case req.Magnet != "":
@@ -135,6 +149,29 @@ func parseJSONAdd(w http.ResponseWriter, r *http.Request, uploadDir string) (sou
 	}
 }
 
+// parseTorrentBytes reads r (bounded to metainfo.MaxTorrentFileSize+1, the
+// same "+1" so an over-limit file fails the explicit size check below
+// rather than a silently-truncated one parsing as something else) and
+// parses it as a real .torrent file - the shared core of both
+// saveTorrentBytes (a real Add, which needs the bytes written to disk too)
+// and PreviewTorrentHandler (which never writes anything - a preview that
+// leaked a file to uploadDir for every torrent someone merely looked at
+// and never added would just accumulate garbage).
+func parseTorrentBytes(r io.Reader) (*metainfo.MetaInfo, []byte, error) {
+	data, err := io.ReadAll(io.LimitReader(r, metainfo.MaxTorrentFileSize+1))
+	if err != nil {
+		return nil, nil, fmt.Errorf("reading .torrent data: %w", err)
+	}
+	if len(data) > metainfo.MaxTorrentFileSize {
+		return nil, nil, fmt.Errorf(".torrent file exceeds the %d byte limit", metainfo.MaxTorrentFileSize)
+	}
+	mi, err := metainfo.Parse(data)
+	if err != nil {
+		return nil, nil, fmt.Errorf("invalid .torrent file: %w", err)
+	}
+	return mi, data, nil
+}
+
 // saveTorrentBytes validates r as a real .torrent file and writes it to
 // uploadDir, named by its own infohash - both so re-adding the same file
 // twice overwrites rather than accumulating garbage (engine.AddWithOptions
@@ -145,16 +182,9 @@ func parseJSONAdd(w http.ResponseWriter, r *http.Request, uploadDir string) (sou
 // that gets cleaned up after this request would silently break every
 // uploaded or URL-fetched torrent's ability to survive a restart.
 func saveTorrentBytes(uploadDir string, r io.Reader) (string, error) {
-	data, err := io.ReadAll(r)
+	mi, data, err := parseTorrentBytes(r)
 	if err != nil {
-		return "", fmt.Errorf("reading .torrent data: %w", err)
-	}
-	if len(data) > metainfo.MaxTorrentFileSize {
-		return "", fmt.Errorf(".torrent file exceeds the %d byte limit", metainfo.MaxTorrentFileSize)
-	}
-	mi, err := metainfo.Parse(data)
-	if err != nil {
-		return "", fmt.Errorf("invalid .torrent file: %w", err)
+		return "", err
 	}
 
 	if err := os.MkdirAll(uploadDir, 0o755); err != nil {
@@ -167,29 +197,44 @@ func saveTorrentBytes(uploadDir string, r io.Reader) (string, error) {
 	return path, nil
 }
 
-// fetchTorrentFile downloads url and hands its body to saveTorrentBytes.
-// Only http/https is accepted - there is no legitimate use for gottrentd
-// fetching a "url" add via any other scheme (file://, etc. would let a
-// caller with API access read arbitrary local files back out through the
-// resulting Add error messages).
-func fetchTorrentFile(ctx context.Context, uploadDir, url string) (string, error) {
+// fetchURLBytes downloads url and returns its raw bytes, bounded the same
+// way an uploaded file is. Only http/https is accepted - there is no
+// legitimate use for gottrentd fetching a "url" add (or preview) via any
+// other scheme (file://, etc. would let a caller with API access read
+// arbitrary local files back out through the resulting error messages).
+// Shared by fetchTorrentFile (a real Add, which saves the result) and
+// PreviewTorrentHandler (which only ever parses it).
+func fetchURLBytes(ctx context.Context, url string) ([]byte, error) {
 	if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
-		return "", fmt.Errorf("url must be http:// or https://")
+		return nil, fmt.Errorf("url must be http:// or https://")
 	}
 	ctx, cancel := context.WithTimeout(ctx, fetchTimeout)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return "", fmt.Errorf("building request for %s: %w", url, err)
+		return nil, fmt.Errorf("building request for %s: %w", url, err)
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("fetching %s: %w", url, err)
+		return nil, fmt.Errorf("fetching %s: %w", url, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("fetching %s: unexpected status %s", url, resp.Status)
+		return nil, fmt.Errorf("fetching %s: unexpected status %s", url, resp.Status)
 	}
-	return saveTorrentBytes(uploadDir, io.LimitReader(resp.Body, metainfo.MaxTorrentFileSize+1))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, metainfo.MaxTorrentFileSize+1))
+	if err != nil {
+		return nil, fmt.Errorf("reading response from %s: %w", url, err)
+	}
+	return data, nil
+}
+
+// fetchTorrentFile downloads url and hands its body to saveTorrentBytes.
+func fetchTorrentFile(ctx context.Context, uploadDir, url string) (string, error) {
+	data, err := fetchURLBytes(ctx, url)
+	if err != nil {
+		return "", err
+	}
+	return saveTorrentBytes(uploadDir, bytes.NewReader(data))
 }

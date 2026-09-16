@@ -179,6 +179,22 @@ type Config struct {
 	// Callbacks.HasPiece/ReadBlock have no peer-identity parameter to
 	// restrict by — only what is advertised.
 	SuperSeeding bool
+	// StartPaused holds a freshly started torrent in StatePaused from the
+	// very first real state (after metadata/verification, so progress
+	// still displays correctly right away) rather than ever announcing to
+	// a tracker or joining the DHT — Resume() picks up normally from
+	// there. See Torrent.Run's own comment for why this has to be decided
+	// there, synchronously, rather than as a Pause() call from outside
+	// after Run starts: a torrent's very first tick already races an
+	// external caller for the Added->FetchingMetadata/CheckingFiles edge,
+	// and Pause() is a no-op on the non-Active StateAdded it might still
+	// be in.
+	StartPaused bool
+	// SkipHashCheck trusts that every piece is already correct without
+	// actually reading and hashing it back — see Torrent.openMetadata's
+	// own comment. Only applies when there's no usable resume data to
+	// trust instead; irrelevant to an already-checkpointed torrent.
+	SkipHashCheck bool
 }
 
 // peerConn is one connected peer plus the bookkeeping the actor needs that
@@ -649,12 +665,24 @@ func (t *Torrent) Run(ctx context.Context) error {
 	} else {
 		t.setState(StateFetchingMetadata)
 	}
-	// Started unconditionally: a magnet-link torrent announces to its
-	// magnet-supplied trackers (Config.Trackers) from the moment it starts,
-	// and the same loop picks up mi.AnnounceURLs() once metadata arrives —
-	// see announceLoop's comment.
-	t.restartAnnounceLoop(tracker.EventStarted)
-	t.restartDHTLoop()
+	if t.cfg.StartPaused {
+		// CheckingFiles/Downloading/Seeding/FetchingMetadata (whichever
+		// openMetadata or the plain magnet branch above just landed on)
+		// all already have a legal edge straight to Paused — see
+		// state.go's transitions table — so this needs no state-machine
+		// change of its own. Deliberately skips ever starting the
+		// announce/DHT loops at all, rather than starting and immediately
+		// stopping them: a paused torrent that was never announced has
+		// nothing to un-announce.
+		t.setState(StatePaused)
+	} else {
+		// Started unconditionally: a magnet-link torrent announces to its
+		// magnet-supplied trackers (Config.Trackers) from the moment it
+		// starts, and the same loop picks up mi.AnnounceURLs() once
+		// metadata arrives — see announceLoop's comment.
+		t.restartAnnounceLoop(tracker.EventStarted)
+		t.restartDHTLoop()
+	}
 
 	t.run(t.ctx)
 
@@ -734,10 +762,24 @@ func (t *Torrent) openMetadata(mi *metainfo.MetaInfo) error {
 		}
 	}
 
-	logger.Logf("torrent %s: no usable resume data, verifying on disk\n", t.infoHash)
-	have, err := t.verifyAndBuildBitfield(mi)
-	if err != nil {
-		return fmt.Errorf("verifying: %w", err)
+	var have *bitfield.Bitfield
+	if t.cfg.SkipHashCheck {
+		// Stage 5's "trust the caller's resume-data-shaped claim without
+		// verifying" - the same real-BitTorrent-client shortcut for "I
+		// already know this data is complete" (migrating from another
+		// client's already-downloaded files, most commonly), skipping the
+		// real read-back-and-hash storage.Verify would otherwise do. A
+		// wrong claim here means silently serving bad data to peers - the
+		// caller's problem, not this package's to second-guess.
+		logger.Logf("torrent %s: skip-hash-check requested, trusting all pieces without verifying\n", t.infoHash)
+		have = bitfield.Full(mi.NumPieces())
+	} else {
+		logger.Logf("torrent %s: no usable resume data, verifying on disk\n", t.infoHash)
+		var err error
+		have, err = t.verifyAndBuildBitfield(mi)
+		if err != nil {
+			return fmt.Errorf("verifying: %w", err)
+		}
 	}
 	if err := t.pick.SetHave(have); err != nil {
 		return fmt.Errorf("applying verify results: %w", err)

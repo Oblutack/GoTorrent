@@ -400,6 +400,11 @@ type AddOptions struct {
 	// nothing in this package filters or groups by them today. Copied, not
 	// aliased, so the caller's slice can be reused.
 	Tags []string
+	// StartPaused and SkipHashCheck are Stage 5's add-time options,
+	// threaded straight through to torrent.Config — see its own doc
+	// comments on each for what they actually do.
+	StartPaused   bool
+	SkipHashCheck bool
 	// AddedAt and CompletedAt exist purely for Load to restore what the
 	// manifest already recorded — a real, external Add call has no
 	// business setting either: AddedAt zero means "use time.Now()" (the
@@ -464,6 +469,8 @@ func (e *Engine) AddWithOptions(source, downloadDir string, opts AddOptions) (me
 
 	cfg := e.torrentConfig(downloadDir)
 	cfg.Trackers = trackers
+	cfg.StartPaused = opts.StartPaused
+	cfg.SkipHashCheck = opts.SkipHashCheck
 
 	// Every torrent gets its own rate-cap pair, unlimited until
 	// SetTorrentRateLimit says otherwise, appended alongside the fleet-wide
