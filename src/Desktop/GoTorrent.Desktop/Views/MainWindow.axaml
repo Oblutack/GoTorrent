@@ -267,7 +267,7 @@
 
                 <TabControl Grid.Row="2" IsVisible="{Binding SelectedTorrent, Converter={x:Static conv:ObjectConverters.IsNotNull}}">
                     <TabItem Header="General">
-                        <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto" Margin="8" RowSpacing="4" ColumnSpacing="8">
+                        <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto" Margin="8" RowSpacing="4" ColumnSpacing="8">
                             <TextBlock Grid.Row="0" Grid.Column="0" FontWeight="Bold" Text="Name" />
                             <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding DetailTorrent.Name}" />
                             <TextBlock Grid.Row="1" Grid.Column="0" FontWeight="Bold" Text="Info Hash" />
@@ -294,6 +294,14 @@
                             <TextBlock Grid.Row="10" Grid.Column="1" Text="{Binding DetailTorrent.Category}" />
                             <TextBlock Grid.Row="11" Grid.Column="0" FontWeight="Bold" Text="Private" />
                             <TextBlock Grid.Row="11" Grid.Column="1" Text="{Binding DetailTorrent.Private}" />
+                            <TextBlock Grid.Row="12" Grid.Column="0" FontWeight="Bold" Text="Speed" />
+                            <StackPanel Grid.Row="12" Grid.Column="1" Orientation="Horizontal" Spacing="8">
+                                <controls:SparklineControl DownloadSamples="{Binding SelectedTorrent.DownloadRateHistory}"
+                                                            UploadSamples="{Binding SelectedTorrent.UploadRateHistory}"
+                                                            Width="160" Height="28" VerticalAlignment="Center" />
+                                <TextBlock Text="{Binding SelectedTorrent.DownloadRateKBps, Converter={StaticResource KBpsDisplay}}" VerticalAlignment="Center" Foreground="{DynamicResource GtDownload}" />
+                                <TextBlock Text="{Binding SelectedTorrent.UploadRateKBps, Converter={StaticResource KBpsDisplay}}" VerticalAlignment="Center" Foreground="{DynamicResource GtUpload}" />
+                            </StackPanel>
                         </Grid>
                     </TabItem>
                     <TabItem Header="Files">

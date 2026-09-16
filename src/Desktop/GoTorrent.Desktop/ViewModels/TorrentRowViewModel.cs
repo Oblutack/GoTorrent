@@ -1,3 +1,4 @@
+using System.Collections.ObjectModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using GoTorrent.Desktop.Models;
 
@@ -97,6 +98,27 @@ public sealed partial class TorrentRowViewModel : ViewModelBase
     public partial double UploadRateKBps { get; set; }
 
     /// <summary>
+    /// Rolling history of <see cref="DownloadRateKBps"/>/<see cref="UploadRateKBps"/>
+    /// samples, oldest first, capped at <see cref="MaxRateSamples"/> - feeds
+    /// the detail pane's per-torrent speed sparkline
+    /// (<see cref="Controls.SparklineControl"/>), the same
+    /// append-then-trim-from-the-front technique
+    /// <c>MainViewModel.AppendSample</c> already uses for the fleet-wide
+    /// speed graph, just kept on this row instead of the ViewModel. A
+    /// much smaller window than the fleet graph's 300 (5 minutes of 1Hz
+    /// WS ticks) - this only ever grows on a 2s poll, not a WS push, and a
+    /// sparkline is meant to show a short recent trend at a glance, not a
+    /// full history.
+    /// </summary>
+    [ObservableProperty]
+    public partial ObservableCollection<double> DownloadRateHistory { get; set; } = [];
+
+    [ObservableProperty]
+    public partial ObservableCollection<double> UploadRateHistory { get; set; } = [];
+
+    private const int MaxRateSamples = 40;
+
+    /// <summary>
     /// A formatted, already-invariant-culture ETA string ("-" not
     /// applicable, "∞" downloading but no measurable rate yet, otherwise a
     /// compact duration) - a string rather than a bound
@@ -163,6 +185,8 @@ public sealed partial class TorrentRowViewModel : ViewModelBase
             {
                 DownloadRateKBps = Math.Max(0, (summary.Downloaded - _lastDownloaded) / elapsedSeconds / 1024.0);
                 UploadRateKBps = Math.Max(0, (summary.Uploaded - _lastUploaded) / elapsedSeconds / 1024.0);
+                AppendRateSample(DownloadRateHistory, DownloadRateKBps);
+                AppendRateSample(UploadRateHistory, UploadRateKBps);
             }
         }
         _lastDownloaded = summary.Downloaded;
@@ -177,8 +201,13 @@ public sealed partial class TorrentRowViewModel : ViewModelBase
     /// still-verifying/fetching-metadata torrent has no download ETA to
     /// show) or with nothing left; "∞" while downloading but with no
     /// measurable rate yet (no second sample, or a genuinely stalled
-    /// transfer); otherwise <paramref name="left"/> divided by the current
-    /// rate, formatted compactly.
+    /// transfer) - or with one so tiny relative to what's left that the
+    /// resulting duration wouldn't fit in a <see cref="TimeSpan"/> at all
+    /// (<see cref="TimeSpan.FromSeconds"/> throws past ~29,000 years - a
+    /// real, reachable case, not hypothetical: a large file crawling at a
+    /// near-zero rate, caught by this method's own test); otherwise
+    /// <paramref name="left"/> divided by the current rate, formatted
+    /// compactly.
     /// </summary>
     private static string ComputeEtaDisplay(string state, long left, double downloadRateKBps)
     {
@@ -190,7 +219,21 @@ public sealed partial class TorrentRowViewModel : ViewModelBase
         {
             return "∞";
         }
-        return FormatDuration(TimeSpan.FromSeconds(left / (downloadRateKBps * 1024.0)));
+        var seconds = left / (downloadRateKBps * 1024.0);
+        if (seconds >= TimeSpan.MaxValue.TotalSeconds)
+        {
+            return "∞";
+        }
+        return FormatDuration(TimeSpan.FromSeconds(seconds));
+    }
+
+    private static void AppendRateSample(ObservableCollection<double> history, double value)
+    {
+        history.Add(value);
+        while (history.Count > MaxRateSamples)
+        {
+            history.RemoveAt(0);
+        }
     }
 
     private static string FormatDuration(TimeSpan span)

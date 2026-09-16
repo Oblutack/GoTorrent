@@ -125,4 +125,72 @@ public sealed class TorrentRowViewModelTests
         row.UpdateFrom(MakeTorrent("Downloading", 10240, 0, 10240, 20480));
         Assert.Equal("∞", row.EtaDisplay);
     }
+
+    [Fact]
+    public void Eta_FallsBackToInfinityRatherThanOverflowingOnAnExtremeDuration()
+    {
+        // A real regression guard, not a hypothetical: a huge file
+        // (near long.MaxValue left) crawling at a near-zero but still
+        // positive rate divides out to a duration TimeSpan.FromSeconds
+        // can't represent (its own ceiling is ~29,000 years) and used to
+        // throw OverflowException straight out of UpdateFrom - caught by
+        // this test, not live.
+        var time = new FixedTimeProvider(DateTimeOffset.UtcNow);
+        var row = new TorrentRowViewModel(MakeTorrent("Downloading", 0, 0, long.MaxValue - 1024, long.MaxValue), time);
+
+        time.Now = time.Now.AddSeconds(1);
+        row.UpdateFrom(MakeTorrent("Downloading", 1024, 0, long.MaxValue - 2048, long.MaxValue));
+
+        Assert.Equal("∞", row.EtaDisplay);
+    }
+
+    [Fact]
+    public void RateHistory_StaysEmptyOnTheFirstSample()
+    {
+        // Mirrors MainViewModel.RecordSpeedSample's own "first sample has
+        // no elapsed baseline, so nothing gets appended yet" behavior -
+        // the sparkline shouldn't show a fabricated leading zero before
+        // any real rate has actually been measured.
+        var time = new FixedTimeProvider(DateTimeOffset.UtcNow);
+        var row = new TorrentRowViewModel(MakeTorrent("Downloading", 0, 0, 10000, 10000), time);
+
+        Assert.Empty(row.DownloadRateHistory);
+        Assert.Empty(row.UploadRateHistory);
+    }
+
+    [Fact]
+    public void RateHistory_AppendsOneSampleForEachRealUpdate()
+    {
+        var time = new FixedTimeProvider(DateTimeOffset.UtcNow);
+        var row = new TorrentRowViewModel(MakeTorrent("Downloading", 0, 0, 30720, 30720), time);
+
+        time.Now = time.Now.AddSeconds(1);
+        row.UpdateFrom(MakeTorrent("Downloading", 1024, 0, 29696, 30720));
+        time.Now = time.Now.AddSeconds(1);
+        row.UpdateFrom(MakeTorrent("Downloading", 3072, 0, 27648, 30720));
+
+        Assert.Equal(2, row.DownloadRateHistory.Count);
+        Assert.Equal(1.0, row.DownloadRateHistory[0], precision: 3);
+        Assert.Equal(2.0, row.DownloadRateHistory[1], precision: 3);
+    }
+
+    [Fact]
+    public void RateHistory_DropsTheOldestSampleOnceItExceedsTheCap()
+    {
+        var time = new FixedTimeProvider(DateTimeOffset.UtcNow);
+        var row = new TorrentRowViewModel(MakeTorrent("Downloading", 0, 0, long.MaxValue / 2, long.MaxValue), time);
+
+        long downloaded = 0;
+        for (var i = 0; i < 45; i++)
+        {
+            time.Now = time.Now.AddSeconds(1);
+            downloaded += 1024;
+            row.UpdateFrom(MakeTorrent("Downloading", downloaded, 0, long.MaxValue - downloaded, long.MaxValue));
+        }
+
+        // 45 real updates against a 40-sample cap - the oldest 5 must have
+        // been trimmed from the front, not the collection growing without
+        // bound.
+        Assert.Equal(40, row.DownloadRateHistory.Count);
+    }
 }
