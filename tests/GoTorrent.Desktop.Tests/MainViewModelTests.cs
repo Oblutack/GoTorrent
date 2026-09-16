@@ -268,6 +268,21 @@ public sealed class MainViewModelTests
     }
 
     [Fact]
+    public async Task ClearRecentDownloadDirs_EmptiesTheListAndPersistsIt()
+    {
+        var (viewModel, client, settings) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        await viewModel.AddMagnetAsync("magnet:?xt=urn:btih:abc", category: null, downloadDir: "/downloads/a");
+
+        viewModel.ClearRecentDownloadDirs();
+
+        Assert.Empty(viewModel.RecentDownloadDirs);
+        Assert.Empty(settings.Load().RecentDownloadDirs ?? []);
+    }
+
+    [Fact]
     public async Task AddUrlAsync_AddsAndRefreshes()
     {
         var (viewModel, client, _) = MakeViewModel();

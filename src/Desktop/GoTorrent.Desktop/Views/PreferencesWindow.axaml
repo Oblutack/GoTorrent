@@ -3,9 +3,9 @@
         xmlns:chrome="using:Avalonia.Controls.Chrome"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
-        mc:Ignorable="d" d:DesignWidth="360" d:DesignHeight="220"
+        mc:Ignorable="d" d:DesignWidth="560" d:DesignHeight="440"
         x:Class="GoTorrent.Desktop.Views.PreferencesWindow"
-        Width="360" SizeToContent="Height" CanResize="False"
+        Width="560" Height="440" CanResize="False"
         WindowStartupLocation="CenterOwner"
         Background="{DynamicResource GtBackground}"
         Icon="/Assets/app-icon.ico"
@@ -26,30 +26,85 @@
             </Button>
         </Grid>
 
-        <StackPanel Grid.Row="1" Margin="16" Spacing="6">
-            <TextBlock Text="Bandwidth" FontWeight="Bold" />
-            <TextBlock Text="Fleet-wide limits, in KiB/s. 0 means unlimited." Foreground="{DynamicResource GtSubtle}" TextWrapping="Wrap" />
+        <Grid Grid.Row="1" RowDefinitions="*,Auto,Auto">
+            <!-- Sections instead of one flat panel (6.5 Stage 4). Most sections beyond
+                 General/Downloads/Speed have nothing real to configure yet - gottrentd's
+                 control API only exposes fleet-wide bandwidth limits today, per
+                 PatchSessionRequest's own doc comment on the Go side - so each of those
+                 shows an honest placeholder rather than fields that would silently do
+                 nothing. The shell exists now so each one unlocks into an already-built
+                 home whenever Stage 5's Go-side work adds the API behind it. -->
+            <TabControl Grid.Row="0" TabStripPlacement="Left" Margin="8,8,8,0">
+                <TabItem Header="General">
+                    <StackPanel Margin="16" Spacing="6">
+                        <CheckBox Name="StartMinimizedCheckBox" Content="Start minimized to tray" />
+                        <CheckBox Name="AutostartCheckBox" Content="Start with Windows" />
+                        <CheckBox Name="FileAssociationCheckBox" Content="Open .torrent files and magnet links with GoTorrent" />
+                        <CheckBox Name="LightThemeCheckBox" Content="Light theme" />
+                        <CheckBox Name="CompactDensityCheckBox" Content="Compact row density" />
+                    </StackPanel>
+                </TabItem>
 
-            <TextBlock Text="Download limit" Margin="0,10,0,0" />
-            <TextBox Name="DownLimitBox" />
+                <TabItem Header="Downloads">
+                    <StackPanel Margin="16" Spacing="6">
+                        <TextBlock Text="Recently used save locations" FontWeight="Bold" />
+                        <TextBlock Text="Suggested in the Add Torrent dialog's &quot;Save to&quot; field, most recent first." Foreground="{DynamicResource GtSubtle}" TextWrapping="Wrap" />
+                        <ListBox Name="RecentDirsList" Height="180" Margin="0,6,0,0" />
+                        <Button Name="ClearRecentDirsButton" Content="Clear" Click="OnClearRecentDirsClick" HorizontalAlignment="Left" Margin="0,6,0,0" />
+                    </StackPanel>
+                </TabItem>
 
-            <TextBlock Text="Upload limit" Margin="0,10,0,0" />
-            <TextBox Name="UpLimitBox" />
+                <TabItem Header="Connection">
+                    <StackPanel Margin="16" Spacing="6">
+                        <TextBlock Text="Connection" FontWeight="Bold" />
+                        <TextBlock Foreground="{DynamicResource GtSubtle}" TextWrapping="Wrap"
+                                   Text="gottrentd doesn't expose the listen port, UPnP/NAT-PMP port mapping, or DHT bootstrap over its control API yet - these are set via gottrentd's own config file or command-line flags when it starts." />
+                    </StackPanel>
+                </TabItem>
 
-            <TextBlock Text="General" FontWeight="Bold" Margin="0,14,0,0" />
-            <CheckBox Name="StartMinimizedCheckBox" Content="Start minimized to tray" />
-            <CheckBox Name="AutostartCheckBox" Content="Start with Windows" />
-            <CheckBox Name="FileAssociationCheckBox" Content="Open .torrent files and magnet links with GoTorrent" />
-            <CheckBox Name="LightThemeCheckBox" Content="Light theme" />
-            <CheckBox Name="CompactDensityCheckBox" Content="Compact row density" />
+                <TabItem Header="Speed">
+                    <StackPanel Margin="16" Spacing="6">
+                        <TextBlock Text="Fleet-wide limits, in KiB/s. 0 means unlimited." Foreground="{DynamicResource GtSubtle}" TextWrapping="Wrap" />
 
-            <TextBlock Name="ErrorText" Foreground="{DynamicResource GtError}" TextWrapping="Wrap" IsVisible="False" Margin="0,10,0,0" />
+                        <TextBlock Text="Download limit" Margin="0,10,0,0" />
+                        <TextBox Name="DownLimitBox" />
 
-            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8" Margin="0,14,0,0">
+                        <TextBlock Text="Upload limit" Margin="0,10,0,0" />
+                        <TextBox Name="UpLimitBox" />
+                    </StackPanel>
+                </TabItem>
+
+                <TabItem Header="BitTorrent">
+                    <StackPanel Margin="16" Spacing="6">
+                        <TextBlock Text="BitTorrent" FontWeight="Bold" />
+                        <TextBlock Foreground="{DynamicResource GtSubtle}" TextWrapping="Wrap"
+                                   Text="DHT, PEX, and LSD aren't independently toggleable at runtime yet - gottrentd starts each once at daemon startup, with no dynamic on/off switch in the control API today." />
+                    </StackPanel>
+                </TabItem>
+
+                <TabItem Header="Web API">
+                    <StackPanel Margin="16" Spacing="6">
+                        <TextBlock Text="Connected daemon" FontWeight="Bold" />
+                        <TextBlock Name="ConnectedAddressText" Foreground="{DynamicResource GtSubtle}" TextWrapping="Wrap" />
+                    </StackPanel>
+                </TabItem>
+
+                <TabItem Header="Advanced">
+                    <StackPanel Margin="16" Spacing="6">
+                        <TextBlock Text="Advanced" FontWeight="Bold" />
+                        <TextBlock Foreground="{DynamicResource GtSubtle}" TextWrapping="Wrap"
+                                   Text="IP filtering, SOCKS5/HTTP proxy, and anonymous mode are all real engine features on the Go side but aren't exposed through gottrentd's control API yet - configuring them today means editing gottrentd's own config file directly." />
+                    </StackPanel>
+                </TabItem>
+            </TabControl>
+
+            <TextBlock Grid.Row="1" Name="ErrorText" Foreground="{DynamicResource GtError}" TextWrapping="Wrap" IsVisible="False" Margin="16,8,16,0" />
+
+            <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8" Margin="16">
                 <Button Content="Cancel" Click="OnCancelClick" />
                 <Button Name="SaveButton" Content="Save" Click="OnSaveClick" Classes="accent" IsDefault="True" />
             </StackPanel>
-        </StackPanel>
+        </Grid>
     </Grid>
 
 </Window>

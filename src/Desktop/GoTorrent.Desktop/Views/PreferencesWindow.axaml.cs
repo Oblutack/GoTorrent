@@ -30,8 +30,12 @@ public partial class PreferencesWindow : Window
         FileAssociationCheckBox.IsChecked = mainViewModel.FileAssociationEnabled;
         LightThemeCheckBox.IsChecked = mainViewModel.LightTheme;
         CompactDensityCheckBox.IsChecked = mainViewModel.CompactDensity;
+        RecentDirsList.ItemsSource = mainViewModel.RecentDownloadDirs;
+        ConnectedAddressText.Text = $"Connected to {mainViewModel.BaseAddressInput}";
         Opened += async (_, _) => await LoadCurrentLimitsAsync();
     }
+
+    private void OnClearRecentDirsClick(object? sender, RoutedEventArgs e) => _mainViewModel.ClearRecentDownloadDirs();
 
     private async System.Threading.Tasks.Task LoadCurrentLimitsAsync()
     {

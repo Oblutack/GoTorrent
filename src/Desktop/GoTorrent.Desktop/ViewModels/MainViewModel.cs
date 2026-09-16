@@ -267,6 +267,13 @@ public partial class MainViewModel : ViewModelBase, IDisposable
         _settingsStore.Save(_settingsStore.Load() with { RecentDownloadDirs = updated });
     }
 
+    /// <summary>Empties the Add Torrent dialog's recent-save-path suggestions. Used by the Preferences dialog's Downloads section.</summary>
+    public void ClearRecentDownloadDirs()
+    {
+        RecentDownloadDirs = [];
+        _settingsStore.Save(_settingsStore.Load() with { RecentDownloadDirs = [] });
+    }
+
     /// <summary>
     /// Re-derives the flat hidden-columns list from the 8 bools above and
     /// persists it - called from every one of their <c>OnXxxChanged</c>
