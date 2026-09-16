@@ -43,13 +43,8 @@ func runCreate(args []string) {
 	}
 	source := fs.Arg(0)
 
-	info, err := os.Stat(source)
-	if err != nil {
-		logger.Error.Fatalf("Error reading %s: %v\n", source, err)
-	}
-
 	name := filepath.Base(filepath.Clean(source))
-	files, err := collectCreateFiles(source, info)
+	files, err := metainfo.CollectFiles(source)
 	if err != nil {
 		logger.Error.Fatalf("Error: %v\n", err)
 	}
@@ -90,46 +85,4 @@ func runCreate(args []string) {
 	fmt.Printf("  Piece size:  %d bytes (%d pieces)\n", mi.Info.PieceLength, mi.NumPieces())
 	fmt.Printf("  Files:       %d\n", len(files))
 	fmt.Printf("  Private:     %t\n", mi.Info.Private)
-}
-
-// collectCreateFiles builds the file list Build needs, from either a
-// single file (a single-file torrent, Path left nil) or a directory
-// (walked recursively, each file's Path relative to the directory itself —
-// filepath.WalkDir visits entries in lexical order per directory, so this
-// is deterministic across runs and platforms without an extra sort).
-func collectCreateFiles(source string, info os.FileInfo) ([]metainfo.CreateFile, error) {
-	if !info.IsDir() {
-		return []metainfo.CreateFile{{SourcePath: source, Length: info.Size()}}, nil
-	}
-
-	var files []metainfo.CreateFile
-	err := filepath.WalkDir(source, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			return nil
-		}
-		rel, err := filepath.Rel(source, path)
-		if err != nil {
-			return err
-		}
-		parts := strings.Split(rel, string(filepath.Separator))
-		if verr := metainfo.ValidatePath(parts); verr != nil {
-			return fmt.Errorf("%s: %w", rel, verr)
-		}
-		fi, err := d.Info()
-		if err != nil {
-			return err
-		}
-		files = append(files, metainfo.CreateFile{Path: parts, SourcePath: path, Length: fi.Size()})
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	if len(files) == 0 {
-		return nil, fmt.Errorf("%s contains no files", source)
-	}
-	return files, nil
 }

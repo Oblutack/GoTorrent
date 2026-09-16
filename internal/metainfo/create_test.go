@@ -180,6 +180,63 @@ func TestBuildWritesTrackersAndWebSeeds(t *testing.T) {
 	}
 }
 
+// TestCollectFilesSingleFile proves the non-directory case returns exactly
+// one entry with a nil Path (the single-file torrent shape Build expects).
+func TestCollectFilesSingleFile(t *testing.T) {
+	dir := t.TempDir()
+	src := writeTempFile(t, dir, "solo.bin", make([]byte, 12345))
+
+	files, err := CollectFiles(src)
+	if err != nil {
+		t.Fatalf("CollectFiles: %v", err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("got %d files, want 1", len(files))
+	}
+	if files[0].Path != nil {
+		t.Fatalf("Path = %v, want nil for a single-file source", files[0].Path)
+	}
+	if files[0].Length != 12345 {
+		t.Fatalf("Length = %d, want 12345", files[0].Length)
+	}
+}
+
+// TestCollectFilesDirectoryWalksRecursivelyInLexicalOrder proves the
+// directory case: every file gets a real Path relative to the directory
+// itself, in deterministic (lexical) order, including a nested subfolder.
+func TestCollectFilesDirectoryWalksRecursivelyInLexicalOrder(t *testing.T) {
+	dir := t.TempDir()
+	writeTempFile(t, dir, "b.bin", make([]byte, 10))
+	writeTempFile(t, dir, "a.bin", make([]byte, 20))
+	if err := os.Mkdir(filepath.Join(dir, "sub"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	writeTempFile(t, filepath.Join(dir, "sub"), "c.bin", make([]byte, 30))
+
+	files, err := CollectFiles(dir)
+	if err != nil {
+		t.Fatalf("CollectFiles: %v", err)
+	}
+	if len(files) != 3 {
+		t.Fatalf("got %d files, want 3", len(files))
+	}
+	wantPaths := [][]string{{"a.bin"}, {"b.bin"}, {"sub", "c.bin"}}
+	for i, want := range wantPaths {
+		if len(files[i].Path) != len(want) || files[i].Path[len(files[i].Path)-1] != want[len(want)-1] {
+			t.Fatalf("files[%d].Path = %v, want %v", i, files[i].Path, want)
+		}
+	}
+}
+
+// TestCollectFilesRejectsANonexistentPath proves a bad source is a clean
+// error, not a panic - the boundary a caller (internal/api's
+// CreateTorrentHandler) turns into a 400.
+func TestCollectFilesRejectsANonexistentPath(t *testing.T) {
+	if _, err := CollectFiles(filepath.Join(t.TempDir(), "does-not-exist")); err == nil {
+		t.Fatal("CollectFiles on a nonexistent path: want an error, got nil")
+	}
+}
+
 func manualPieceHashes(content []byte, pieceLength int) []Hash {
 	var out []Hash
 	for off := 0; off < len(content); off += pieceLength {

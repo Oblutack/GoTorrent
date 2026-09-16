@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/Oblutack/GoTorrent/internal/bencode"
@@ -155,6 +157,54 @@ func Build(opts CreateOptions) (raw []byte, mi *MetaInfo, err error) {
 		return nil, nil, fmt.Errorf("metainfo: built torrent failed to parse back: %w", err)
 	}
 	return raw, mi, nil
+}
+
+// CollectFiles builds the file list Build needs from a single file or a
+// directory at source — walked recursively, each file's Path relative to
+// the directory itself. filepath.WalkDir visits entries in lexical order
+// per directory, so this is deterministic across runs and platforms
+// without an extra sort. Shared by cmd/gottrent's create subcommand and
+// internal/api's CreateTorrentHandler, rather than either keeping its own
+// copy that could drift from the other.
+func CollectFiles(source string) ([]CreateFile, error) {
+	info, err := os.Stat(source)
+	if err != nil {
+		return nil, err
+	}
+	if !info.IsDir() {
+		return []CreateFile{{SourcePath: source, Length: info.Size()}}, nil
+	}
+
+	var files []CreateFile
+	err = filepath.WalkDir(source, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(source, path)
+		if err != nil {
+			return err
+		}
+		parts := strings.Split(rel, string(filepath.Separator))
+		if verr := ValidatePath(parts); verr != nil {
+			return fmt.Errorf("%s: %w", rel, verr)
+		}
+		fi, err := d.Info()
+		if err != nil {
+			return err
+		}
+		files = append(files, CreateFile{Path: parts, SourcePath: path, Length: fi.Size()})
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(files) == 0 {
+		return nil, fmt.Errorf("%s contains no files", source)
+	}
+	return files, nil
 }
 
 // hashPieces reads every file in order and returns the concatenated SHA-1
