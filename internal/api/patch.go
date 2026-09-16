@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/Oblutack/GoTorrent/internal/engine"
 )
@@ -26,6 +27,19 @@ type PatchTorrentRequest struct {
 	// Sequential toggles rarest-first vs. sequential piece ordering at
 	// runtime for this one torrent — see engine.Engine.SetSequential.
 	Sequential *bool `json:"sequential,omitempty"`
+	// SuperSeeding and FirstLastPieceFirst are Stage 5's other two runtime
+	// toggles that previously only existed as Config, not PATCH - see
+	// engine.Engine.SetSuperSeeding/SetFirstLastPieceFirst.
+	SuperSeeding        *bool `json:"superSeeding,omitempty"`
+	FirstLastPieceFirst *bool `json:"firstLastPieceFirst,omitempty"`
+	// SeedRatioLimit and SeedTimeLimitSeconds set this one torrent's own
+	// seed ratio/time limits (0 = unlimited, matching Defaults.SeedRatioLimit/
+	// SeedTimeLimit's own zero-means-unlimited convention) - see
+	// engine.Engine.SetSeedLimits. Seconds, not a duration string, to stay
+	// consistent with SeedingDurationSeconds already reporting seed time
+	// as a plain number elsewhere in this same response shape.
+	SeedRatioLimit       *float64 `json:"seedRatioLimit,omitempty"`
+	SeedTimeLimitSeconds *float64 `json:"seedTimeLimitSeconds,omitempty"`
 	// DownloadDir moves the torrent's content root via engine.MoveData -
 	// synchronous, and can take a while for a large torrent (it stops the
 	// torrent, renames the directory, and restarts it).
@@ -93,6 +107,29 @@ func PatchTorrentHandler(e *engine.Engine) http.HandlerFunc {
 		}
 		if req.Sequential != nil {
 			if err := e.SetSequential(hash, *req.Sequential); err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+		}
+		if req.SuperSeeding != nil {
+			if err := e.SetSuperSeeding(hash, *req.SuperSeeding); err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+		}
+		if req.FirstLastPieceFirst != nil {
+			if err := e.SetFirstLastPieceFirst(hash, *req.FirstLastPieceFirst); err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+		}
+		if req.SeedRatioLimit != nil || req.SeedTimeLimitSeconds != nil {
+			var timeLimit *time.Duration
+			if req.SeedTimeLimitSeconds != nil {
+				d := time.Duration(*req.SeedTimeLimitSeconds * float64(time.Second))
+				timeLimit = &d
+			}
+			if err := e.SetSeedLimits(hash, req.SeedRatioLimit, timeLimit); err != nil {
 				writeError(w, http.StatusBadRequest, err.Error())
 				return
 			}

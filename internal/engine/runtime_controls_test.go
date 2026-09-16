@@ -116,3 +116,81 @@ func TestSetFilePriorityRejectsUnknownHash(t *testing.T) {
 		t.Fatal("SetFilePriority on an unmanaged hash: want an error")
 	}
 }
+
+// TestSetSuperSeedingReachesTheManagedTorrent proves the fleet-level
+// wrapper delegates for real - the BEP 16 mechanics themselves are already
+// proven at internal/torrent's own level (superseed_test.go).
+func TestSetSuperSeedingReachesTheManagedTorrent(t *testing.T) {
+	e := newTestEngine(t)
+	torrentDir := t.TempDir()
+	path, hash := writeTorrentFile(t, torrentDir, "set-super-seeding")
+	if _, err := e.Add(path, ""); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	if err := e.SetSuperSeeding(hash, true); err != nil {
+		t.Fatalf("SetSuperSeeding: %v", err)
+	}
+}
+
+func TestSetSuperSeedingRejectsUnknownHash(t *testing.T) {
+	e := newTestEngine(t)
+	var bogus metainfo.Hash
+	if err := e.SetSuperSeeding(bogus, true); err == nil {
+		t.Fatal("SetSuperSeeding on an unmanaged hash: want an error")
+	}
+}
+
+// TestSetFirstLastPieceFirstReachesTheManagedTorrent proves the fleet-level
+// wrapper delegates for real - the priority/picker mechanics themselves are
+// already proven at internal/torrent's own level.
+func TestSetFirstLastPieceFirstReachesTheManagedTorrent(t *testing.T) {
+	e := newTestEngine(t)
+	torrentDir := t.TempDir()
+	path, hash := writeTorrentFile(t, torrentDir, "set-first-last-piece-first")
+	if _, err := e.Add(path, ""); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	if err := e.SetFirstLastPieceFirst(hash, true); err != nil {
+		t.Fatalf("SetFirstLastPieceFirst: %v", err)
+	}
+}
+
+func TestSetFirstLastPieceFirstRejectsUnknownHash(t *testing.T) {
+	e := newTestEngine(t)
+	var bogus metainfo.Hash
+	if err := e.SetFirstLastPieceFirst(bogus, true); err == nil {
+		t.Fatal("SetFirstLastPieceFirst on an unmanaged hash: want an error")
+	}
+}
+
+// TestSetSeedLimitsReachesTheManagedTorrent proves the fleet-level wrapper
+// delegates for real - the ratio/time-limit mechanics themselves are
+// already proven at internal/torrent's own level (seedlimit_test.go), same
+// "just prove the call reaches a real managed torrent" reasoning as
+// TestSetSequentialReachesTheManagedTorrent above (Config.SeedRatioLimit
+// isn't part of Stats, so there's no field to read the applied value back
+// from at this layer).
+func TestSetSeedLimitsReachesTheManagedTorrent(t *testing.T) {
+	e := newTestEngine(t)
+	torrentDir := t.TempDir()
+	path, hash := writeTorrentFile(t, torrentDir, "set-seed-limits")
+	if _, err := e.Add(path, ""); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	ratio := 0.5
+	if err := e.SetSeedLimits(hash, &ratio, nil); err != nil {
+		t.Fatalf("SetSeedLimits: %v", err)
+	}
+}
+
+func TestSetSeedLimitsRejectsUnknownHash(t *testing.T) {
+	e := newTestEngine(t)
+	var bogus metainfo.Hash
+	ratio := 0.5
+	if err := e.SetSeedLimits(bogus, &ratio, nil); err == nil {
+		t.Fatal("SetSeedLimits on an unmanaged hash: want an error")
+	}
+}

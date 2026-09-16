@@ -2,6 +2,7 @@ package torrent
 
 import (
 	"net"
+	"time"
 
 	"github.com/Oblutack/GoTorrent/internal/metainfo"
 	"github.com/Oblutack/GoTorrent/internal/peer"
@@ -27,6 +28,9 @@ const (
 	ctrlSetSequential
 	ctrlStats
 	ctrlPeers
+	ctrlSetSuperSeeding
+	ctrlSetFirstLastPieceFirst
+	ctrlSetSeedLimits
 )
 
 type controlMsg struct {
@@ -41,9 +45,19 @@ type controlMsg struct {
 	trackerURL string
 	// sequential is set for ctrlSetSequential.
 	sequential bool
+	// superSeeding is set for ctrlSetSuperSeeding.
+	superSeeding bool
+	// firstLastPieceFirst is set for ctrlSetFirstLastPieceFirst.
+	firstLastPieceFirst bool
+	// seedRatioLimit and seedTimeLimit are set for ctrlSetSeedLimits - a
+	// nil pointer means "leave this one alone," the same partial-update
+	// convention PatchTorrentOptions already uses at the API layer.
+	seedRatioLimit *float64
+	seedTimeLimit  *time.Duration
 
 	// errReply receives the result of Pause/Resume/Recheck/SetMetadata/
-	// SetFilePriority/AddTracker/Reannounce/SetSequential.
+	// SetFilePriority/AddTracker/Reannounce/SetSequential/SetSuperSeeding/
+	// SetFirstLastPieceFirst/SetSeedLimits.
 	errReply chan error
 	// statsReply receives the actor-owned half of a Stats snapshot.
 	statsReply chan Stats

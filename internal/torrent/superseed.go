@@ -101,6 +101,23 @@ func (t *Torrent) checkSuperSeedGraduation() bool {
 	if ss == nil || ss.releasedN < ss.numPieces {
 		return false
 	}
+	t.graduateSuperSeeding()
+	return true
+}
+
+// graduateSuperSeeding ends super-seeding for good: a plain Have sweep
+// (redundant ones are harmless) tells every connected peer about every
+// piece, and clears t.superSeed so any future connection just gets the
+// normal HaveAll path. Shared by natural graduation above (every piece
+// released to the swarm at least once) and doSetSuperSeeding turning it
+// off early by request (Stage 5's runtime toggle) - the two have to reach
+// the exact same end state, not two slightly different "turn this off"
+// implementations that could drift apart.
+func (t *Torrent) graduateSuperSeeding() {
+	ss := t.superSeed
+	if ss == nil {
+		return
+	}
 	for _, pc := range t.peers {
 		for i := 0; i < ss.numPieces; i++ {
 			if err := pc.client.SendHave(uint32(i)); err != nil {
@@ -109,5 +126,4 @@ func (t *Torrent) checkSuperSeedGraduation() bool {
 		}
 	}
 	t.superSeed = nil
-	return true
 }

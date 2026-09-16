@@ -2,6 +2,7 @@ package engine
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/Oblutack/GoTorrent/internal/metainfo"
 	"github.com/Oblutack/GoTorrent/internal/picker"
@@ -61,6 +62,38 @@ func (e *Engine) SetSequential(hash metainfo.Hash, sequential bool) error {
 		return fmt.Errorf("engine: %s is not managed by this engine", hash)
 	}
 	return tr.SetSequential(sequential)
+}
+
+// SetSuperSeeding toggles BEP 16 super-seeding on hash at runtime (Stage
+// 5) — a thin fleet-level wrapper around Torrent.SetSuperSeeding, same
+// reasoning as AddTracker/SetSequential above.
+func (e *Engine) SetSuperSeeding(hash metainfo.Hash, enabled bool) error {
+	tr, ok := e.Get(hash)
+	if !ok {
+		return fmt.Errorf("engine: %s is not managed by this engine", hash)
+	}
+	return tr.SetSuperSeeding(enabled)
+}
+
+// SetFirstLastPieceFirst toggles hash's first/last-piece-first boost at
+// runtime — a thin fleet-level wrapper around Torrent.SetFirstLastPieceFirst.
+func (e *Engine) SetFirstLastPieceFirst(hash metainfo.Hash, enabled bool) error {
+	tr, ok := e.Get(hash)
+	if !ok {
+		return fmt.Errorf("engine: %s is not managed by this engine", hash)
+	}
+	return tr.SetFirstLastPieceFirst(enabled)
+}
+
+// SetSeedLimits changes hash's own seed ratio/time limits at runtime — a
+// thin fleet-level wrapper around Torrent.SetSeedLimits; either argument
+// may be nil to leave that particular limit unchanged.
+func (e *Engine) SetSeedLimits(hash metainfo.Hash, ratioLimit *float64, timeLimit *time.Duration) error {
+	tr, ok := e.Get(hash)
+	if !ok {
+		return fmt.Errorf("engine: %s is not managed by this engine", hash)
+	}
+	return tr.SetSeedLimits(ratioLimit, timeLimit)
 }
 
 // SetFilePriority changes one file's download priority at runtime — a thin

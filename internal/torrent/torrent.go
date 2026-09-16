@@ -897,6 +897,43 @@ func (t *Torrent) SetSequential(sequential bool) error {
 	}
 }
 
+// SetSuperSeeding turns BEP 16 super-seeding on or off at runtime (Stage
+// 5) — see Config.SuperSeeding's own doc comment for what it does.
+// Enabling only takes effect immediately if this torrent is already
+// Seeding (super-seeding is meaningless before then, per superSeeding's
+// own doc comment) — a known, documented simplification, not a bug:
+// enabling it early just means it activates the next time this exact
+// method is called while Seeding, not automatically the moment a still-
+// downloading torrent finishes. Disabling always takes effect right away,
+// by running the same graduation Have-sweep natural completion already
+// uses.
+func (t *Torrent) SetSuperSeeding(enabled bool) error {
+	return t.sendControlWithReply(controlMsg{kind: ctrlSetSuperSeeding, superSeeding: enabled})
+}
+
+// SetFirstLastPieceFirst toggles Config.FirstLastPieceFirst at runtime —
+// recomputes every piece's priority from scratch, the same way
+// SetFilePriority already does when a single file's priority changes,
+// since this is really the same "boost on top of piecePriorities' own
+// output" mechanism (priority.go's boostFirstAndLastPiece) applied or
+// withdrawn for every non-skip file at once instead of one file at a time.
+func (t *Torrent) SetFirstLastPieceFirst(enabled bool) error {
+	return t.sendControlWithReply(controlMsg{kind: ctrlSetFirstLastPieceFirst, firstLastPieceFirst: enabled})
+}
+
+// SetSeedLimits changes this torrent's own seed ratio/time limits at
+// runtime — a nil argument leaves that particular limit unchanged, the
+// same partial-update convention PatchTorrentOptions already uses at the
+// API layer. Unlike DownLimit/UpLimit (which are shared *ratelimit.Limiter
+// objects mutated in place, no actor round trip needed — see
+// Engine.SetTorrentRateLimit), Config.SeedRatioLimit/SeedTimeLimit are
+// plain values checkSeedLimits reads directly every tick, so changing them
+// safely means going through the control channel like every other
+// actor-owned field.
+func (t *Torrent) SetSeedLimits(ratioLimit *float64, timeLimit *time.Duration) error {
+	return t.sendControlWithReply(controlMsg{kind: ctrlSetSeedLimits, seedRatioLimit: ratioLimit, seedTimeLimit: timeLimit})
+}
+
 // AddTracker adds url to this torrent's tracker list at runtime (3.6), as
 // its own announce-list tier (BEP 12) — the announce loop picks it up on
 // its next iteration (or immediately, if the torrent is Paused and later
@@ -969,6 +1006,26 @@ func (t *Torrent) sendControl(kind controlKind) error {
 	resp := make(chan error, 1)
 	select {
 	case t.control <- controlMsg{kind: kind, errReply: resp}:
+	case <-t.done:
+		return ErrClosed
+	}
+	select {
+	case err := <-resp:
+		return err
+	case <-t.done:
+		return ErrClosed
+	}
+}
+
+// sendControlWithReply is sendControl's counterpart for a control message
+// that carries a payload beyond just its kind — msg's own errReply is
+// filled in here, the same request/response dance sendControl already
+// uses for the zero-payload case.
+func (t *Torrent) sendControlWithReply(msg controlMsg) error {
+	resp := make(chan error, 1)
+	msg.errReply = resp
+	select {
+	case t.control <- msg:
 	case <-t.done:
 		return ErrClosed
 	}

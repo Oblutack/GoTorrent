@@ -107,6 +107,15 @@ func (t *Torrent) handleControl(msg controlMsg) {
 	case ctrlSetSequential:
 		msg.errReply <- t.doSetSequential(msg.sequential)
 
+	case ctrlSetSuperSeeding:
+		msg.errReply <- t.doSetSuperSeeding(msg.superSeeding)
+
+	case ctrlSetFirstLastPieceFirst:
+		msg.errReply <- t.doSetFirstLastPieceFirst(msg.firstLastPieceFirst)
+
+	case ctrlSetSeedLimits:
+		msg.errReply <- t.doSetSeedLimits(msg.seedRatioLimit, msg.seedTimeLimit)
+
 	case ctrlPeers:
 		msg.peersReply <- t.peersSnapshot()
 	}
@@ -215,7 +224,14 @@ func (t *Torrent) doSetMetadata(mi *metainfo.MetaInfo) error {
 // gets requested from peers from this point on.
 func (t *Torrent) doSetFilePriority(fileIndex int, priority picker.Priority) error {
 	mi := t.mi.Load()
-	if mi == nil {
+	if mi == nil || t.pick == nil {
+		// A real, if rare, gap this exact check used to miss: doSetMetadata
+		// stores t.mi before calling openMetadata, so a storage.New/Allocate
+		// failure inside it can leave t.mi non-nil while t.pick was never
+		// assigned — checking mi == nil alone let that reach the
+		// t.pick.SetPriorities call below and panic the actor goroutine.
+		// Found while adding doSetFirstLastPieceFirst's own version of this
+		// same guard, not by a live crash — see its doc comment.
 		return errors.New("torrent: no metadata yet")
 	}
 	n := numFiles(mi)
@@ -282,6 +298,69 @@ func (t *Torrent) doSetSequential(sequential bool) error {
 		strategy = picker.Sequential
 	}
 	t.pick.SetStrategy(strategy)
+	return nil
+}
+
+// doSetSuperSeeding turns BEP 16 super-seeding on or off at runtime — see
+// SetSuperSeeding's own doc comment for the enable/disable asymmetry.
+// Deliberately does NOT check t.pick == nil the way doSetSequential/
+// doSetFilePriority do: superSeeding() already reports false whenever
+// t.State() != StateSeeding, which is true for every metadata-less
+// torrent, so there is no nil-pick path this can actually reach.
+func (t *Torrent) doSetSuperSeeding(enabled bool) error {
+	t.cfg.SuperSeeding = enabled
+	switch {
+	case enabled && t.superSeed == nil && t.State() == StateSeeding && t.pick != nil:
+		t.superSeed = newSuperSeedState(t.pick.Have().Len())
+	case !enabled:
+		t.graduateSuperSeeding()
+	}
+	return nil
+}
+
+// doSetFirstLastPieceFirst toggles Config.FirstLastPieceFirst at runtime,
+// recomputing every piece's priority from scratch — the same
+// piecePriorities + optional boostFirstAndLastPiece sequence openMetadata/
+// doSetFilePriority already run, just applied (or withdrawn) for every
+// non-skip file at once rather than triggered by one file's own change.
+//
+// Checks t.pick == nil, not t.mi == nil — the two are not actually
+// equivalent: doSetMetadata stores t.mi before calling openMetadata, so a
+// storage.New/Allocate failure inside openMetadata (a real, if rare, disk
+// error) can leave t.mi non-nil while t.pick was never assigned. Checking
+// mi == nil alone would let exactly that state reach a nil
+// t.pick.SetPriorities call below and panic the actor goroutine — the
+// identical class of crash doSetSequential's own "no metadata yet" guard
+// was added to prevent. doSetFilePriority had this same gap; it picked up
+// the identical t.pick == nil check while writing this one.
+func (t *Torrent) doSetFirstLastPieceFirst(enabled bool) error {
+	mi := t.mi.Load()
+	if mi == nil || t.pick == nil {
+		return errors.New("torrent: no metadata yet")
+	}
+	t.cfg.FirstLastPieceFirst = enabled
+	pp := piecePriorities(mi, t.filePriorities)
+	if enabled {
+		boostFirstAndLastPiece(mi, t.filePriorities, pp)
+	}
+	if err := t.pick.SetPriorities(pp); err != nil {
+		return fmt.Errorf("torrent: applying priorities: %w", err)
+	}
+	return nil
+}
+
+// doSetSeedLimits changes Config.SeedRatioLimit/SeedTimeLimit at runtime —
+// a nil argument leaves that particular limit unchanged. Safe to call
+// regardless of metadata/state: checkSeedLimits only ever reads these
+// values while actually Seeding, so setting either one early (or on a
+// torrent that never reaches Seeding at all) is harmless.
+func (t *Torrent) doSetSeedLimits(ratioLimit *float64, timeLimit *time.Duration) error {
+	if ratioLimit != nil {
+		t.cfg.SeedRatioLimit = *ratioLimit
+	}
+	if timeLimit != nil {
+		t.cfg.SeedTimeLimit = *timeLimit
+	}
 	return nil
 }
 
