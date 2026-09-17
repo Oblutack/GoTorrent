@@ -250,4 +250,41 @@ public sealed class FakeEngineClient : IEngineClient
         SetFilePriorities.Add((infoHash, fileIndex, priority));
         return Task.CompletedTask;
     }
+
+    public PreviewResponse Preview { get; set; } = new("0102030405060708090a0b0c0d0e0f1011121314", "test.iso", 0, 0, false, []);
+    public string? LastPreviewedFileName { get; private set; }
+    public string? LastPreviewedUrl { get; private set; }
+
+    public Task<PreviewResponse> PreviewFileAsync(byte[] fileBytes, string fileName, CancellationToken cancellationToken)
+    {
+        if (Failure is not null)
+        {
+            return Task.FromException<PreviewResponse>(Failure);
+        }
+        LastPreviewedFileName = fileName;
+        return Task.FromResult(Preview);
+    }
+
+    public Task<PreviewResponse> PreviewUrlAsync(string url, CancellationToken cancellationToken)
+    {
+        if (Failure is not null)
+        {
+            return Task.FromException<PreviewResponse>(Failure);
+        }
+        LastPreviewedUrl = url;
+        return Task.FromResult(Preview);
+    }
+
+    public DiskSpaceResponse DiskSpace { get; set; } = new("", long.MaxValue);
+    public List<string> DiskSpaceRequestedPaths { get; } = [];
+
+    public Task<DiskSpaceResponse> GetDiskSpaceAsync(string path, CancellationToken cancellationToken)
+    {
+        DiskSpaceRequestedPaths.Add(path);
+        if (Failure is not null)
+        {
+            return Task.FromException<DiskSpaceResponse>(Failure);
+        }
+        return Task.FromResult(DiskSpace with { Path = path });
+    }
 }

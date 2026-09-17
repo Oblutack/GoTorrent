@@ -195,6 +195,36 @@ public sealed class EngineClient : IEngineClient, IDisposable
         await EnsureSuccessAsync(response, cancellationToken);
     }
 
+    public async Task<PreviewResponse> PreviewFileAsync(byte[] fileBytes, string fileName, CancellationToken cancellationToken)
+    {
+        using var content = new MultipartFormDataContent
+        {
+            { new ByteArrayContent(fileBytes), "torrent", fileName },
+        };
+        using var response = await _http.PostAsync("api/v1/torrents/preview", content, cancellationToken);
+        return await ReadPreviewOrThrowAsync(response, cancellationToken);
+    }
+
+    public async Task<PreviewResponse> PreviewUrlAsync(string url, CancellationToken cancellationToken)
+    {
+        var body = new PreviewUrlRequest { Url = url };
+        using var response = await _http.PostAsJsonAsync("api/v1/torrents/preview", body, JsonOptions, cancellationToken);
+        return await ReadPreviewOrThrowAsync(response, cancellationToken);
+    }
+
+    public async Task<DiskSpaceResponse> GetDiskSpaceAsync(string path, CancellationToken cancellationToken)
+    {
+        var space = await _http.GetFromJsonAsync<DiskSpaceResponse>($"api/v1/diskspace?path={Uri.EscapeDataString(path)}", JsonOptions, cancellationToken);
+        return space ?? throw new InvalidOperationException("gottrentd returned an empty diskspace response.");
+    }
+
+    private static async Task<PreviewResponse> ReadPreviewOrThrowAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+    {
+        await EnsureSuccessAsync(response, cancellationToken);
+        var preview = await response.Content.ReadFromJsonAsync<PreviewResponse>(JsonOptions, cancellationToken);
+        return preview ?? throw new InvalidOperationException("gottrentd returned an empty preview response.");
+    }
+
     private static async Task<string> ReadInfoHashOrThrowAsync(HttpResponseMessage response, CancellationToken cancellationToken)
     {
         await EnsureSuccessAsync(response, cancellationToken);
@@ -260,6 +290,11 @@ public sealed class EngineClient : IEngineClient, IDisposable
     private sealed class PatchFilePriorityRequest
     {
         public string? Priority { get; set; }
+    }
+
+    private sealed class PreviewUrlRequest
+    {
+        public string? Url { get; set; }
     }
 
     public void Dispose() => _http.Dispose();

@@ -1786,6 +1786,61 @@ public partial class MainViewModel : ViewModelBase, IDisposable
             : _client.SetSessionLimitsAsync(downLimitKB, upLimitKB, CancellationToken.None);
 
     /// <summary>
+    /// Stage 6's disk-space guard for a real .torrent file about to be
+    /// added: previews it (never adds - see <see cref="Models.PreviewResponse"/>'s
+    /// own doc comment) and compares its size against free space at
+    /// <paramref name="downloadDir"/>, returning a warning message if it
+    /// won't fit or null if it's fine. Returns null (nothing to warn
+    /// about, silently) rather than throwing when there's no client, no
+    /// explicit save path (the app has no way to know what gottrentd's
+    /// own default/category path would resolve to without asking it to
+    /// commit to an Add first, which defeats "before adding"), or the
+    /// preview/diskspace calls themselves fail - this check is advisory
+    /// only, never a reason to block Add or show an unrelated error.
+    /// </summary>
+    public Task<string?> CheckDiskSpaceForFileAsync(byte[] fileBytes, string fileName, string? downloadDir) =>
+        CheckDiskSpaceAsync(downloadDir, () => _client!.PreviewFileAsync(fileBytes, fileName, CancellationToken.None));
+
+    /// <summary>The URL half of <see cref="CheckDiskSpaceForFileAsync"/>.</summary>
+    public Task<string?> CheckDiskSpaceForUrlAsync(string url, string? downloadDir) =>
+        CheckDiskSpaceAsync(downloadDir, () => _client!.PreviewUrlAsync(url, CancellationToken.None));
+
+    private async Task<string?> CheckDiskSpaceAsync(string? downloadDir, Func<Task<PreviewResponse>> preview)
+    {
+        if (_client is null || string.IsNullOrWhiteSpace(downloadDir))
+        {
+            return null;
+        }
+        try
+        {
+            var previewResult = await preview();
+            var space = await _client.GetDiskSpaceAsync(downloadDir, CancellationToken.None);
+            if (previewResult.TotalLength <= space.FreeBytes)
+            {
+                return null;
+            }
+            return $"This torrent needs {FormatBytes(previewResult.TotalLength)} but only {FormatBytes(space.FreeBytes)} is free at \"{downloadDir}\".";
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        string[] units = ["B", "KiB", "MiB", "GiB", "TiB"];
+        double value = bytes;
+        var unitIndex = 0;
+        while (value >= 1024 && unitIndex < units.Length - 1)
+        {
+            value /= 1024;
+            unitIndex++;
+        }
+        return FormattableString.Invariant($"{value:0.#} {units[unitIndex]}");
+    }
+
+    /// <summary>
     /// Starts the periodic auto-refresh - a real Avalonia UI-thread
     /// timer, so this is only ever called once a real
     /// Application/Dispatcher exists (from App.axaml.cs, never from

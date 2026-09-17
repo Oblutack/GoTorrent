@@ -19,6 +19,18 @@ public partial class AddTorrentWindow : Window
     private readonly MainViewModel _mainViewModel;
     private string? _selectedFilePath;
 
+    /// <summary>
+    /// Set once a disk-space warning has been shown for the current Add
+    /// click's file/URL/save-path combination, so a second click of Add
+    /// proceeds anyway rather than showing the same warning forever - the
+    /// "warn, don't block" contract this guard is meant to have. Not
+    /// reset if the user changes the selection after seeing a warning
+    /// (a real, accepted simplification: the next Add click just skips a
+    /// re-check rather than re-warning, which is harmless either way
+    /// since this is advisory only).
+    /// </summary>
+    private bool _diskSpaceWarningAcknowledged;
+
     public AddTorrentWindow()
     {
         InitializeComponent();
@@ -90,6 +102,34 @@ public partial class AddTorrentWindow : Window
         AddButton.IsEnabled = false;
         try
         {
+            // Stage 6's disk-space guard - only meaningful for a real
+            // file/URL add with an explicit save path: a magnet has no
+            // known size until peers supply metadata (no preview route
+            // exists for one on the Go side either), and with no save
+            // path typed, the app has no way to know what gottrentd's
+            // own default/category path would resolve to.
+            if (!_diskSpaceWarningAcknowledged)
+            {
+                string? warning = null;
+                if (_selectedFilePath is not null)
+                {
+                    var previewBytes = await File.ReadAllBytesAsync(_selectedFilePath);
+                    warning = await _mainViewModel.CheckDiskSpaceForFileAsync(previewBytes, Path.GetFileName(_selectedFilePath), downloadDir);
+                }
+                else if (!string.IsNullOrWhiteSpace(url))
+                {
+                    warning = await _mainViewModel.CheckDiskSpaceForUrlAsync(url, downloadDir);
+                }
+                if (warning is not null)
+                {
+                    ShowWarning(warning + " Click Add again to add it anyway.");
+                    _diskSpaceWarningAcknowledged = true;
+                    return;
+                }
+            }
+            _diskSpaceWarningAcknowledged = false;
+            WarningText.IsVisible = false;
+
             bool ok;
             if (!string.IsNullOrWhiteSpace(magnet))
             {
@@ -127,7 +167,15 @@ public partial class AddTorrentWindow : Window
 
     private void ShowError(string message)
     {
+        WarningText.IsVisible = false;
         ErrorText.Text = message;
         ErrorText.IsVisible = true;
+    }
+
+    private void ShowWarning(string message)
+    {
+        ErrorText.IsVisible = false;
+        WarningText.Text = message;
+        WarningText.IsVisible = true;
     }
 }

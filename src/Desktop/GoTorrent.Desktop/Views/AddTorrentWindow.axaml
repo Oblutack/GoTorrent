@@ -57,6 +57,7 @@
 
             <CheckBox Name="SequentialCheckBox" Content="Sequential download" Margin="0,10,0,0" />
 
+            <TextBlock Name="WarningText" Foreground="{DynamicResource GtWarn}" TextWrapping="Wrap" IsVisible="False" Margin="0,10,0,0" />
             <TextBlock Name="ErrorText" Foreground="{DynamicResource GtError}" TextWrapping="Wrap" IsVisible="False" Margin="0,10,0,0" />
 
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8" Margin="0,14,0,0">

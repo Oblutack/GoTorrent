@@ -56,4 +56,13 @@ public interface IEngineClient
 
     /// <summary>Changes one file's download priority - <paramref name="priority"/> is gottrentd's lowercase name ("skip"/"low"/"normal"/"high").</summary>
     Task SetFilePriorityAsync(string infoHash, int fileIndex, string priority, CancellationToken cancellationToken);
+
+    /// <summary>Parses a real .torrent file's file list without ever adding it - Stage 6's disk-space guard needs <see cref="PreviewResponse.TotalLength"/> before Add, and there's no other way to learn a torrent's size ahead of time.</summary>
+    Task<PreviewResponse> PreviewFileAsync(byte[] fileBytes, string fileName, CancellationToken cancellationToken);
+
+    /// <summary>Has gottrentd fetch and parse a .torrent file from a URL without adding it - the "or a .torrent URL" half of <see cref="PreviewFileAsync"/>. No magnet equivalent exists on the Go side - see <see cref="Models.PreviewResponse"/>'s own doc comment.</summary>
+    Task<PreviewResponse> PreviewUrlAsync(string url, CancellationToken cancellationToken);
+
+    /// <summary>Reports free disk space at an arbitrary path - Stage 6's disk-space guard, for whatever custom save path the user picked in the Add Torrent dialog.</summary>
+    Task<DiskSpaceResponse> GetDiskSpaceAsync(string path, CancellationToken cancellationToken);
 }

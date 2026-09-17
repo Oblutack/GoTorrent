@@ -48,5 +48,6 @@ func Routes(e *engine.Engine, userAgent, uploadDir string) *http.ServeMux {
 	mux.HandleFunc("PATCH /api/v1/session", PatchSessionHandler(e))
 	mux.HandleFunc("GET /api/v1/events", EventsHandler(e))
 	mux.HandleFunc("GET /api/v1/logs", LogsHandler())
+	mux.HandleFunc("GET /api/v1/diskspace", DiskSpaceHandler())
 	return mux
 }

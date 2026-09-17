@@ -1860,4 +1860,97 @@ public sealed class MainViewModelTests
 
         Assert.False(ok);
     }
+
+    [Fact]
+    public async Task CheckDiskSpaceForFileAsync_WithNoDownloadDir_ReturnsNullWithoutCallingTheClient()
+    {
+        // No explicit save path - the app has no way to know what
+        // gottrentd's own default/category path would resolve to, so
+        // there's nothing to check against.
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+
+        var warning = await viewModel.CheckDiskSpaceForFileAsync([1, 2, 3], "test.torrent", null);
+
+        Assert.Null(warning);
+        Assert.Null(client.LastPreviewedFileName);
+        Assert.Empty(client.DiskSpaceRequestedPaths);
+    }
+
+    [Fact]
+    public async Task CheckDiskSpaceForFileAsync_WhenNotConnected_ReturnsNull()
+    {
+        var (viewModel, _, _) = MakeViewModel();
+
+        var warning = await viewModel.CheckDiskSpaceForFileAsync([1, 2, 3], "test.torrent", "C:/downloads");
+
+        Assert.Null(warning);
+    }
+
+    [Fact]
+    public async Task CheckDiskSpaceForFileAsync_WhenTorrentIsLargerThanFreeSpace_ReturnsAWarning()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        client.Preview = new PreviewResponse("hash", "big.iso", TotalLength: 5L * 1024 * 1024 * 1024, PieceLength: 0, Private: false, []);
+        client.DiskSpace = new DiskSpaceResponse("", FreeBytes: 2L * 1024 * 1024 * 1024);
+
+        var warning = await viewModel.CheckDiskSpaceForFileAsync([1, 2, 3], "big.iso.torrent", "D:/downloads");
+
+        Assert.NotNull(warning);
+        Assert.Contains("D:/downloads", warning);
+        Assert.Equal("big.iso.torrent", client.LastPreviewedFileName);
+        Assert.Equal(["D:/downloads"], client.DiskSpaceRequestedPaths);
+    }
+
+    [Fact]
+    public async Task CheckDiskSpaceForFileAsync_WhenThereIsEnoughFreeSpace_ReturnsNull()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        client.Preview = new PreviewResponse("hash", "small.iso", TotalLength: 1024, PieceLength: 0, Private: false, []);
+        client.DiskSpace = new DiskSpaceResponse("", FreeBytes: 2L * 1024 * 1024 * 1024);
+
+        var warning = await viewModel.CheckDiskSpaceForFileAsync([1, 2, 3], "small.iso.torrent", "D:/downloads");
+
+        Assert.Null(warning);
+    }
+
+    [Fact]
+    public async Task CheckDiskSpaceForFileAsync_WhenTheClientThrows_ReturnsNullRatherThanPropagating()
+    {
+        // Advisory only - a failed preview/diskspace lookup must never
+        // block Add or surface as an unrelated error.
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        client.Failure = new InvalidOperationException("boom");
+
+        var warning = await viewModel.CheckDiskSpaceForFileAsync([1, 2, 3], "test.torrent", "D:/downloads");
+
+        Assert.Null(warning);
+    }
+
+    [Fact]
+    public async Task CheckDiskSpaceForUrlAsync_WhenTorrentIsLargerThanFreeSpace_ReturnsAWarning()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        client.Preview = new PreviewResponse("hash", "big.iso", TotalLength: 5L * 1024 * 1024 * 1024, PieceLength: 0, Private: false, []);
+        client.DiskSpace = new DiskSpaceResponse("", FreeBytes: 2L * 1024 * 1024 * 1024);
+
+        var warning = await viewModel.CheckDiskSpaceForUrlAsync("https://example.com/big.iso.torrent", "D:/downloads");
+
+        Assert.NotNull(warning);
+        Assert.Equal("https://example.com/big.iso.torrent", client.LastPreviewedUrl);
+    }
 }
