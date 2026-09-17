@@ -1039,6 +1039,26 @@ public partial class MainViewModel : ViewModelBase, IDisposable
     }
 
     /// <summary>
+    /// Selects a torrent regardless of the current sidebar filter/search
+    /// text - the command palette's "jump to torrent" entries call this
+    /// rather than setting <see cref="SelectedTorrent"/> directly, since a
+    /// torrent excluded by the live filter (a different status, or a
+    /// search query that no longer matches its name) would otherwise not
+    /// actually appear selected in the DataGrid at all: it simply isn't in
+    /// <see cref="DisplayedTorrents"/>, the grid's own bound collection.
+    /// Clearing both first (via <see cref="SearchText"/>/
+    /// <see cref="SelectedFilter"/>, whose setters already run
+    /// <see cref="ApplyFilter"/> synchronously) guarantees the torrent is
+    /// back in view before it's actually selected.
+    /// </summary>
+    public void JumpToTorrent(TorrentRowViewModel torrent)
+    {
+        SearchText = string.Empty;
+        SelectedFilter = SidebarFilters.Count > 0 ? SidebarFilters[0] : new SidebarFilter(SidebarFilter.AllKey, "All");
+        SelectedTorrent = torrent;
+    }
+
+    /// <summary>
     /// Fetches the detail pane's four tabs for whatever torrent is
     /// currently selected. Called after every auto-refresh tick (so the
     /// detail pane stays live while a torrent is selected) and directly

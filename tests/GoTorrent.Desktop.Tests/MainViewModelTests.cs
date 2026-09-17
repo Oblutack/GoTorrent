@@ -1814,6 +1814,48 @@ public sealed class MainViewModelTests
     }
 
     [Fact]
+    public async Task JumpToTorrent_ClearsAnExcludingSearchTextAndSelectsTheTorrent()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        client.Torrents.Add(MakeTorrent("Ubuntu.iso") with { InfoHash = "1111111111111111111111111111111111111111" });
+        client.Torrents.Add(MakeTorrent("Debian.iso") with { InfoHash = "2222222222222222222222222222222222222222" });
+        await viewModel.RefreshAsync();
+        viewModel.SearchText = "ubuntu";
+        var debian = viewModel.Torrents.Single(t => t.Name == "Debian.iso");
+        Assert.DoesNotContain(debian, viewModel.DisplayedTorrents);
+
+        viewModel.JumpToTorrent(debian);
+
+        Assert.Equal(string.Empty, viewModel.SearchText);
+        Assert.Same(debian, viewModel.SelectedTorrent);
+        Assert.Contains(debian, viewModel.DisplayedTorrents);
+    }
+
+    [Fact]
+    public async Task JumpToTorrent_ResetsAnExcludingSidebarFilterAndSelectsTheTorrent()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        client.Torrents.Add(MakeTorrent("Ubuntu.iso") with { InfoHash = "1111111111111111111111111111111111111111", State = "Downloading" });
+        client.Torrents.Add(MakeTorrent("Debian.iso") with { InfoHash = "2222222222222222222222222222222222222222", State = "Seeding" });
+        await viewModel.RefreshAsync();
+        viewModel.SelectedFilter = viewModel.SidebarFilters.Single(f => f.Label == "Downloading");
+        var debian = viewModel.Torrents.Single(t => t.Name == "Debian.iso");
+        Assert.DoesNotContain(debian, viewModel.DisplayedTorrents);
+
+        viewModel.JumpToTorrent(debian);
+
+        Assert.Equal("All", viewModel.SelectedFilter.Label);
+        Assert.Same(debian, viewModel.SelectedTorrent);
+        Assert.Contains(debian, viewModel.DisplayedTorrents);
+    }
+
+    [Fact]
     public async Task ApplyFilter_IncludesADistinctCategoryFromTorrents()
     {
         var (viewModel, client, _) = MakeViewModel();

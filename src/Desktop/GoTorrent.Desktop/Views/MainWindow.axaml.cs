@@ -295,6 +295,17 @@ public partial class MainWindow : Window
         {
             return;
         }
+        // Ctrl+K opens the command palette regardless of what has focus -
+        // deliberately checked before the TextBox guard below, unlike
+        // every other shortcut here, since a real command palette (VSCode,
+        // every modern editor) is expected to work even while the user is
+        // mid-way through typing in the search box.
+        if (e.Key == Key.K && e.KeyModifiers == KeyModifiers.Control)
+        {
+            OpenCommandPalette(mainViewModel);
+            e.Handled = true;
+            return;
+        }
         if (FocusManager?.GetFocusedElement() is TextBox)
         {
             return;
@@ -327,6 +338,70 @@ public partial class MainWindow : Window
                 e.Handled = true;
                 break;
         }
+    }
+
+    /// <summary>
+    /// Builds the full entry list and shows the palette - the entries
+    /// themselves are computed fresh every time it's opened (not cached),
+    /// so a torrent added or removed since the last time is always
+    /// reflected without any invalidation logic to get wrong.
+    /// </summary>
+    private async void OpenCommandPalette(MainViewModel mainViewModel)
+    {
+        var dialog = new CommandPaletteWindow(BuildCommandPaletteEntries(mainViewModel));
+        await dialog.ShowDialog(this);
+    }
+
+    /// <summary>
+    /// One entry per real torrent (fuzzy jump, via <see cref="MainViewModel.JumpToTorrent"/>
+    /// so it works regardless of the current sidebar filter/search text),
+    /// plus a fixed set of actions - reusing the exact same
+    /// commands/dialog-opening methods the toolbar and context menu
+    /// already call, rather than a second copy of what each one does.
+    /// Selection-dependent actions are only offered when there's actually
+    /// something for them to act on - an entry that would silently no-op
+    /// is worse than not listing it at all.
+    /// </summary>
+    private List<CommandPaletteEntry> BuildCommandPaletteEntries(MainViewModel mainViewModel)
+    {
+        var entries = new List<CommandPaletteEntry>();
+
+        foreach (var torrent in mainViewModel.Torrents)
+        {
+            entries.Add(new CommandPaletteEntry("Jump to torrent", torrent.Name, () => mainViewModel.JumpToTorrent(torrent)));
+        }
+
+        entries.Add(new CommandPaletteEntry("Action", "Add torrent...", () => OnAddTorrentClick(this, new RoutedEventArgs())));
+        entries.Add(new CommandPaletteEntry("Action", "Open preferences", () => OnPreferencesClick(this, new RoutedEventArgs())));
+        entries.Add(new CommandPaletteEntry("Action", "Open statistics", () => OnStatisticsClick(this, new RoutedEventArgs())));
+        entries.Add(new CommandPaletteEntry("Action", "Refresh now", () => _ = mainViewModel.RefreshAsync()));
+        entries.Add(new CommandPaletteEntry("Action", $"Switch to {(mainViewModel.LightTheme ? "dark" : "light")} theme", () => mainViewModel.SetLightTheme(!mainViewModel.LightTheme)));
+        entries.Add(new CommandPaletteEntry("Action", $"Switch to {(mainViewModel.CompactDensity ? "comfortable" : "compact")} row density", () => mainViewModel.SetCompactDensity(!mainViewModel.CompactDensity)));
+
+        if (mainViewModel.SelectedTorrents.Count > 0)
+        {
+            var plural = mainViewModel.SelectedTorrents.Count > 1;
+            var suffix = plural ? $" ({mainViewModel.SelectedTorrents.Count} torrents)" : string.Empty;
+            entries.Add(new CommandPaletteEntry("Action", $"Pause selected{suffix}", () => mainViewModel.PauseSelectedCommand.Execute(null)));
+            entries.Add(new CommandPaletteEntry("Action", $"Resume selected{suffix}", () => mainViewModel.ResumeSelectedCommand.Execute(null)));
+            entries.Add(new CommandPaletteEntry("Action", $"Force recheck selected{suffix}", () => mainViewModel.VerifySelectedCommand.Execute(null)));
+            entries.Add(new CommandPaletteEntry("Action", $"Reannounce selected{suffix}", () => mainViewModel.ReannounceSelectedCommand.Execute(null)));
+            entries.Add(new CommandPaletteEntry("Action", $"Toggle force start{suffix}", () => mainViewModel.ToggleForceStartCommand.Execute(null)));
+            entries.Add(new CommandPaletteEntry("Action", $"Enable sequential download{suffix}", () => mainViewModel.EnableSequentialCommand.Execute(null)));
+            entries.Add(new CommandPaletteEntry("Action", $"Disable sequential download{suffix}", () => mainViewModel.DisableSequentialCommand.Execute(null)));
+            entries.Add(new CommandPaletteEntry("Action", $"Move to top of queue{suffix}", () => mainViewModel.MoveQueueTopCommand.Execute(null)));
+            entries.Add(new CommandPaletteEntry("Action", $"Delete selected{suffix}", () => mainViewModel.DeleteSelectedCommand.Execute(null)));
+            entries.Add(new CommandPaletteEntry("Action", $"Set category...{suffix}", () => OnSetCategoryClick(this, new RoutedEventArgs())));
+        }
+
+        if (mainViewModel.SelectedTorrent is not null)
+        {
+            entries.Add(new CommandPaletteEntry("Action", "Set tags...", () => OnSetTagsClick(this, new RoutedEventArgs())));
+            entries.Add(new CommandPaletteEntry("Action", "Set speed limits...", () => OnSetSpeedLimitsClick(this, new RoutedEventArgs())));
+            entries.Add(new CommandPaletteEntry("Action", "Move data location...", () => OnSetLocationClick(this, new RoutedEventArgs())));
+        }
+
+        return entries;
     }
 
     private static void TogglePauseResume(MainViewModel mainViewModel)

@@ -1,0 +1,47 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:chrome="using:Avalonia.Controls.Chrome"
+        xmlns:views="using:GoTorrent.Desktop.Views"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d" d:DesignWidth="520" d:DesignHeight="420"
+        x:Class="GoTorrent.Desktop.Views.CommandPaletteWindow"
+        Width="520" Height="420" CanResize="False"
+        WindowStartupLocation="CenterOwner"
+        Background="{DynamicResource GtBackground}"
+        Icon="/Assets/app-icon.ico"
+        ExtendClientAreaToDecorationsHint="True"
+        WindowDecorations="None"
+        ExtendClientAreaTitleBarHeightHint="-1"
+        Title="Command Palette">
+
+    <Grid RowDefinitions="32,*">
+        <Grid Grid.Row="0" ColumnDefinitions="Auto,*,Auto"
+              Background="{DynamicResource GtTitleBar}"
+              chrome:WindowDecorationProperties.ElementRole="TitleBar">
+            <Image Grid.Column="0" Source="/Assets/app-icon.ico" Width="14" Height="14" Margin="10,0,6,0" />
+            <TextBlock Grid.Column="1" Text="Command Palette" VerticalAlignment="Center" FontSize="12" Foreground="{DynamicResource GtSubtle}" />
+            <Button Grid.Column="2" Classes="caption captionClose" Click="OnCloseClick"
+                    chrome:WindowDecorationProperties.ElementRole="CloseButton">
+                <Path Data="M0,0 L10,10 M10,0 L0,10" StrokeThickness="1" />
+            </Button>
+        </Grid>
+
+        <Grid Grid.Row="1" RowDefinitions="Auto,*" Margin="12">
+            <TextBox Grid.Row="0" Name="QueryBox" PlaceholderText="Jump to a torrent, or run a command..."
+                      KeyDown="OnQueryBoxKeyDown" />
+            <ListBox Grid.Row="1" Name="ResultsList" Margin="0,8,0,0"
+                      DoubleTapped="OnResultsListDoubleTapped">
+                <ListBox.ItemTemplate>
+                    <DataTemplate x:DataType="views:CommandPaletteEntry">
+                        <StackPanel Orientation="Horizontal" Spacing="10" Margin="4,3">
+                            <TextBlock Text="{Binding Category}" Foreground="{DynamicResource GtSubtle}" Width="130" TextTrimming="CharacterEllipsis" />
+                            <TextBlock Text="{Binding Label}" TextTrimming="CharacterEllipsis" />
+                        </StackPanel>
+                    </DataTemplate>
+                </ListBox.ItemTemplate>
+            </ListBox>
+        </Grid>
+    </Grid>
+
+</Window>
