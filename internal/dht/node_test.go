@@ -3,6 +3,7 @@ package dht
 import (
 	"context"
 	"net"
+	"sync"
 	"testing"
 	"time"
 )
@@ -280,6 +281,47 @@ func TestRoutingTableStatePersistsAcrossRestart(t *testing.T) {
 	defer second.Close()
 
 	if got := second.table.FindClosest(other.ID(), 1); len(got) != 1 || got[0].id != other.ID() {
+		t.Fatalf("reloaded table does not contain the persisted contact: %+v", got)
+	}
+}
+
+// TestCloseIsIdempotentAndSavesStateExactlyOnce pins down a real bug: Close
+// is genuinely called more than once on the same node in practice —
+// engine.Engine.Shutdown closes dhtNode directly, while StartDHT's own
+// ctx-cancellation watcher goroutine calls Close independently and
+// unsynchronized when its caller's ctx is cancelled, which in a real
+// gottrentd/gottrent shutdown fires around the same time as Shutdown.
+// saveState used to run again on every extra call, outside any
+// synchronization with the first call's own write — a real, observed
+// failure was a test's t.TempDir() cleanup racing a still-in-flight second
+// write and failing with "directory not empty". Calling Close from several
+// goroutines at once must not panic and must leave the state file exactly
+// as a single Close would.
+func TestCloseIsIdempotentAndSavesStateExactlyOnce(t *testing.T) {
+	statePath := t.TempDir() + "/dht.nodes"
+	d, err := New(Config{Port: 0, StatePath: statePath})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	other := newTestNode(t)
+	d.table.Insert(other.ID(), loopback(other))
+
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			d.Close()
+		}()
+	}
+	wg.Wait()
+
+	reloaded, err := New(Config{Port: 0, StatePath: statePath})
+	if err != nil {
+		t.Fatalf("New (reload): %v", err)
+	}
+	defer reloaded.Close()
+	if got := reloaded.table.FindClosest(other.ID(), 1); len(got) != 1 || got[0].id != other.ID() {
 		t.Fatalf("reloaded table does not contain the persisted contact: %+v", got)
 	}
 }

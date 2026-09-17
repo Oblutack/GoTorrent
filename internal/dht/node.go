@@ -70,6 +70,20 @@ type DHT struct {
 	closeOnce sync.Once
 	done      chan struct{}
 	wg        sync.WaitGroup
+
+	// saveOnce guards the routing-table save in Close, separately from
+	// closeOnce above — Close can genuinely be called more than once on
+	// the same node (engine.Engine's Shutdown closes dhtNode directly,
+	// while StartDHT's own ctx-cancellation watcher goroutine calls Close
+	// independently and unsynchronized when its caller's ctx is
+	// cancelled, which in practice fires around the same time as
+	// Shutdown during a real gottrentd/gottrent exit). Without this,
+	// saveState ran again on every extra Close call — a real, observed
+	// bug: two unsynchronized writes to the same state file, one of
+	// which could still be in flight when a test's own TempDir cleanup
+	// tried to remove that now-briefly-repopulated directory, failing
+	// with "directory not empty".
+	saveOnce sync.Once
 }
 
 type peerEntry struct {
@@ -128,7 +142,9 @@ func (d *DHT) NodeCount() int { return d.table.Count() }
 
 // Close shuts the node down: the socket is closed (unblocking readLoop), the
 // maintenance goroutine stops, and — if StatePath was set — the routing
-// table is saved one last time.
+// table is saved one last time. Safe to call more than once (see saveOnce's
+// own doc comment for why that actually happens in practice) — every call
+// after the first is a no-op.
 func (d *DHT) Close() error {
 	d.closeOnce.Do(func() {
 		close(d.done)
@@ -136,7 +152,7 @@ func (d *DHT) Close() error {
 	})
 	d.wg.Wait()
 	if d.statePath != "" {
-		d.saveState()
+		d.saveOnce.Do(d.saveState)
 	}
 	return nil
 }
