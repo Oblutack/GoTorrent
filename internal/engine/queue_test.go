@@ -137,6 +137,77 @@ func TestForceStartBypassesTheLimit(t *testing.T) {
 	}
 }
 
+// TestQueueHeldReflectsWhyATorrentIsPaused proves Summary.QueueHeld is true
+// only for a torrent the queue itself paused (a slot will free up once
+// another torrent finishes or is paused), and false both for one that's
+// actually running and for one paused directly by a caller - Stage 6's
+// "why is this slow?" diagnostics panel needs to tell those apart.
+func TestQueueHeldReflectsWhyATorrentIsPaused(t *testing.T) {
+	e, err := New(t.TempDir(), Defaults{
+		DownloadDir:        t.TempDir(),
+		ResumeDir:          t.TempDir(),
+		MaxActiveDownloads: 1,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(e.Shutdown)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	e.StartQueue(ctx)
+
+	hashes := addDeadTorrents(t, e, 2)
+	waitUntil(t, 5*time.Second, "did not settle at exactly 1 Downloading", func() bool {
+		return countState(e, hashes, torrent.StateDownloading) == 1
+	})
+	waitUntil(t, 5*time.Second, "did not settle at exactly 1 Paused", func() bool {
+		return countState(e, hashes, torrent.StatePaused) == 1
+	})
+
+	running, ok := e.GetSummary(hashes[0])
+	if !ok {
+		t.Fatal("GetSummary: torrent 0 missing")
+	}
+	if running.QueueHeld {
+		t.Fatal("the running torrent reports QueueHeld = true, want false")
+	}
+
+	held, ok := e.GetSummary(hashes[1])
+	if !ok {
+		t.Fatal("GetSummary: torrent 1 missing")
+	}
+	if !held.QueueHeld {
+		t.Fatal("the queue-paused torrent reports QueueHeld = false, want true")
+	}
+
+	// A torrent the queue paused, then a caller pauses directly too
+	// (redundant here, but the real case is pausing a torrent the queue
+	// never touched) - queueHeld is what the queue itself set, and a
+	// direct Pause doesn't change it either way here. What actually
+	// distinguishes "queue-held" from "a direct user Pause" is which
+	// torrent the queue chose to hold back in the first place - proven
+	// above by the running/held split; this call only checks that a
+	// torrent the queue never held (torrent 0, forced to Pause directly)
+	// reports QueueHeld = false, not true just because it's Paused.
+	tr, ok := e.Get(hashes[0])
+	if !ok {
+		t.Fatal("Get: torrent 0 missing")
+	}
+	if err := tr.Pause(); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+	waitUntil(t, 2*time.Second, "torrent 0 never reached Paused", func() bool {
+		return tr.State() == torrent.StatePaused
+	})
+	directlyPaused, ok := e.GetSummary(hashes[0])
+	if !ok {
+		t.Fatal("GetSummary: torrent 0 missing after direct Pause")
+	}
+	if directlyPaused.QueueHeld {
+		t.Fatal("a directly-Paused torrent (never held by the queue) reports QueueHeld = true, want false")
+	}
+}
+
 func TestSetQueuePositionReordersWhichRun(t *testing.T) {
 	e, err := New(t.TempDir(), Defaults{
 		DownloadDir:        t.TempDir(),

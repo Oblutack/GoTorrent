@@ -267,7 +267,7 @@
 
                 <TabControl Grid.Row="2" IsVisible="{Binding SelectedTorrent, Converter={x:Static conv:ObjectConverters.IsNotNull}}">
                     <TabItem Header="General">
-                        <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto" Margin="8" RowSpacing="4" ColumnSpacing="8">
+                        <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto" Margin="8" RowSpacing="4" ColumnSpacing="8">
                             <TextBlock Grid.Row="0" Grid.Column="0" FontWeight="Bold" Text="Name" />
                             <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding DetailTorrent.Name}" />
                             <TextBlock Grid.Row="1" Grid.Column="0" FontWeight="Bold" Text="Info Hash" />
@@ -302,6 +302,15 @@
                                 <TextBlock Text="{Binding SelectedTorrent.DownloadRateKBps, Converter={StaticResource KBpsDisplay}}" VerticalAlignment="Center" Foreground="{DynamicResource GtDownload}" />
                                 <TextBlock Text="{Binding SelectedTorrent.UploadRateKBps, Converter={StaticResource KBpsDisplay}}" VerticalAlignment="Center" Foreground="{DynamicResource GtUpload}" />
                             </StackPanel>
+                            <TextBlock Grid.Row="13" Grid.Column="0" FontWeight="Bold" Text="Diagnosis" VerticalAlignment="Top"
+                                        IsVisible="{Binding DiagnosisMessages, Converter={StaticResource CollectionEmpty}, ConverterParameter=Invert}" />
+                            <ItemsControl Grid.Row="13" Grid.Column="1" ItemsSource="{Binding DiagnosisMessages}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate x:DataType="x:String">
+                                        <TextBlock Text="{Binding}" Foreground="{DynamicResource GtWarn}" TextWrapping="Wrap" />
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
                         </Grid>
                     </TabItem>
                     <TabItem Header="Files">

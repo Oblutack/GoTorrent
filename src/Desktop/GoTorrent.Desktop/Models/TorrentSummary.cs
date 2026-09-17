@@ -23,7 +23,10 @@ public sealed record TorrentSummary(
     string? Category,
     IReadOnlyList<string>? Tags,
     int QueuePosition,
-    bool ForceStart)
+    bool ForceStart,
+    int SeedCount = 0,
+    int LeechCount = 0,
+    bool QueueHeld = false)
 {
     public double ProgressFraction => TotalLength == 0 ? 0 : (double)(TotalLength - Left) / TotalLength;
 }

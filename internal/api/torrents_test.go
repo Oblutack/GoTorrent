@@ -143,6 +143,14 @@ func TestListTorrentsHandlerReturnsEveryManagedTorrent(t *testing.T) {
 	if got[0].State != torrent.StateDownloading {
 		t.Fatalf("State = %v, want Downloading", got[0].State)
 	}
+	// A fleet with no MaxActiveDownloads/MaxActiveSeeds/MaxActiveTotal
+	// configured never queue-holds anything - the real "actually held by
+	// the queue" case is covered at the engine level
+	// (TestQueueHeldReflectsWhyATorrentIsPaused), this just proves the
+	// field reaches the real JSON response at all.
+	if got[0].QueueHeld {
+		t.Fatal("QueueHeld = true for a torrent with no queue limits configured, want false")
+	}
 }
 
 func TestListTorrentsHandlerEmptyFleetReturnsEmptyArray(t *testing.T) {

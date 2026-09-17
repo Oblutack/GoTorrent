@@ -36,6 +36,12 @@ type TorrentSummary struct {
 	Tags            []string      `json:"tags,omitempty"`
 	QueuePosition   int           `json:"queuePosition"`
 	ForceStart      bool          `json:"forceStart"`
+	// QueueHeld is true only when the queue itself is why this torrent is
+	// Paused (a slot will free up once another torrent finishes or is
+	// paused) - never for a direct user Pause or a seed-limit auto-pause.
+	// Stage 6's "why is this slow?" diagnostics panel needs this to tell
+	// "queue-held, nothing actually wrong" apart from every other reason.
+	QueueHeld bool `json:"queueHeld"`
 	// AddedOn is when this torrent was first added - persisted in the
 	// manifest (see engine.Summary.AddedAt), so it survives a restart
 	// rather than resetting to "now" on every reload.
@@ -89,6 +95,7 @@ func summaryDTO(s engine.Summary) TorrentSummary {
 		Tags:            s.Tags,
 		QueuePosition:   s.QueuePosition,
 		ForceStart:      s.ForceStart,
+		QueueHeld:       s.QueueHeld,
 		AddedOn:         s.AddedAt,
 	}
 	if !s.CompletedAt.IsZero() {

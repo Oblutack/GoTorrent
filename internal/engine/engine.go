@@ -195,6 +195,14 @@ type Summary struct {
 	// state), so a reload starts everyone back at Add order.
 	QueuePosition int
 	ForceStart    bool
+	// QueueHeld is queue.go's own reason a Paused torrent is Paused — true
+	// only when the queue itself is what's holding it back (a slot will
+	// free up once another torrent finishes or is paused), never for a
+	// direct user Pause or 3.4's seed-limit auto-pause. Surfaced
+	// (Stage 6's "why is this slow?" diagnostics panel) so a client can
+	// tell "queue-held, nothing wrong" apart from every other reason a
+	// torrent might not be moving.
+	QueueHeld bool
 	// Category and Tags are 3.5's organization metadata — see AddOptions,
 	// SetCategory, and SetTags. Both are persisted in the manifest, unlike
 	// QueuePosition/ForceStart.
@@ -680,6 +688,7 @@ func summaryLocked(hash metainfo.Hash, mt *managedTorrent) Summary {
 		Private:       private,
 		QueuePosition: mt.queuePos,
 		ForceStart:    mt.forceStart,
+		QueueHeld:     mt.queueHeld,
 		Category:      mt.category,
 		Tags:          append([]string(nil), mt.tags...),
 		AddedAt:       mt.addedAt,

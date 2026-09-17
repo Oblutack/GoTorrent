@@ -28,7 +28,10 @@ public sealed record TorrentDetail(
     string DownloadDir,
     string? ContentPath,
     bool InEndgame,
-    double SeedingDurationSeconds)
+    double SeedingDurationSeconds,
+    int SeedCount = 0,
+    int LeechCount = 0,
+    bool QueueHeld = false)
 {
     public double ProgressFraction => TotalLength == 0 ? 0 : (double)(TotalLength - Left) / TotalLength;
 }

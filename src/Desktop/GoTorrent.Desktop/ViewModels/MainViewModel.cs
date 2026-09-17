@@ -173,6 +173,18 @@ public partial class MainViewModel : ViewModelBase, IDisposable
     [ObservableProperty]
     public partial ObservableCollection<bool> PieceHave { get; set; } = [];
 
+    /// <summary>
+    /// Stage 6's "why is this slow?" diagnostics panel - see
+    /// <see cref="RecomputeDiagnosisAsync"/> for what each message means
+    /// and where it comes from. Empty when nothing is selected or
+    /// nothing noteworthy was found for a torrent that isn't
+    /// <c>Downloading</c>/<c>Paused</c>/<c>FetchingMetadata</c>/
+    /// <c>CheckingFiles</c> (a <c>Seeding</c> or <c>Error</c> torrent has
+    /// nothing this panel is meant to diagnose).
+    /// </summary>
+    [ObservableProperty]
+    public partial IReadOnlyList<string> DiagnosisMessages { get; set; } = [];
+
     [ObservableProperty]
     public partial ObservableCollection<double> DownloadRateHistory { get; set; } = [];
 
@@ -1047,6 +1059,7 @@ public partial class MainViewModel : ViewModelBase, IDisposable
             DetailPeers = [];
             DetailTrackers = [];
             PieceHave = [];
+            DiagnosisMessages = [];
             return;
         }
         var hash = SelectedTorrent.InfoHash;
@@ -1060,6 +1073,7 @@ public partial class MainViewModel : ViewModelBase, IDisposable
             DetailFiles = new ObservableCollection<FileEntry>(files);
             DetailTrackers = new ObservableCollection<TrackerEntry>(trackers);
             PieceHave = new ObservableCollection<bool>(pieces.ToHaveArray());
+            await RecomputeDiagnosisAsync(detail, trackers, token);
         }
         catch (OperationCanceledException)
         {
@@ -1069,6 +1083,82 @@ public partial class MainViewModel : ViewModelBase, IDisposable
         {
             ConnectionError = ex.Message;
         }
+    }
+
+    /// <summary>
+    /// Stage 6's "why is this slow?" diagnostics panel - every symptom
+    /// checked here is already in gottrentd's real API (Go-side Stage 5
+    /// added the one genuinely missing piece, <c>QueueHeld</c>), nobody
+    /// had ever surfaced it as a single answer before. Recomputed every
+    /// time <see cref="LoadSelectedDetailAsync"/> runs (every 2s while a
+    /// torrent is selected, same cadence as everything else in the detail
+    /// pane) rather than behind a separate manual "diagnose" button, so
+    /// it stays live like the rest of this pane instead of needing to be
+    /// re-triggered by hand. <paramref name="trackers"/> and
+    /// <paramref name="detail"/> are the ones this same call already just
+    /// fetched, not re-fetched here; peer choke state comes from
+    /// <see cref="DetailPeers"/>, kept live by the separate 1Hz peer
+    /// refresh - reusing it here rather than a second peer fetch means
+    /// this can be at most ~1s stale, harmless for an advisory message.
+    /// </summary>
+    private async Task RecomputeDiagnosisAsync(TorrentDetail detail, IReadOnlyList<TrackerEntry> trackers, CancellationToken cancellationToken)
+    {
+        var messages = new List<string>();
+
+        switch (detail.State)
+        {
+            case "Paused":
+                messages.Add(detail.QueueHeld
+                    ? "Paused: waiting in the queue for a slot to free up."
+                    : "Paused.");
+                break;
+            case "FetchingMetadata":
+                messages.Add("Fetching metadata from peers - needs at least one peer that already has it.");
+                break;
+            case "CheckingFiles":
+                messages.Add("Verifying existing data on disk.");
+                break;
+            case "Downloading":
+                if (detail.PeerCount == 0)
+                {
+                    messages.Add("No peers connected.");
+                }
+                else if (detail.SeedCount == 0)
+                {
+                    messages.Add("No seeds connected - some pieces may be unavailable until one joins.");
+                }
+                else if (DetailPeers.Count > 0 && DetailPeers.All(p => p.PeerChoking))
+                {
+                    messages.Add("Every connected peer is choking this download right now.");
+                }
+                if (trackers.Count > 0 && trackers.All(t => !string.IsNullOrEmpty(t.LastError)))
+                {
+                    messages.Add("Every tracker is failing - relying on DHT/PEX/LSD for peers, if enabled.");
+                }
+                if (_client is not null)
+                {
+                    try
+                    {
+                        var limits = await _client.GetSessionLimitsAsync(cancellationToken);
+                        if (limits.DownLimitKB > 0)
+                        {
+                            messages.Add($"Fleet-wide download speed is capped at {limits.DownLimitKB} KiB/s.");
+                        }
+                    }
+                    catch
+                    {
+                        // Advisory only - a failed limits lookup shouldn't
+                        // blank out whatever else was already found.
+                    }
+                }
+                if (messages.Count == 0)
+                {
+                    messages.Add("No obvious cause found - this should be downloading normally.");
+                }
+                break;
+        }
+
+        DiagnosisMessages = messages;
     }
 
     /// <summary>

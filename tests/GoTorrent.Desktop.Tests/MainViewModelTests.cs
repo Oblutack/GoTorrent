@@ -812,6 +812,149 @@ public sealed class MainViewModelTests
         Assert.Single(viewModel.DetailTrackers);
     }
 
+    /// <summary>
+    /// Sets up a real connected/selected torrent the same way every other
+    /// <c>LoadSelectedDetailAsync</c> test does, then overrides
+    /// <see cref="FakeEngineClient.Detail"/> with <paramref name="detail"/>
+    /// before loading it - shared setup for Stage 6's "why is this slow?"
+    /// diagnostics panel tests below, which differ only in what
+    /// <see cref="TorrentDetail"/>/trackers/peers/session-limits state
+    /// they feed in.
+    /// </summary>
+    private static async Task<(MainViewModel ViewModel, FakeEngineClient Client)> SetUpForDiagnosis(TorrentDetail detail)
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        var torrent = MakeTorrent("ubuntu.iso");
+        client.Torrents.Add(torrent);
+        await viewModel.RefreshAsync();
+        viewModel.SelectedTorrent = viewModel.Torrents[0];
+        client.Detail = detail;
+        return (viewModel, client);
+    }
+
+    [Fact]
+    public async Task DiagnosisMessages_ForAQueueHeldPausedTorrent_NamesTheQueue()
+    {
+        var (viewModel, _) = await SetUpForDiagnosis(MakeDetail("ubuntu.iso") with { State = "Paused", QueueHeld = true });
+
+        await viewModel.LoadSelectedDetailAsync();
+
+        Assert.Contains(viewModel.DiagnosisMessages, m => m.Contains("queue"));
+    }
+
+    [Fact]
+    public async Task DiagnosisMessages_ForADirectlyPausedTorrent_DoesNotMentionTheQueue()
+    {
+        var (viewModel, _) = await SetUpForDiagnosis(MakeDetail("ubuntu.iso") with { State = "Paused", QueueHeld = false });
+
+        await viewModel.LoadSelectedDetailAsync();
+
+        Assert.DoesNotContain(viewModel.DiagnosisMessages, m => m.Contains("queue"));
+    }
+
+    [Fact]
+    public async Task DiagnosisMessages_ForFetchingMetadata_MentionsMetadata()
+    {
+        var (viewModel, _) = await SetUpForDiagnosis(MakeDetail("ubuntu.iso") with { State = "FetchingMetadata" });
+
+        await viewModel.LoadSelectedDetailAsync();
+
+        Assert.Contains(viewModel.DiagnosisMessages, m => m.Contains("metadata"));
+    }
+
+    [Fact]
+    public async Task DiagnosisMessages_ForCheckingFiles_MentionsVerifying()
+    {
+        var (viewModel, _) = await SetUpForDiagnosis(MakeDetail("ubuntu.iso") with { State = "CheckingFiles" });
+
+        await viewModel.LoadSelectedDetailAsync();
+
+        Assert.Contains(viewModel.DiagnosisMessages, m => m.Contains("Verifying"));
+    }
+
+    [Fact]
+    public async Task DiagnosisMessages_ForDownloadingWithNoPeers_MentionsNoPeers()
+    {
+        var (viewModel, _) = await SetUpForDiagnosis(MakeDetail("ubuntu.iso") with { State = "Downloading", PeerCount = 0 });
+
+        await viewModel.LoadSelectedDetailAsync();
+
+        Assert.Contains(viewModel.DiagnosisMessages, m => m.Contains("No peers"));
+    }
+
+    [Fact]
+    public async Task DiagnosisMessages_ForDownloadingWithPeersButNoSeeds_MentionsNoSeeds()
+    {
+        var (viewModel, _) = await SetUpForDiagnosis(MakeDetail("ubuntu.iso") with { State = "Downloading", PeerCount = 2, SeedCount = 0 });
+
+        await viewModel.LoadSelectedDetailAsync();
+
+        Assert.Contains(viewModel.DiagnosisMessages, m => m.Contains("No seeds"));
+    }
+
+    [Fact]
+    public async Task DiagnosisMessages_ForDownloadingWithEveryPeerChoking_MentionsChoking()
+    {
+        var (viewModel, client) = await SetUpForDiagnosis(MakeDetail("ubuntu.iso") with { State = "Downloading", PeerCount = 2, SeedCount = 1 });
+        client.Peers.Add(new PeerEntry("127.0.0.1:6881", true, 0, 0, false, true, true, true, 0.1));
+        client.Peers.Add(new PeerEntry("127.0.0.1:6882", true, 0, 0, false, true, true, true, 0.2));
+
+        await viewModel.LoadSelectedDetailAsync();
+        await viewModel.RefreshPeerRatesAsync();
+        await viewModel.LoadSelectedDetailAsync();
+
+        Assert.Contains(viewModel.DiagnosisMessages, m => m.Contains("choking"));
+    }
+
+    [Fact]
+    public async Task DiagnosisMessages_ForDownloadingWithEveryTrackerFailing_MentionsTrackers()
+    {
+        var (viewModel, client) = await SetUpForDiagnosis(MakeDetail("ubuntu.iso") with { State = "Downloading", PeerCount = 2, SeedCount = 1 });
+        client.Trackers.Add(new TrackerEntry("udp://a.example/announce", DateTimeOffset.UtcNow, "connection refused", 0, 0));
+        client.Trackers.Add(new TrackerEntry("udp://b.example/announce", DateTimeOffset.UtcNow, "timed out", 0, 0));
+
+        await viewModel.LoadSelectedDetailAsync();
+
+        Assert.Contains(viewModel.DiagnosisMessages, m => m.Contains("tracker", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task DiagnosisMessages_ForDownloadingWithAFleetRateLimit_MentionsTheLimit()
+    {
+        var (viewModel, client) = await SetUpForDiagnosis(MakeDetail("ubuntu.iso") with { State = "Downloading", PeerCount = 2, SeedCount = 1 });
+        client.SessionLimits = new SessionLimits(500, 0);
+
+        await viewModel.LoadSelectedDetailAsync();
+
+        Assert.Contains(viewModel.DiagnosisMessages, m => m.Contains("500"));
+    }
+
+    [Fact]
+    public async Task DiagnosisMessages_ForDownloadingWithNothingWrong_ReportsNoObviousCause()
+    {
+        var (viewModel, client) = await SetUpForDiagnosis(MakeDetail("ubuntu.iso") with { State = "Downloading", PeerCount = 2, SeedCount = 1 });
+        client.Peers.Add(new PeerEntry("127.0.0.1:6881", true, 0, 0, false, true, false, true, 0.1));
+
+        await viewModel.LoadSelectedDetailAsync();
+        await viewModel.RefreshPeerRatesAsync();
+        await viewModel.LoadSelectedDetailAsync();
+
+        Assert.Contains(viewModel.DiagnosisMessages, m => m.Contains("No obvious cause"));
+    }
+
+    [Fact]
+    public async Task DiagnosisMessages_ForASeedingTorrent_IsEmpty()
+    {
+        var (viewModel, _) = await SetUpForDiagnosis(MakeDetail("ubuntu.iso") with { State = "Seeding" });
+
+        await viewModel.LoadSelectedDetailAsync();
+
+        Assert.Empty(viewModel.DiagnosisMessages);
+    }
+
     [Fact]
     public async Task OnTorrentSelectionChanged_CallsBothLoadSelectedDetailAndRefreshPeerRates()
     {
