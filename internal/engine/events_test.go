@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -154,8 +155,12 @@ func TestSubscribeReceivesPeerAndPieceEvents(t *testing.T) {
 	// other full-download-shaped test in this codebase already uses for
 	// exactly this reason (e.g. internal/torrent's TestFullDownload).
 	pieceEv := waitForEvent(t, ch, EventPieceVerified, 30*time.Second)
+	wantPeerAddr := fmt.Sprintf("127.0.0.1:%d", port)
 	if pieceEv.InfoHash != hash {
 		t.Fatalf("EventPieceVerified.InfoHash = %s, want %s", pieceEv.InfoHash, hash)
+	}
+	if pieceEv.PeerAddr != wantPeerAddr {
+		t.Fatalf("EventPieceVerified.PeerAddr = %q, want %q (the peer that actually delivered it)", pieceEv.PeerAddr, wantPeerAddr)
 	}
 }
 

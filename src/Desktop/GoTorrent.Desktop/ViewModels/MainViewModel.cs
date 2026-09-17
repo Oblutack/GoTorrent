@@ -39,6 +39,7 @@ public partial class MainViewModel : ViewModelBase, IDisposable
     private string? _peerRatesForHash;
     private DateTimeOffset? _lastPeerSampleTime;
     private Dictionary<string, (long Downloaded, long Uploaded)> _lastPeerTotals = [];
+    private string? _pieceOwnersForHash;
     private CancellationTokenSource? _detailLoadCts;
     private bool _autoRefreshInFlight;
     private bool _peerRefreshInFlight;
@@ -172,6 +173,19 @@ public partial class MainViewModel : ViewModelBase, IDisposable
 
     [ObservableProperty]
     public partial ObservableCollection<bool> PieceHave { get; set; } = [];
+
+    /// <summary>
+    /// Parallel to <see cref="PieceHave"/> - the peer address that
+    /// delivered each piece, or null when unknown (a piece already
+    /// verified before this torrent was selected/this session connected -
+    /// gottrentd's <c>pieceVerified</c> event only carries an owner going
+    /// forward, there's no way to ask "who delivered piece N" after the
+    /// fact). Reset to all-null alongside <see cref="PieceHave"/> on every
+    /// selection change; filled in live as real <c>pieceVerified</c>
+    /// events arrive for the selected torrent (see <see cref="HandleEvent"/>).
+    /// </summary>
+    [ObservableProperty]
+    public partial ObservableCollection<string?> PieceOwners { get; set; } = [];
 
     /// <summary>
     /// Stage 6's "why is this slow?" diagnostics panel - see
@@ -1059,6 +1073,8 @@ public partial class MainViewModel : ViewModelBase, IDisposable
             DetailPeers = [];
             DetailTrackers = [];
             PieceHave = [];
+            PieceOwners = [];
+            _pieceOwnersForHash = null;
             DiagnosisMessages = [];
             return;
         }
@@ -1069,10 +1085,23 @@ public partial class MainViewModel : ViewModelBase, IDisposable
             var files = await _client.GetFilesAsync(hash, token);
             var trackers = await _client.GetTrackersAsync(hash, token);
             var pieces = await _client.GetPiecesAsync(hash, token);
+            var have = pieces.ToHaveArray();
             DetailTorrent = detail;
             DetailFiles = new ObservableCollection<FileEntry>(files);
             DetailTrackers = new ObservableCollection<TrackerEntry>(trackers);
-            PieceHave = new ObservableCollection<bool>(pieces.ToHaveArray());
+            PieceHave = new ObservableCollection<bool>(have);
+            // Only start PieceOwners fresh on an actual selection change -
+            // rebuilding it every 2s refresh of the SAME torrent would
+            // throw away attribution HandleEvent already accumulated live
+            // for pieces verified between polls (the bitfield itself is
+            // idempotent across polls, but "who delivered it" is only ever
+            // known from the live pieceVerified event, never re-derivable
+            // from a later poll - see the property's own doc comment).
+            if (hash != _pieceOwnersForHash || PieceOwners.Count != have.Length)
+            {
+                _pieceOwnersForHash = hash;
+                PieceOwners = new ObservableCollection<string?>(new string?[have.Length]);
+            }
             await RecomputeDiagnosisAsync(detail, trackers, token);
         }
         catch (OperationCanceledException)
@@ -1314,6 +1343,10 @@ public partial class MainViewModel : ViewModelBase, IDisposable
                 if (index >= 0 && index < PieceHave.Count)
                 {
                     PieceHave[index] = true;
+                }
+                if (index >= 0 && index < PieceOwners.Count && !string.IsNullOrEmpty(ev.PeerAddr))
+                {
+                    PieceOwners[index] = ev.PeerAddr;
                 }
                 break;
             case "torrentStateChanged" when ev.State == "Seeding" && ev.InfoHash is { } hash:

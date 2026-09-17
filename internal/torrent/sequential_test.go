@@ -45,7 +45,7 @@ func TestSetSequentialDownloadsPiecesInOrder(t *testing.T) {
 
 	var mu sync.Mutex
 	var order []int
-	tr.OnPieceVerified(func(index int) {
+	tr.OnPieceVerified(func(index int, peerAddr string) {
 		mu.Lock()
 		order = append(order, index)
 		mu.Unlock()

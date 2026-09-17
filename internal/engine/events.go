@@ -31,7 +31,9 @@ type Event struct {
 	Time     time.Time
 	// State is set for EventTorrentStateChanged.
 	State torrent.State
-	// PeerAddr is set for EventPeerConnected/EventPeerDisconnected.
+	// PeerAddr is set for EventPeerConnected/EventPeerDisconnected, and for
+	// EventPieceVerified (whichever peer delivered the block that completed
+	// the piece — see torrent.eventPieceVerified's own doc comment).
 	PeerAddr string
 	// PieceIndex is set for EventPieceVerified.
 	PieceIndex int

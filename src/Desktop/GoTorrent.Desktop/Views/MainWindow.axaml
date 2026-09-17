@@ -387,7 +387,7 @@
                                         Text="{Binding PieceHave.Count, StringFormat='{}{0} pieces'}"
                                         Margin="0,0,0,6" />
                             <Border Grid.Row="1" Background="{DynamicResource GtPanel}" CornerRadius="4" ClipToBounds="True">
-                                <controls:PieceMapControl Pieces="{Binding PieceHave}" />
+                                <controls:PieceMapControl Pieces="{Binding PieceHave}" PieceOwners="{Binding PieceOwners}" />
                             </Border>
                         </Grid>
                     </TabItem>

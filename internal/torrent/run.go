@@ -431,7 +431,7 @@ func (t *Torrent) handleEvent(ev any) {
 	case eventPeerGone:
 		t.removePeer(e.pc)
 	case eventPieceVerified:
-		t.onPieceVerified(e.index, e.ok, e.err)
+		t.onPieceVerified(e.index, e.ok, e.err, e.peerAddr)
 	case eventTrackerPeers:
 		for _, pi := range e.peers {
 			t.dial(pi)
@@ -766,7 +766,7 @@ func (t *Torrent) onBlock(pc *peerConn, block *peer.PieceBlock) {
 			t.cancelDuplicates(mi, index)
 		}
 		t.wg.Add(1)
-		go t.verifyPiece(t.ctx, mi, index)
+		go t.verifyPiece(t.ctx, mi, index, pc.addr)
 	}
 }
 
@@ -794,14 +794,16 @@ func (t *Torrent) cancelDuplicates(mi *metainfo.MetaInfo, index int) {
 
 // verifyPiece hashes a completed piece against the metainfo and reports the
 // result back to the actor. It runs off the actor goroutine so a slow hash
-// (large piece length) does not stall picking or event handling.
-func (t *Torrent) verifyPiece(ctx context.Context, mi *metainfo.MetaInfo, index int) {
+// (large piece length) does not stall picking or event handling. peerAddr is
+// carried through unchanged, for onPieceVerified/OnPieceVerified to report -
+// see eventPieceVerified's own doc comment for what it means.
+func (t *Torrent) verifyPiece(ctx context.Context, mi *metainfo.MetaInfo, index int, peerAddr string) {
 	defer t.wg.Done()
 	ok, err := t.storage.VerifyOne(ctx, mi, index)
-	t.sendEvent(ctx, eventPieceVerified{index: index, ok: ok, err: err})
+	t.sendEvent(ctx, eventPieceVerified{index: index, ok: ok, err: err, peerAddr: peerAddr})
 }
 
-func (t *Torrent) onPieceVerified(index int, ok bool, err error) {
+func (t *Torrent) onPieceVerified(index int, ok bool, err error, peerAddr string) {
 	if err != nil {
 		logger.Error.Printf("torrent %s: verifying piece %d: %v\n", t.infoHash, index, err)
 		t.pick.MarkFailed(index)
@@ -817,7 +819,7 @@ func (t *Torrent) onPieceVerified(index int, ok bool, err error) {
 	t.piecesVerifiedSinceCheckpoint++
 	t.publishHave(t.pick.Have())
 	if t.pieceVerifiedHook != nil {
-		t.pieceVerifiedHook(index)
+		t.pieceVerifiedHook(index, peerAddr)
 	}
 
 	for _, pc := range t.peers {

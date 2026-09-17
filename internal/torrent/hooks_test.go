@@ -97,11 +97,15 @@ func TestOnPieceVerifiedFiresForEachRealPiece(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
+	wantAddr := seeder.peerInfo().Addr()
+
 	var mu sync.Mutex
 	seen := make(map[int]int) // index -> fire count
-	tr.OnPieceVerified(func(index int) {
+	var addrs []string
+	tr.OnPieceVerified(func(index int, peerAddr string) {
 		mu.Lock()
 		seen[index]++
+		addrs = append(addrs, peerAddr)
 		mu.Unlock()
 	})
 
@@ -113,6 +117,11 @@ func TestOnPieceVerifiedFiresForEachRealPiece(t *testing.T) {
 	defer mu.Unlock()
 	if len(seen) != mi.NumPieces() {
 		t.Fatalf("OnPieceVerified fired for %d distinct pieces, want %d: %v", len(seen), mi.NumPieces(), seen)
+	}
+	for i, addr := range addrs {
+		if addr != wantAddr {
+			t.Fatalf("piece %d's OnPieceVerified peerAddr = %q, want %q", i, addr, wantAddr)
+		}
 	}
 	for i := 0; i < mi.NumPieces(); i++ {
 		if seen[i] != 1 {

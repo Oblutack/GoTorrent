@@ -1128,6 +1128,101 @@ public sealed class MainViewModelTests
     }
 
     [Fact]
+    public async Task HandleEvent_PieceVerifiedWithAPeerAddr_RecordsItInPieceOwners()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        var torrent = MakeTorrent("ubuntu.iso");
+        client.Torrents.Add(torrent);
+        await viewModel.RefreshAsync();
+        viewModel.SelectedTorrent = viewModel.Torrents[0];
+        client.Detail = MakeDetail(torrent.Name);
+        client.Pieces = new PiecesInfo(NumPieces: 4, HaveCount: 0, Bitfield: [0b0000_0000]);
+        await viewModel.LoadSelectedDetailAsync();
+
+        viewModel.HandleEvent(new WsEvent("pieceVerified", DateTimeOffset.UtcNow, torrent.InfoHash, null, "127.0.0.1:6881", PieceIndex: 2, Session: null));
+
+        Assert.Equal("127.0.0.1:6881", viewModel.PieceOwners[2]);
+        Assert.Null(viewModel.PieceOwners[0]);
+    }
+
+    [Fact]
+    public async Task HandleEvent_PieceVerifiedWithNoPeerAddr_LeavesThatPieceOwnerUnknown()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        var torrent = MakeTorrent("ubuntu.iso");
+        client.Torrents.Add(torrent);
+        await viewModel.RefreshAsync();
+        viewModel.SelectedTorrent = viewModel.Torrents[0];
+        client.Detail = MakeDetail(torrent.Name);
+        client.Pieces = new PiecesInfo(NumPieces: 4, HaveCount: 0, Bitfield: [0b0000_0000]);
+        await viewModel.LoadSelectedDetailAsync();
+
+        viewModel.HandleEvent(new WsEvent("pieceVerified", DateTimeOffset.UtcNow, torrent.InfoHash, null, null, PieceIndex: 2, Session: null));
+
+        Assert.True(viewModel.PieceHave[2]);
+        Assert.Null(viewModel.PieceOwners[2]);
+    }
+
+    [Fact]
+    public async Task LoadSelectedDetailAsync_RefreshingTheSameTorrent_PreservesAlreadyKnownPieceOwners()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        var torrent = MakeTorrent("ubuntu.iso");
+        client.Torrents.Add(torrent);
+        await viewModel.RefreshAsync();
+        viewModel.SelectedTorrent = viewModel.Torrents[0];
+        client.Detail = MakeDetail(torrent.Name);
+        client.Pieces = new PiecesInfo(NumPieces: 4, HaveCount: 1, Bitfield: [0b0010_0000]);
+        await viewModel.LoadSelectedDetailAsync();
+        viewModel.HandleEvent(new WsEvent("pieceVerified", DateTimeOffset.UtcNow, torrent.InfoHash, null, "127.0.0.1:6881", PieceIndex: 2, Session: null));
+
+        // A later poll of the same torrent re-fetches the same bitfield -
+        // this must not wipe the attribution the live event above already
+        // recorded, since gottrentd has no way to answer "who delivered
+        // piece 2" after the fact.
+        await viewModel.LoadSelectedDetailAsync();
+
+        Assert.Equal("127.0.0.1:6881", viewModel.PieceOwners[2]);
+    }
+
+    [Fact]
+    public async Task LoadSelectedDetailAsync_SwitchingToADifferentTorrent_StartsPieceOwnersFresh()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        var torrentA = MakeTorrent("a") with { InfoHash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" };
+        var torrentB = MakeTorrent("b") with { InfoHash = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" };
+        client.Torrents.Add(torrentA);
+        client.Torrents.Add(torrentB);
+        await viewModel.RefreshAsync();
+
+        viewModel.SelectedTorrent = viewModel.Torrents.Single(t => t.InfoHash == torrentA.InfoHash);
+        client.Detail = MakeDetail("a") with { InfoHash = torrentA.InfoHash };
+        client.Pieces = new PiecesInfo(NumPieces: 4, HaveCount: 1, Bitfield: [0b0010_0000]);
+        await viewModel.LoadSelectedDetailAsync();
+        viewModel.HandleEvent(new WsEvent("pieceVerified", DateTimeOffset.UtcNow, torrentA.InfoHash, null, "127.0.0.1:6881", PieceIndex: 2, Session: null));
+        Assert.Equal("127.0.0.1:6881", viewModel.PieceOwners[2]);
+
+        viewModel.SelectedTorrent = viewModel.Torrents.Single(t => t.InfoHash == torrentB.InfoHash);
+        client.Detail = MakeDetail("b") with { InfoHash = torrentB.InfoHash };
+        client.Pieces = new PiecesInfo(NumPieces: 4, HaveCount: 0, Bitfield: [0b0000_0000]);
+        await viewModel.LoadSelectedDetailAsync();
+
+        Assert.All(viewModel.PieceOwners, owner => Assert.Null(owner));
+    }
+
+    [Fact]
     public async Task HandleEvent_TorrentStateChangedToSeeding_ShowsACompletionNotification()
     {
         var (viewModel, client, notifier) = MakeViewModelWithDesktopNotifier();

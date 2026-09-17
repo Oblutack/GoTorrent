@@ -24,7 +24,7 @@ type WSEvent struct {
 	Time       time.Time     `json:"time"`
 	InfoHash   string        `json:"infoHash,omitempty"`
 	State      string        `json:"state,omitempty"`
-	PeerAddr   string        `json:"peerAddr,omitempty"`
+	PeerAddr   string        `json:"peerAddr,omitempty"` // peerConnected/peerDisconnected, and pieceVerified (which peer delivered it)
 	PieceIndex *int          `json:"pieceIndex,omitempty"`
 	Session    *SessionStats `json:"session,omitempty"`
 }
@@ -42,6 +42,7 @@ func wsEventDTO(ev engine.Event) WSEvent {
 	case engine.EventPieceVerified:
 		index := ev.PieceIndex
 		out.PieceIndex = &index
+		out.PeerAddr = ev.PeerAddr
 	}
 	return out
 }

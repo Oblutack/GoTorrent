@@ -10,7 +10,25 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/Oblutack/GoTorrent/internal/engine"
 )
+
+// TestWsEventDTOSetsPeerAddrForPieceVerified is a direct unit test of the
+// DTO mapping, not a live WS round trip — TestEventsHandlerStreamsRealEvents
+// below already proves a real pieceVerified event reaches a real client;
+// this pins the specific "which peer delivered it" field wsEventDTO adds on
+// top of the piece index, which that broader test doesn't otherwise assert.
+func TestWsEventDTOSetsPeerAddrForPieceVerified(t *testing.T) {
+	ev := engine.Event{Kind: engine.EventPieceVerified, PieceIndex: 3, PeerAddr: "127.0.0.1:6881"}
+	dto := wsEventDTO(ev)
+	if dto.PieceIndex == nil || *dto.PieceIndex != 3 {
+		t.Fatalf("PieceIndex = %v, want 3", dto.PieceIndex)
+	}
+	if dto.PeerAddr != "127.0.0.1:6881" {
+		t.Fatalf("PeerAddr = %q, want %q", dto.PeerAddr, "127.0.0.1:6881")
+	}
+}
 
 // dialEventsClient is a bare-bones real WebSocket client (mirroring
 // internal/ws's own test fixture, duplicated here rather than exported

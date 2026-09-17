@@ -367,7 +367,7 @@ type Torrent struct {
 	// OnPieceVerified).
 	onPeerConnected    func(addr string)
 	onPeerDisconnected func(addr string)
-	pieceVerifiedHook  func(index int)
+	pieceVerifiedHook  func(index int, peerAddr string)
 }
 
 // --- construction ------------------------------------------------------
@@ -523,8 +523,12 @@ func (t *Torrent) OnPeerDisconnected(fn func(addr string)) { t.onPeerDisconnecte
 // onPieceVerified) — same contract as OnStateChange. 4.2's event stream
 // uses this as its piece-bitfield-delta signal: a subscriber already
 // holding the last-known bitfield just needs the index that changed, not a
-// full snapshot on every single piece.
-func (t *Torrent) OnPieceVerified(fn func(index int)) { t.pieceVerifiedHook = fn }
+// full snapshot on every single piece. peerAddr is whichever peer delivered
+// the block that completed the piece (see eventPieceVerified's own doc
+// comment) — always populated, since this hook only ever fires for a piece
+// verified after a real download, never for CheckingFiles' own bulk
+// storage.Verify at startup, which never touches MarkVerified per piece.
+func (t *Torrent) OnPieceVerified(fn func(index int, peerAddr string)) { t.pieceVerifiedHook = fn }
 
 func (t *Torrent) setState(next State) {
 	cur := t.State()

@@ -129,11 +129,17 @@ type eventPeerGone struct {
 }
 
 // eventPieceVerified reports the outcome of hashing a piece that just
-// received its last block.
+// received its last block. peerAddr is whichever peer delivered that last
+// block — the piece may well have gathered earlier blocks from other peers
+// too (endgame, or a peer that disconnected mid-piece), but "who delivered
+// the block that completed it" is the one well-defined single attribution
+// available without tracking per-peer-per-block assignment, which the actor
+// deliberately does not do (see cancelDuplicates' own doc comment).
 type eventPieceVerified struct {
-	index int
-	ok    bool
-	err   error
+	index    int
+	ok       bool
+	err      error
+	peerAddr string
 }
 
 // eventTrackerPeers delivers the peers from one successful announce.

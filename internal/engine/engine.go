@@ -567,8 +567,8 @@ func (e *Engine) AddWithOptions(source, downloadDir string, opts AddOptions) (me
 	tr.OnPeerDisconnected(func(addr string) {
 		e.broadcast(Event{Kind: EventPeerDisconnected, InfoHash: hash, PeerAddr: addr})
 	})
-	tr.OnPieceVerified(func(index int) {
-		e.broadcast(Event{Kind: EventPieceVerified, InfoHash: hash, PieceIndex: index})
+	tr.OnPieceVerified(func(index int, peerAddr string) {
+		e.broadcast(Event{Kind: EventPieceVerified, InfoHash: hash, PieceIndex: index, PeerAddr: peerAddr})
 	})
 
 	e.broadcast(Event{Kind: EventTorrentAdded, InfoHash: hash})
