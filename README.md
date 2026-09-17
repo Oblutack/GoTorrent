@@ -4,11 +4,14 @@
   <img src="https://raw.githubusercontent.com/Oblutack/GoTorrent/main/assets/logo.png" alt="GoTorrent Logo" width="300"/>
 </p>
 <p align="center">
-  <em>A feature-rich BitTorrent client written from scratch in Go, with zero external dependencies.</em>
+  <em>A feature-rich BitTorrent ecosystem written from scratch — a dependency-free Go engine, a headless daemon with a REST/WebSocket control API, a .NET control-plane Hub, and an Avalonia desktop client.</em>
 </p>
 <p align="center">
     <a href="https://github.com/Oblutack/GoTorrent/actions/workflows/go.yml">
-        <img src="https://github.com/Oblutack/GoTorrent/actions/workflows/go.yml/badge.svg" alt="Build Status">
+        <img src="https://github.com/Oblutack/GoTorrent/actions/workflows/go.yml/badge.svg" alt="Go Build Status">
+    </a>
+    <a href="https://github.com/Oblutack/GoTorrent/actions/workflows/dotnet.yml">
+        <img src="https://github.com/Oblutack/GoTorrent/actions/workflows/dotnet.yml/badge.svg" alt=".NET Build Status">
     </a>
     <a href="https://goreportcard.com/report/github.com/Oblutack/GoTorrent">
         <img src="https://goreportcard.com/badge/github.com/Oblutack/GoTorrent" alt="Go Report Card">
@@ -17,13 +20,18 @@
         <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT">
     </a>
     <img src="https://img.shields.io/badge/Go-1.24%2B-blue.svg" alt="Go Version">
+    <img src="https://img.shields.io/badge/.NET-10-blue.svg" alt=".NET Version">
 </p>
 
 ## About The Project
 
-**GoTorrent** is a BitTorrent client implemented entirely from scratch in Go — bencode, the peer wire protocol, trackers (HTTP and UDP), mainline DHT, and everything else, hand-rolled with no third-party dependencies. It started as a deep dive into network programming and Go concurrency, and grew into a client with real feature parity: magnet links, a modern peer-discovery stack (DHT/PEX/LSD), and the kind of day-to-day features a client like qBittorrent or µTorrent has — queueing, bandwidth scheduling, categories, an IP filter, proxy support, and more.
+**GoTorrent** started as a BitTorrent client implemented entirely from scratch in Go — bencode, the peer wire protocol, trackers (HTTP and UDP), mainline DHT, and everything else, hand-rolled with no third-party dependencies — and has grown into a full three-layer ecosystem:
 
-It's still, first and foremost, an educational project and a demonstration of skills — not an attempt to replace a mature client for daily use — but it's well past "toy" at this point: a magnet link with zero trackers downloads over DHT alone, and the CLI runs a full multi-torrent fleet with persistence across restarts.
+1. **The Go engine and CLI** (`gottrent`) — the original client: magnet links, a modern peer-discovery stack (DHT/PEX/LSD), and the kind of day-to-day features a client like qBittorrent or µTorrent has.
+2. **`gottrentd`**, a headless daemon exposing that same engine over a REST + WebSocket control API (bearer-token auth, live events, everything a real GUI needs).
+3. **Two .NET front ends on top of that API**: `GoTorrent.Hub`, an ASP.NET Core control plane for the things an engine shouldn't own itself (multi-node aggregation, RSS auto-download rules, history, real user auth), and `GoTorrent.Desktop`, a full Avalonia desktop client — the actual day-to-day GUI, talking straight to `gottrentd`.
+
+It's still, first and foremost, an educational project and a demonstration of skills across two ecosystems (Go network programming and a modern .NET/Avalonia stack) — not an attempt to replace a mature client for daily use — but it's well past "toy" at this point: a magnet link with zero trackers downloads over DHT alone, the CLI runs a full multi-torrent fleet with persistence across restarts, and the desktop app is a real qBittorrent-style GUI with a live piece map (colour-coded by which peer delivered each piece), speed graphs, and OS-level integration (tray, notifications, file associations, drag-and-drop).
 
 ### Key Features
 
@@ -52,13 +60,36 @@ It's still, first and foremost, an educational project and a demonstration of sk
 - An IP filter with eMule `ipfilter.dat` and PeerGuardian `.p2p` blocklist support, including auto-update from a URL.
 - Anonymous mode: a fingerprint-free peer ID, LSD disabled, and a hard refusal to start without an actual proxy configured.
 
+**`gottrentd` — the headless daemon and control API**
+- A long-lived, JSON-configured daemon wrapping the same engine, with a full REST API (list/add/detail/files/peers/trackers/pieces/pause/resume/verify/reannounce/patch/delete/session) plus a hand-rolled WebSocket event stream (no third-party router or WS library — stdlib `net/http` and a hand-rolled RFC 6455 implementation).
+- Bearer-token auth, a DNS-rebinding defense (Host-header allowlist), and brute-force lockout on the control API.
+
+**`GoTorrent.Hub` — the .NET control plane**
+- ASP.NET Core, built on top of `gottrentd`'s API: multi-node aggregation (register several daemons, one API for all of them), RSS-driven auto-download rules, history/analytics that outlive the engine process, and real user auth (ASP.NET Core Identity + JWT) with a SignalR fan-out of every connected node's live events to a single client connection.
+- EF Core/SQLite persistence, Docker support, and an engine bearer token encrypted at rest via ASP.NET Core Data Protection.
+
+**`GoTorrent.Desktop` — the Avalonia desktop client**
+- A full qBittorrent-style GUI talking straight to `gottrentd`: sortable/filterable torrent list with categories and tags, a detail pane (files with per-file priority, peers, trackers, a live piece map, live speed graph), preferences, and statistics.
+- Live updates over the same WebSocket stream: real-time list updates, a piece map colour-coded by which peer delivered each piece, per-torrent speed/ETA and a rolling sparkline, and toast notifications with optimistic UI (e.g. undo-delete).
+- Native OS integration: tray icon with minimize-to-tray, autostart with Windows, `.torrent`/`magnet:` file association, drag-and-drop, native OS notifications on completion, and daemon supervision (attaches to an already-running `gottrentd`, or spawns one).
+- A "why is this slow?" diagnostics panel that explains a stalled torrent (no peers, no seeds, everyone choking, every tracker failing, queue-held, rate-limited) using signals already in the API — no guessing required.
+- Light/dark theme with a density toggle, window-geometry persistence, and a disk-space guard before adding a torrent that won't fit.
+
 ## Built With
 
-- **Language:** Go 1.24+, no external dependencies anywhere in the module.
+**Go engine, CLI, and daemon**
+- **Language:** Go 1.24+, no external dependencies anywhere in the module — including the WebSocket implementation (RFC 6455, hand-rolled).
 - **Concurrency:** an actor per torrent (one goroutine owning that torrent's state, everything else talking to it over channels) plus goroutines for every peer connection, tracker announce loop, and background service.
 - **Networking:** the standard `net` and `net/http` packages only — TCP, UDP, and TLS are all hand-driven, including the DHT and UDP tracker wire formats.
 - **Testing:** the standard `testing` package, with real fixtures (real loopback sockets, real fake peers and trackers) rather than mocks wherever the code touches the network or disk.
-- **CI/CD:** GitHub Actions, gating every push and PR on `gofmt`, `go vet`, a build, and `go test -race`.
+
+**.NET Hub and Desktop**
+- **Language/runtime:** .NET 10 (C#), one monorepo solution (`GoTorrent.sln`) alongside the Go module.
+- **Hub:** ASP.NET Core, EF Core + SQLite, ASP.NET Core Identity + JWT, SignalR, `Microsoft.Extensions.Http.Resilience` (Polly v8) for calls to each `gottrentd` node, Docker.
+- **Desktop:** Avalonia UI + `CommunityToolkit.Mvvm`, talking to `gottrentd` over a plain `HttpClient` and a real `ClientWebSocket`; hand-drawn `Control`s (piece map, speed graph, sparkline) rather than a charting dependency.
+- **Testing:** xUnit on both, following the same "real fixtures over mocks" convention as the Go side wherever it's cheap (a real in-memory SQLite database, a real loopback WebSocket server) and fakes for pure ViewModel/service logic.
+
+**CI/CD:** GitHub Actions, two independent pipelines — the Go workflow gates on `gofmt`, `go vet`, a build, and `go test -race`; the .NET workflow gates on `dotnet format --verify-no-changes`, a build, and `dotnet test`.
 
 ---
 
@@ -66,7 +97,8 @@ It's still, first and foremost, an educational project and a demonstration of sk
 
 ### Prerequisites
 
-- **Go 1.24 or newer** — [https://golang.org/doc/install](https://golang.org/doc/install)
+- **Go 1.24 or newer** — [https://golang.org/doc/install](https://golang.org/doc/install) (for `gottrent`/`gottrentd`)
+- **.NET 10 SDK** — [https://dotnet.microsoft.com/download](https://dotnet.microsoft.com/download) (for the Hub and/or the Desktop app — optional if you only want the CLI)
 
 ### Installation & Usage
 
@@ -122,19 +154,40 @@ Run `./gottrent -h` for the full flag list (30+ flags across networking, bandwid
 ./gottrent verify -dir downloads my.torrent
 ```
 
+### Running the daemon and the desktop app
+
+`gottrentd` is the headless daemon the Hub and the Desktop app both talk to. It generates its own bearer token on first run.
+
+```sh
+go build ./cmd/gottrentd/
+./gottrentd -api-address 127.0.0.1:6880
+```
+
+The Desktop app is the easiest way to actually use the daemon day to day:
+
+```sh
+dotnet run --project src/Desktop/GoTorrent.Desktop
+```
+
+On first launch it asks for `gottrentd`'s address and token (the token `gottrentd` generated on its own first run, at `<config dir>/GoTorrent/api-token`) — or use its "Start gottrentd" button, which finds and launches (or attaches to an already-running) `gottrentd.exe` next to the app's own binary. See `src/Hub/README.md` for running the optional .NET Hub control plane (multi-node aggregation, RSS rules, history, remote auth) in front of one or more daemons.
+
 ---
 
 ## Project Structure
 
 ```
 GoTorrent/
-├── cmd/gottrent/          # CLI entry point: the fleet manager plus the create/verify subcommands
+├── cmd/
+│   ├── gottrent/          # CLI entry point: the fleet manager plus the create/verify subcommands
+│   └── gottrentd/         # Headless daemon (JSON-configured, long-lived)
 ├── internal/
+│   ├── api/               # gottrentd's REST + WebSocket control API, bearer-token auth
 │   ├── bencode/           # Bencode encoder/decoder
 │   ├── bitfield/          # Shared piece-bitmap type
+│   ├── bootstrap/         # Shared engine startup sequence (used by both cmd/gottrent and cmd/gottrentd)
 │   ├── choker/            # Tit-for-tat choking algorithm
 │   ├── dht/               # Mainline DHT (BEP 5)
-│   ├── engine/            # Multi-torrent fleet manager: add/list/remove, manifest, queueing, IP filter, proxy, ...
+│   ├── engine/            # Multi-torrent fleet manager: add/list/remove, manifest, queueing, IP filter, proxy, events, ...
 │   ├── ipfilter/          # eMule/PeerGuardian blocklist parsing and lookup
 │   ├── logger/            # Verbose/standard logging
 │   ├── lsd/               # Local Service Discovery (BEP 14)
@@ -147,8 +200,14 @@ GoTorrent/
 │   ├── storage/           # On-disk file layout, allocation, verification
 │   ├── torrent/           # The per-torrent actor and its state machine
 │   ├── tracker/           # HTTP(S) and UDP tracker clients
-│   └── version/           # Client identity (peer ID / User-Agent)
-├── .github/workflows/     # CI (gofmt, vet, build, race-enabled tests)
+│   ├── version/           # Client identity (peer ID / User-Agent)
+│   └── ws/                # Hand-rolled RFC 6455 WebSocket server, used by internal/api
+├── src/
+│   ├── Hub/               # GoTorrent.Hub — the .NET control plane (Api/Core/Infrastructure)
+│   └── Desktop/           # GoTorrent.Desktop — the Avalonia desktop client
+├── tests/                 # xUnit test projects for the Hub and the Desktop app
+├── GoTorrent.sln          # One monorepo solution for both .NET projects, alongside the Go module
+├── .github/workflows/     # CI: go.yml (gofmt/vet/build/race tests) and dotnet.yml (format/build/test)
 └── ...
 ```
 
@@ -176,13 +235,13 @@ Development follows a phased plan, each phase gated behind the last:
 | 1 | Re-architecture — the torrent-actor engine core | Done |
 | 2 | Magnet links + modern peer discovery (DHT, PEX, LSD, NAT traversal) | Done |
 | 3 | Client feature parity (queueing, bandwidth, organization, privacy, ...) | Done |
-| 4 | Daemon + control API (`gottrentd`, REST/WebSocket) | **Next** |
-| 5 | `GoTorrent.Hub` — an ASP.NET Core control plane | Planned |
-| 6 | `GoTorrent.Desktop` — an Avalonia desktop client | Planned |
+| 4 | Daemon + control API (`gottrentd`, REST/WebSocket) | Done |
+| 5 | `GoTorrent.Hub` — an ASP.NET Core control plane | Done |
+| 6 | `GoTorrent.Desktop` — an Avalonia desktop client | **In progress** |
 | 7 | Advanced protocol: µTP, MSE/PE encryption, BitTorrent v2 | Planned |
 | 8 | Differentiators (trace mode, a deterministic swarm simulator, streaming) | Planned |
 
-A couple of Phase 3 items are intentionally still open rather than overlooked: seed-limit actions beyond pausing (remove / remove + delete data), and super-seeding (BEP 16) / partial-seed advertising (BEP 21).
+Phase 6's core GUI (torrent list, detail pane, live piece map/speed graph, native OS integration, theming) is fully functional; a handful of "differentiator" features (a command palette, swarm visualisation, per-torrent notes/history) and installer packaging are still open. A couple of small, deliberately-scoped gaps remain elsewhere too: Transmission RPC compatibility (Phase 4, a stretch goal) and quota/schedule policy for multiple Hub-registered nodes (Phase 5, an optional extra).
 
 ---
 
