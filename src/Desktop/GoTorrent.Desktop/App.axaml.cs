@@ -53,6 +53,7 @@ public partial class App : Application
             mainViewModel.StartAutoRefresh();
             mainViewModel.StartLiveEvents();
             mainViewModel.StartPeerRefresh();
+            _ = mainViewModel.CheckForUpdatesAsync();
 
             // The native platform handle exists immediately once the Window
             // is constructed - confirmed live, not assumed - so attaching

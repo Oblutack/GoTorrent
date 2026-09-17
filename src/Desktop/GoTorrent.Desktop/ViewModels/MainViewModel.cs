@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -25,6 +26,7 @@ public partial class MainViewModel : ViewModelBase, IDisposable
     private readonly IFileAssociationService _fileAssociationService;
     private readonly IDaemonLauncher _daemonLauncher;
     private readonly IDesktopNotifier _desktopNotifier;
+    private readonly IUpdateChecker _updateChecker;
     private readonly HashSet<string> _notifiedCompletionHashes = [];
     private readonly HashSet<string> _pendingDeleteHashes = [];
     private readonly Dictionary<string, CancellationTokenSource> _pendingDeleteCancellations = [];
@@ -415,7 +417,7 @@ public partial class MainViewModel : ViewModelBase, IDisposable
         _settingsStore.Save(_settingsStore.Load() with { HiddenColumns = hidden });
     }
 
-    public MainViewModel() : this(options => new EngineClient(options), new FileSettingsStore(), new WebSocketEventStream(), TimeProvider.System, new WindowsAutostartService(), new WindowsFileAssociationService(), new DaemonLauncher(), new WindowsDesktopNotifier())
+    public MainViewModel() : this(options => new EngineClient(options), new FileSettingsStore(), new WebSocketEventStream(), TimeProvider.System, new WindowsAutostartService(), new WindowsFileAssociationService(), new DaemonLauncher(), new WindowsDesktopNotifier(), new GitHubUpdateChecker())
     {
     }
 
@@ -426,7 +428,7 @@ public partial class MainViewModel : ViewModelBase, IDisposable
     /// in-memory settings store.
     /// </summary>
     public MainViewModel(Func<EngineOptions, IEngineClient> clientFactory, ISettingsStore settingsStore)
-        : this(clientFactory, settingsStore, new WebSocketEventStream(), TimeProvider.System, new WindowsAutostartService(), new WindowsFileAssociationService(), new DaemonLauncher(), new WindowsDesktopNotifier())
+        : this(clientFactory, settingsStore, new WebSocketEventStream(), TimeProvider.System, new WindowsAutostartService(), new WindowsFileAssociationService(), new DaemonLauncher(), new WindowsDesktopNotifier(), new GitHubUpdateChecker())
     {
     }
 
@@ -438,7 +440,7 @@ public partial class MainViewModel : ViewModelBase, IDisposable
     /// on real wall-clock time elapsing between two calls in a test.
     /// </summary>
     public MainViewModel(Func<EngineOptions, IEngineClient> clientFactory, ISettingsStore settingsStore, IEventStream eventStream, TimeProvider timeProvider)
-        : this(clientFactory, settingsStore, eventStream, timeProvider, new WindowsAutostartService(), new WindowsFileAssociationService(), new DaemonLauncher(), new WindowsDesktopNotifier())
+        : this(clientFactory, settingsStore, eventStream, timeProvider, new WindowsAutostartService(), new WindowsFileAssociationService(), new DaemonLauncher(), new WindowsDesktopNotifier(), new GitHubUpdateChecker())
     {
     }
 
@@ -448,7 +450,7 @@ public partial class MainViewModel : ViewModelBase, IDisposable
     /// never depends on (or mutates) the real Windows registry.
     /// </summary>
     public MainViewModel(Func<EngineOptions, IEngineClient> clientFactory, ISettingsStore settingsStore, IEventStream eventStream, TimeProvider timeProvider, IAutostartService autostartService)
-        : this(clientFactory, settingsStore, eventStream, timeProvider, autostartService, new WindowsFileAssociationService(), new DaemonLauncher(), new WindowsDesktopNotifier())
+        : this(clientFactory, settingsStore, eventStream, timeProvider, autostartService, new WindowsFileAssociationService(), new DaemonLauncher(), new WindowsDesktopNotifier(), new GitHubUpdateChecker())
     {
     }
 
@@ -457,7 +459,7 @@ public partial class MainViewModel : ViewModelBase, IDisposable
     /// the same reason as <paramref name="autostartService"/>.
     /// </summary>
     public MainViewModel(Func<EngineOptions, IEngineClient> clientFactory, ISettingsStore settingsStore, IEventStream eventStream, TimeProvider timeProvider, IAutostartService autostartService, IFileAssociationService fileAssociationService)
-        : this(clientFactory, settingsStore, eventStream, timeProvider, autostartService, fileAssociationService, new DaemonLauncher(), new WindowsDesktopNotifier())
+        : this(clientFactory, settingsStore, eventStream, timeProvider, autostartService, fileAssociationService, new DaemonLauncher(), new WindowsDesktopNotifier(), new GitHubUpdateChecker())
     {
     }
 
@@ -466,7 +468,7 @@ public partial class MainViewModel : ViewModelBase, IDisposable
     /// fake so "spawn gottrentd" never starts a real process.
     /// </summary>
     public MainViewModel(Func<EngineOptions, IEngineClient> clientFactory, ISettingsStore settingsStore, IEventStream eventStream, TimeProvider timeProvider, IAutostartService autostartService, IFileAssociationService fileAssociationService, IDaemonLauncher daemonLauncher)
-        : this(clientFactory, settingsStore, eventStream, timeProvider, autostartService, fileAssociationService, daemonLauncher, new WindowsDesktopNotifier())
+        : this(clientFactory, settingsStore, eventStream, timeProvider, autostartService, fileAssociationService, daemonLauncher, new WindowsDesktopNotifier(), new GitHubUpdateChecker())
     {
     }
 
@@ -475,6 +477,15 @@ public partial class MainViewModel : ViewModelBase, IDisposable
     /// fake so "notify on completion" never shows a real OS notification.
     /// </summary>
     public MainViewModel(Func<EngineOptions, IEngineClient> clientFactory, ISettingsStore settingsStore, IEventStream eventStream, TimeProvider timeProvider, IAutostartService autostartService, IFileAssociationService fileAssociationService, IDaemonLauncher daemonLauncher, IDesktopNotifier desktopNotifier)
+        : this(clientFactory, settingsStore, eventStream, timeProvider, autostartService, fileAssociationService, daemonLauncher, desktopNotifier, new GitHubUpdateChecker())
+    {
+    }
+
+    /// <summary>
+    /// <paramref name="updateChecker"/> - same seam again: tests script
+    /// whether a newer release "exists" without a real call to GitHub.
+    /// </summary>
+    public MainViewModel(Func<EngineOptions, IEngineClient> clientFactory, ISettingsStore settingsStore, IEventStream eventStream, TimeProvider timeProvider, IAutostartService autostartService, IFileAssociationService fileAssociationService, IDaemonLauncher daemonLauncher, IDesktopNotifier desktopNotifier, IUpdateChecker updateChecker)
     {
         _clientFactory = clientFactory;
         _settingsStore = settingsStore;
@@ -484,6 +495,7 @@ public partial class MainViewModel : ViewModelBase, IDisposable
         _fileAssociationService = fileAssociationService;
         _daemonLauncher = daemonLauncher;
         _desktopNotifier = desktopNotifier;
+        _updateChecker = updateChecker;
 
         var settings = _settingsStore.Load();
         SavedSettings = settings;
@@ -570,6 +582,47 @@ public partial class MainViewModel : ViewModelBase, IDisposable
         }
         _lastOfferedClipboardMagnet = clipboardText;
         Toast("Magnet link found on clipboard.", ToastSeverity.Info, "Add", () => _ = AddMagnetAsync(clipboardText, category: null, downloadDir: null));
+    }
+
+    /// <summary>
+    /// Called once at startup, fire-and-forget from <c>App.axaml.cs</c> -
+    /// a single check, not a recurring loop, so it doesn't get a
+    /// <c>StartXxx</c> name the way <see cref="StartAutoRefresh"/>/
+    /// <see cref="StartLiveEvents"/>/<see cref="StartPeerRefresh"/> do.
+    /// Compares GitHub's latest release tag against this build's own
+    /// <see cref="AppVersion.Current"/> and raises an actionable toast
+    /// (matching the clipboard-magnet toast's own shape) if a newer one
+    /// exists. <see cref="IUpdateChecker"/>'s own contract guarantees it
+    /// never throws and returns null for "nothing to report" - a failed
+    /// check is silently that, never a surfaced error, since this is a
+    /// purely advisory background check.
+    /// </summary>
+    public async Task CheckForUpdatesAsync()
+    {
+        var tag = await _updateChecker.GetLatestVersionTagAsync(CancellationToken.None);
+        if (tag is null)
+        {
+            return;
+        }
+        var normalizedTag = tag.TrimStart('v', 'V');
+        if (!Version.TryParse(normalizedTag, out var latest) || !Version.TryParse(AppVersion.Current, out var current) || latest <= current)
+        {
+            return;
+        }
+        Toast($"A new version ({tag}) is available.", ToastSeverity.Info, "View", OpenLatestReleasePage);
+    }
+
+    private static void OpenLatestReleasePage()
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo("https://github.com/Oblutack/GoTorrent/releases/latest") { UseShellExecute = true });
+        }
+        catch
+        {
+            // Best effort - nothing more this app can usefully do if
+            // launching the OS's own browser handler fails.
+        }
     }
 
     /// <summary>

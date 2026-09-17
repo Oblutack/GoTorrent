@@ -1,0 +1,61 @@
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: gottrent
+    main: ./cmd/gottrent
+    binary: gottrent
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - windows
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+  - id: gottrentd
+    main: ./cmd/gottrentd
+    binary: gottrentd
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - windows
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - id: default
+    ids:
+      - gottrent
+      - gottrentd
+    formats:
+      - zip
+    name_template: >-
+      gotorrent-cli_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+
+release:
+  github:
+    owner: Oblutack
+    name: GoTorrent
+  # The Desktop installer (a Windows-only Inno Setup .exe built separately
+  # via installer/build.ps1, since goreleaser has no first-party .NET
+  # build step) is uploaded to the same GitHub release afterward, not by
+  # goreleaser itself - see installer/README.md.
+  name_template: "v{{ .Version }}"

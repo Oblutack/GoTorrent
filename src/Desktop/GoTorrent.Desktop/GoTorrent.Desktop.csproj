@@ -6,6 +6,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets\app-icon.ico</ApplicationIcon>
+    <Version>0.1.0</Version>
   </PropertyGroup>
 
   <ItemGroup>

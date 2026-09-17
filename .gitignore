@@ -42,6 +42,11 @@ obj/
 *.userosscache
 *.sln.docstates
 appsettings.*.local.json
+
+# Packaging (6.4) - local build/publish/installer output, never committed
+publish/
+installer/Output/
+dist/
 *.db
 *.db-shm
 *.db-wal

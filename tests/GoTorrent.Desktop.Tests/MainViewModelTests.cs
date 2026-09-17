@@ -110,6 +110,13 @@ public sealed class MainViewModelTests
         return (viewModel, client, notifier);
     }
 
+    private static (MainViewModel ViewModel, FakeUpdateChecker UpdateChecker) MakeViewModelWithUpdateChecker()
+    {
+        var updateChecker = new FakeUpdateChecker();
+        var viewModel = new MainViewModel(_ => new FakeEngineClient(), new FakeSettingsStore(), new FakeEventStream(), TimeProvider.System, new FakeAutostartService(), new FakeFileAssociationService(), new FakeDaemonLauncher(), new FakeDesktopNotifier(), updateChecker);
+        return (viewModel, updateChecker);
+    }
+
     [Fact]
     public void Connect_WithAValidAddress_Succeeds()
     {
@@ -2298,6 +2305,48 @@ public sealed class MainViewModelTests
         await Task.Delay(50);
 
         Assert.Equal(magnet, client.LastAddedMagnet);
+    }
+
+    [Fact]
+    public async Task CheckForUpdatesAsync_WithANewerTag_RaisesAnActionableToast()
+    {
+        var (viewModel, updateChecker) = MakeViewModelWithUpdateChecker();
+        updateChecker.LatestTag = "v99.0.0";
+        ToastMessage? toast = null;
+        viewModel.ToastRequested += t => toast = t;
+
+        await viewModel.CheckForUpdatesAsync();
+
+        Assert.NotNull(toast);
+        Assert.Contains("v99.0.0", toast.Text);
+        Assert.Equal("View", toast.ActionLabel);
+        Assert.NotNull(toast.Action);
+    }
+
+    [Fact]
+    public async Task CheckForUpdatesAsync_WithTheSameOrOlderTag_RaisesNoToast()
+    {
+        var (viewModel, updateChecker) = MakeViewModelWithUpdateChecker();
+        updateChecker.LatestTag = $"v{AppVersion.Current}";
+        var toastRaised = false;
+        viewModel.ToastRequested += _ => toastRaised = true;
+
+        await viewModel.CheckForUpdatesAsync();
+
+        Assert.False(toastRaised);
+    }
+
+    [Fact]
+    public async Task CheckForUpdatesAsync_WhenTheCheckFailed_RaisesNoToast()
+    {
+        var (viewModel, updateChecker) = MakeViewModelWithUpdateChecker();
+        updateChecker.LatestTag = null;
+        var toastRaised = false;
+        viewModel.ToastRequested += _ => toastRaised = true;
+
+        await viewModel.CheckForUpdatesAsync();
+
+        Assert.False(toastRaised);
     }
 
     [Fact]
