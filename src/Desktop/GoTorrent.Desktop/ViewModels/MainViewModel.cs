@@ -515,6 +515,38 @@ public partial class MainViewModel : ViewModelBase, IDisposable
         ToastRequested?.Invoke(new ToastMessage(text, severity, actionLabel, action));
 
     /// <summary>
+    /// Stage 6's "quick-add from clipboard" - the value most recently
+    /// offered via <see cref="OfferClipboardMagnetIfNew"/>, so re-
+    /// activating the window with the same magnet still on the clipboard
+    /// (the common case: copy once, alt-tab back and forth while
+    /// deciding whether to add it) doesn't re-show the same toast every
+    /// single time the window regains focus.
+    /// </summary>
+    private string? _lastOfferedClipboardMagnet;
+
+    /// <summary>
+    /// Called from <c>MainWindow</c>'s real <c>Activated</c> event
+    /// handler with whatever text (if any) is currently on the OS
+    /// clipboard - reading the clipboard itself is real platform I/O
+    /// that belongs in the View, this is the testable logic on top of
+    /// it. Offers a one-click "Add" toast only for something that looks
+    /// like a magnet link, and only once per distinct value.
+    /// </summary>
+    public void OfferClipboardMagnetIfNew(string? clipboardText)
+    {
+        if (clipboardText is null || !clipboardText.StartsWith("magnet:", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+        if (clipboardText == _lastOfferedClipboardMagnet)
+        {
+            return;
+        }
+        _lastOfferedClipboardMagnet = clipboardText;
+        Toast("Magnet link found on clipboard.", ToastSeverity.Info, "Add", () => _ = AddMagnetAsync(clipboardText, category: null, downloadDir: null));
+    }
+
+    /// <summary>
     /// How long <see cref="DeleteSelectedAsync"/> waits before actually
     /// calling <c>DeleteAsync</c> - a public settable property rather
     /// than another constructor-injected seam (this codebase's usual

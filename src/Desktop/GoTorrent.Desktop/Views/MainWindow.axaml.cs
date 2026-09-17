@@ -73,6 +73,7 @@ public partial class MainWindow : Window
         // the explicit "skip while a TextBox has focus" check below is
         // what keeps that safe for normal typing, not the routing phase.
         AddHandler(KeyDownEvent, OnKeyDown, RoutingStrategies.Tunnel);
+        Activated += OnActivated;
     }
 
     public void AllowRealClose() => _reallyClose = true;
@@ -617,5 +618,50 @@ public partial class MainWindow : Window
         {
             await mainViewModel.AddFromArgumentAsync(text.Trim());
         }
+    }
+
+    /// <summary>
+    /// Stage 6's "quick-add from clipboard" - fires every time this
+    /// window regains focus (alt-tabbing back, clicking it after
+    /// copying a magnet link elsewhere), reads whatever text is on the
+    /// clipboard, and hands it to <see cref="MainViewModel.OfferClipboardMagnetIfNew"/>,
+    /// which decides whether it's actually worth offering. Reading the
+    /// clipboard is the one real bit of platform I/O here - everything
+    /// past that (is it a magnet, have we already offered this exact
+    /// value) is the testable half, on the ViewModel.
+    /// <see cref="Clipboard"/> has no direct text-read method in this
+    /// Avalonia version (only <c>SetDataAsync</c> for writing, confirmed
+    /// against the real installed assembly the same way this project's
+    /// other Avalonia-12-API-drift issues were - see the copy-to-
+    /// clipboard helper's own comment) - reading goes through
+    /// <c>TryGetDataAsync</c> plus <c>IAsyncDataTransfer</c>'s own
+    /// <c>TryGetTextAsync</c> extension, the async counterpart of drag-
+    /// drop's synchronous <c>TryGetText()</c> used just above.
+    /// </summary>
+    private async void OnActivated(object? sender, EventArgs e)
+    {
+        if (DataContext is not MainViewModel mainViewModel || Clipboard is null)
+        {
+            return;
+        }
+
+        string? text = null;
+        try
+        {
+            var dataTransfer = await Clipboard.TryGetDataAsync();
+            if (dataTransfer is not null)
+            {
+                text = await dataTransfer.TryGetTextAsync();
+            }
+        }
+        catch
+        {
+            // The clipboard can genuinely fail to read (another process
+            // holding it open, non-text content in an unreadable format)
+            // - this is a passive convenience offer, never worth
+            // surfacing as an error to the user.
+        }
+
+        mainViewModel.OfferClipboardMagnetIfNew(text);
     }
 }

@@ -1939,6 +1939,88 @@ public sealed class MainViewModelTests
     }
 
     [Fact]
+    public void OfferClipboardMagnetIfNew_WithAMagnetLink_RaisesAnActionableToast()
+    {
+        var (viewModel, _, _) = MakeViewModel();
+        ToastMessage? toast = null;
+        viewModel.ToastRequested += t => toast = t;
+
+        viewModel.OfferClipboardMagnetIfNew("magnet:?xt=urn:btih:0102030405060708090a0b0c0d0e0f1011121314");
+
+        Assert.NotNull(toast);
+        Assert.Equal(ToastSeverity.Info, toast.Severity);
+        Assert.Equal("Add", toast.ActionLabel);
+        Assert.NotNull(toast.Action);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("just some regular text")]
+    [InlineData("https://example.com/file.torrent")]
+    public void OfferClipboardMagnetIfNew_WithNonMagnetText_RaisesNoToast(string? clipboardText)
+    {
+        var (viewModel, _, _) = MakeViewModel();
+        var toastRaised = false;
+        viewModel.ToastRequested += _ => toastRaised = true;
+
+        viewModel.OfferClipboardMagnetIfNew(clipboardText);
+
+        Assert.False(toastRaised);
+    }
+
+    [Fact]
+    public void OfferClipboardMagnetIfNew_WithTheSameMagnetTwice_OnlyRaisesOneToast()
+    {
+        // The window can activate repeatedly (alt-tabbing back and
+        // forth) while the same magnet sits on the clipboard - must not
+        // re-offer the identical value every single time.
+        var (viewModel, _, _) = MakeViewModel();
+        var toastCount = 0;
+        viewModel.ToastRequested += _ => toastCount++;
+        const string magnet = "magnet:?xt=urn:btih:0102030405060708090a0b0c0d0e0f1011121314";
+
+        viewModel.OfferClipboardMagnetIfNew(magnet);
+        viewModel.OfferClipboardMagnetIfNew(magnet);
+
+        Assert.Equal(1, toastCount);
+    }
+
+    [Fact]
+    public void OfferClipboardMagnetIfNew_WithADifferentMagnetAfterAnEarlierOne_RaisesANewToast()
+    {
+        var (viewModel, _, _) = MakeViewModel();
+        var toastCount = 0;
+        viewModel.ToastRequested += _ => toastCount++;
+
+        viewModel.OfferClipboardMagnetIfNew("magnet:?xt=urn:btih:0102030405060708090a0b0c0d0e0f1011121314");
+        viewModel.OfferClipboardMagnetIfNew("magnet:?xt=urn:btih:aabbccddeeff00112233445566778899aabbccdd");
+
+        Assert.Equal(2, toastCount);
+    }
+
+    [Fact]
+    public async Task OfferClipboardMagnetIfNew_ClickingTheToastActionAddsTheMagnet()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        ToastMessage? toast = null;
+        viewModel.ToastRequested += t => toast = t;
+        const string magnet = "magnet:?xt=urn:btih:0102030405060708090a0b0c0d0e0f1011121314";
+
+        viewModel.OfferClipboardMagnetIfNew(magnet);
+        toast!.Action!.Invoke();
+        // The action fires the add fire-and-forget (matching the toast's
+        // own synchronous Action delegate shape) - give it a moment to
+        // actually run before asserting.
+        await Task.Delay(50);
+
+        Assert.Equal(magnet, client.LastAddedMagnet);
+    }
+
+    [Fact]
     public async Task CheckDiskSpaceForUrlAsync_WhenTorrentIsLargerThanFreeSpace_ReturnsAWarning()
     {
         var (viewModel, client, _) = MakeViewModel();
