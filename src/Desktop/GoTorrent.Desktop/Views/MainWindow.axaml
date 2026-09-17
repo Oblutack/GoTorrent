@@ -345,21 +345,26 @@
                       </Grid>
                     </TabItem>
                     <TabItem Header="Peers">
-                      <Grid>
-                        <DataGrid ItemsSource="{Binding DetailPeers}" IsReadOnly="True" GridLinesVisibility="Horizontal" RowHeight="{Binding RowHeight}" AutoGenerateColumns="False">
-                            <DataGrid.Columns>
-                                <DataGridTextColumn Header="Address" Binding="{Binding Addr}" Width="2*" />
-                                <DataGridTextColumn Header="Outbound" Binding="{Binding Outbound}" Width="*" />
-                                <DataGridTextColumn Header="Down" Binding="{Binding DownloadRateKBps, StringFormat='{}{0:F1} KiB/s'}" Width="*" />
-                                <DataGridTextColumn Header="Up" Binding="{Binding UploadRateKBps, StringFormat='{}{0:F1} KiB/s'}" Width="*" />
-                                <DataGridTextColumn Header="Progress" Binding="{Binding Progress, StringFormat='{}{0:P0}'}" Width="*" />
-                                <DataGridTextColumn Header="Choked" Binding="{Binding PeerChoking}" Width="*" />
-                                <DataGridTextColumn Header="Interested" Binding="{Binding PeerInterested}" Width="*" />
-                                <DataGridTextColumn Header="We're Interested" Binding="{Binding AmInterested}" Width="*" />
-                            </DataGrid.Columns>
-                        </DataGrid>
-                        <TextBlock Classes="emptyState" IsVisible="{Binding DetailPeers, Converter={StaticResource CollectionEmpty}}"
-                                    Text="No peers connected right now." />
+                      <Grid RowDefinitions="180,*" Margin="0">
+                        <Border Grid.Row="0" Background="{DynamicResource GtPanel}" CornerRadius="4" Margin="8" ClipToBounds="True">
+                            <controls:SwarmControl Peers="{Binding DetailPeers}" />
+                        </Border>
+                        <Grid Grid.Row="1">
+                            <DataGrid ItemsSource="{Binding DetailPeers}" IsReadOnly="True" GridLinesVisibility="Horizontal" RowHeight="{Binding RowHeight}" AutoGenerateColumns="False">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="Address" Binding="{Binding Addr}" Width="2*" />
+                                    <DataGridTextColumn Header="Outbound" Binding="{Binding Outbound}" Width="*" />
+                                    <DataGridTextColumn Header="Down" Binding="{Binding DownloadRateKBps, StringFormat='{}{0:F1} KiB/s'}" Width="*" />
+                                    <DataGridTextColumn Header="Up" Binding="{Binding UploadRateKBps, StringFormat='{}{0:F1} KiB/s'}" Width="*" />
+                                    <DataGridTextColumn Header="Progress" Binding="{Binding Progress, StringFormat='{}{0:P0}'}" Width="*" />
+                                    <DataGridTextColumn Header="Choked" Binding="{Binding PeerChoking}" Width="*" />
+                                    <DataGridTextColumn Header="Interested" Binding="{Binding PeerInterested}" Width="*" />
+                                    <DataGridTextColumn Header="We're Interested" Binding="{Binding AmInterested}" Width="*" />
+                                </DataGrid.Columns>
+                            </DataGrid>
+                            <TextBlock Classes="emptyState" IsVisible="{Binding DetailPeers, Converter={StaticResource CollectionEmpty}}"
+                                        Text="No peers connected right now." />
+                        </Grid>
                       </Grid>
                     </TabItem>
                     <TabItem Header="Trackers">
