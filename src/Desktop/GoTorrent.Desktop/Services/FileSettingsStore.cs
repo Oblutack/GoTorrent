@@ -6,7 +6,13 @@ namespace GoTorrent.Desktop.Services;
 /// Persists <see cref="DesktopSettings"/> as a small JSON file under the
 /// OS's per-user app-data directory - the same "config lives outside the
 /// install/download directory" idea gottrentd's own resume data and
-/// manifest already use on the Go side.
+/// manifest already use on the Go side. <see cref="DesktopSettings.Token"/>
+/// is encrypted at rest via <see cref="TokenProtector"/> - transparent to
+/// every caller of <see cref="Load"/>/<see cref="Save"/>, which always
+/// see the real plaintext token, exactly the same "encryption is purely a
+/// persistence-layer concern" shape the Hub's own
+/// <c>ProtectedStringConverter</c> already established for
+/// <c>EngineNode.Token</c>.
 /// </summary>
 public sealed class FileSettingsStore : ISettingsStore
 {
@@ -52,7 +58,8 @@ public sealed class FileSettingsStore : ISettingsStore
         try
         {
             var json = File.ReadAllText(_filePath);
-            return JsonSerializer.Deserialize<DesktopSettings>(json) ?? new DesktopSettings(null, null);
+            var settings = JsonSerializer.Deserialize<DesktopSettings>(json) ?? new DesktopSettings(null, null);
+            return settings.Token is null ? settings : settings with { Token = TokenProtector.Unprotect(settings.Token) };
         }
         catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
         {
@@ -87,8 +94,9 @@ public sealed class FileSettingsStore : ISettingsStore
     {
         var directory = Path.GetDirectoryName(_filePath)!;
         Directory.CreateDirectory(directory);
+        var onDisk = settings.Token is null ? settings : settings with { Token = TokenProtector.Protect(settings.Token) };
         var tempPath = Path.Combine(directory, $"settings.json.tmp-{Guid.NewGuid():N}");
-        File.WriteAllText(tempPath, JsonSerializer.Serialize(settings));
+        File.WriteAllText(tempPath, JsonSerializer.Serialize(onDisk));
         File.Move(tempPath, _filePath, overwrite: true);
     }
 }

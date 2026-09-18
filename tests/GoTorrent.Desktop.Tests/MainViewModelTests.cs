@@ -144,6 +144,33 @@ public sealed class MainViewModelTests
     }
 
     [Fact]
+    public async Task Connect_WhenTheDaemonIsUnreachable_SetsAnErrorAndDoesNotConnect()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "wrong-token";
+        client.Failure = new InvalidOperationException("401 Unauthorized");
+
+        await viewModel.ConnectCommand.ExecuteAsync(null);
+
+        Assert.False(viewModel.IsConnected);
+        Assert.NotNull(viewModel.ConnectionError);
+    }
+
+    [Fact]
+    public async Task Connect_WhenTheDaemonIsUnreachable_DoesNotPersistSettings()
+    {
+        var (viewModel, client, settings) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "wrong-token";
+        client.Failure = new InvalidOperationException("401 Unauthorized");
+
+        await viewModel.ConnectCommand.ExecuteAsync(null);
+
+        Assert.False(settings.Load().IsConfigured);
+    }
+
+    [Fact]
     public void Connect_PersistsSettingsForNextLaunch()
     {
         var (viewModel, _, settings) = MakeViewModel();
@@ -1679,11 +1706,21 @@ public sealed class MainViewModelTests
     [Fact]
     public async Task StartLocalDaemonCommand_WithAnUnreachableExistingToken_FallsBackToSpawning()
     {
-        var (viewModel, client, daemon) = MakeViewModelWithDaemonLauncher();
+        // Token-aware client factory, not the shared MakeViewModelWithDaemonLauncher
+        // helper (which always returns the same client regardless of
+        // token) - TryConnectAsync now genuinely probes the API for both
+        // the stale-token attach attempt and the post-spawn connect, so
+        // the fake needs to actually distinguish "unreachable with the
+        // stale token" from "reachable with the freshly spawned one" to
+        // mean what this test's own name says.
+        var reachableClient = new FakeEngineClient();
+        var unreachableClient = new FakeEngineClient { Failure = new InvalidOperationException("connection refused") };
+        var daemon = new FakeDaemonLauncher { ExistingToken = "stale-token", TokenToReturnOnStart = "spawned-token" };
+        var viewModel = new MainViewModel(
+            options => options.Token == "stale-token" ? unreachableClient : reachableClient,
+            new FakeSettingsStore(), new FakeEventStream(), TimeProvider.System,
+            new FakeAutostartService(), new FakeFileAssociationService(), daemon);
         viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
-        daemon.ExistingToken = "stale-token";
-        daemon.TokenToReturnOnStart = "spawned-token";
-        client.Failure = new InvalidOperationException("connection refused");
 
         await viewModel.StartLocalDaemonCommand.ExecuteAsync(null);
 

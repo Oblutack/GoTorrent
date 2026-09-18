@@ -520,7 +520,11 @@ public partial class MainViewModel : ViewModelBase, IDisposable
         if (settings.IsConfigured)
         {
             BaseAddressInput = settings.BaseAddress!;
-            TryConnect(settings.BaseAddress!, settings.Token!, persist: false);
+            // Fire-and-forget - a constructor can't be async, and this
+            // matches every other "kick off real work, don't block
+            // construction on it" seam in this class (StartAutoRefresh/
+            // StartLiveEvents/CheckForUpdatesAsync are all the same shape).
+            _ = TryConnectAsync(settings.BaseAddress!, settings.Token!, persist: false);
         }
     }
 
@@ -636,45 +640,70 @@ public partial class MainViewModel : ViewModelBase, IDisposable
     public TimeSpan UndoDeleteDelay { get; set; } = TimeSpan.FromSeconds(6);
 
     [RelayCommand]
-    private void Connect() => TryConnect(BaseAddressInput, TokenInput, persist: true);
+    private Task ConnectAsync() => TryConnectAsync(BaseAddressInput, TokenInput, persist: true);
 
-    private void TryConnect(string baseAddress, string token, bool persist)
+    /// <summary>
+    /// Probes the real API (<see cref="TryReachAsync"/>) before declaring
+    /// success - this used to just construct a client object and set
+    /// <see cref="IsConnected"/> true unconditionally, with no API call at
+    /// all, so a wrong token or an address nothing is listening on landed
+    /// the user in the main UI with an error banner on the very next
+    /// refresh, rather than a clear "couldn't connect" failure right here
+    /// at the connect screen where it's actually actionable.
+    /// </summary>
+    private async Task TryConnectAsync(string baseAddress, string token, bool persist)
     {
+        Uri baseUri;
         try
         {
-            var options = new EngineOptions(new Uri(baseAddress), token);
-            var newClient = _clientFactory(options);
-            // Reconnecting (a second Connect click, or daemon supervision
-            // attaching after a spawn) used to just overwrite _client,
-            // leaking the previous one's real HttpClient/socket handles.
-            (_client as IDisposable)?.Dispose();
-            _client = newClient;
-            _connectedOptions = options;
-            IsConnected = true;
-            ConnectionError = null;
-            ConnectedSince ??= _timeProvider.GetUtcNow();
-            if (persist)
-            {
-                // `with` rather than a fresh DesktopSettings - this must not
-                // clobber StartMinimized (or any other future preference)
-                // back to its default every time the user hits Connect.
-                _settingsStore.Save(_settingsStore.Load() with { BaseAddress = baseAddress, Token = token });
-            }
+            baseUri = new Uri(baseAddress);
         }
         catch (Exception ex)
         {
             ConnectionError = ex.Message;
             IsConnected = false;
+            return;
+        }
+
+        if (!await TryReachAsync(baseUri, token))
+        {
+            ConnectionError = "Could not reach gottrentd at this address with this token - check both are correct and the daemon is running.";
+            IsConnected = false;
+            return;
+        }
+
+        var options = new EngineOptions(baseUri, token);
+        var newClient = _clientFactory(options);
+        // Reconnecting (a second Connect click, or daemon supervision
+        // attaching after a spawn) used to just overwrite _client, leaking
+        // the previous one's real HttpClient/socket handles.
+        (_client as IDisposable)?.Dispose();
+        _client = newClient;
+        _connectedOptions = options;
+        IsConnected = true;
+        ConnectionError = null;
+        ConnectedSince ??= _timeProvider.GetUtcNow();
+        if (persist)
+        {
+            // `with` rather than a fresh DesktopSettings - this must not
+            // clobber StartMinimized (or any other future preference) back
+            // to its default every time the user hits Connect.
+            _settingsStore.Save(_settingsStore.Load() with { BaseAddress = baseAddress, Token = token });
         }
     }
 
     /// <summary>
     /// Daemon supervision's "attach if running, spawn if not": first tries
     /// <see cref="BaseAddressInput"/> with whatever token
-    /// <see cref="IDaemonLauncher.TryReadExistingToken"/> finds (a real API
-    /// call, not just constructing a client - see <see cref="TryReachAsync"/>,
-    /// since <see cref="TryConnect"/> itself never makes one), and only
+    /// <see cref="IDaemonLauncher.TryReadExistingToken"/> finds, and only
     /// spawns a fresh gottrentd if that fails or no token file exists yet.
+    /// <see cref="TryConnectAsync"/> already probes the real API itself
+    /// now (see its own doc comment), so checking <see cref="IsConnected"/>
+    /// after calling it is enough to tell "attach worked" apart from
+    /// "need to spawn instead" - this used to make its own separate
+    /// <see cref="TryReachAsync"/> call first for exactly that answer,
+    /// which duplicated the probe <see cref="TryConnectAsync"/> now
+    /// always does anyway.
     /// </summary>
     [RelayCommand]
     private async Task StartLocalDaemonAsync()
@@ -699,10 +728,13 @@ public partial class MainViewModel : ViewModelBase, IDisposable
             }
 
             var existingToken = _daemonLauncher.TryReadExistingToken();
-            if (existingToken is not null && await TryReachAsync(baseUri, existingToken))
+            if (existingToken is not null)
             {
-                TryConnect(BaseAddressInput, existingToken, persist: true);
-                return;
+                await TryConnectAsync(BaseAddressInput, existingToken, persist: true);
+                if (IsConnected)
+                {
+                    return;
+                }
             }
 
             var token = await _daemonLauncher.StartAsync(baseUri.Authority, CancellationToken.None);
@@ -711,7 +743,7 @@ public partial class MainViewModel : ViewModelBase, IDisposable
                 ConnectionError = "Could not start gottrentd - it may already be running on a different address, or the executable could not be found next to this app.";
                 return;
             }
-            TryConnect(BaseAddressInput, token, persist: true);
+            await TryConnectAsync(BaseAddressInput, token, persist: true);
         }
         finally
         {

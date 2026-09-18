@@ -79,4 +79,42 @@ public sealed class FileSettingsStoreTests : IDisposable
         var leftovers = Directory.GetFiles(_dir, "settings.json.tmp-*");
         Assert.Empty(leftovers);
     }
+
+    [Fact]
+    public void Save_EncryptsTheTokenAtRest()
+    {
+        // DPAPI is Windows-only, and this repo's own .NET CI runs on
+        // ubuntu-latest (see .github/workflows/dotnet.yml) - TokenProtector
+        // is a deliberate, documented no-op there, same as every other
+        // Windows-only feature in this app (autostart, file association),
+        // so this assertion only holds on the platform it actually applies to.
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+        var store = new FileSettingsStore(_filePath);
+        store.Save(new DesktopSettings("http://127.0.0.1:6880/", "a-real-secret-token"));
+
+        var raw = File.ReadAllText(_filePath);
+
+        Assert.DoesNotContain("a-real-secret-token", raw);
+        Assert.Contains("dpapi:", raw);
+    }
+
+    [Fact]
+    public void Load_WithAPreExistingPlaintextToken_ReadsItUnchanged()
+    {
+        // A settings.json written by a version of this app from before
+        // token encryption existed (or bypassing Save entirely, as here)
+        // has no "dpapi:" prefix on its token - Load must treat that as
+        // already-plaintext rather than failing to "decrypt" it. This
+        // holds on every OS, unlike Save_EncryptsTheTokenAtRest above.
+        Directory.CreateDirectory(_dir);
+        File.WriteAllText(_filePath, """{"BaseAddress":"http://127.0.0.1:6880/","Token":"a-plaintext-token"}""");
+        var store = new FileSettingsStore(_filePath);
+
+        var loaded = store.Load();
+
+        Assert.Equal("a-plaintext-token", loaded.Token);
+    }
 }
