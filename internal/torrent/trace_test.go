@@ -80,10 +80,14 @@ func TestTraceCapturesARealDownload(t *testing.T) {
 
 	for _, ev := range byKind[trace.KindPieceVerified] {
 		if !ev.OK {
-			t.Errorf("piece_verified for piece %d reported OK=false in a download that should have succeeded", ev.Piece)
+			t.Errorf("piece_verified for piece %v reported OK=false in a download that should have succeeded", ev.Piece)
 		}
-		if ev.Piece < 0 || ev.Piece >= mi.NumPieces() {
-			t.Errorf("piece_verified Piece = %d, out of range [0,%d)", ev.Piece, mi.NumPieces())
+		if ev.Piece == nil {
+			t.Error("piece_verified event has no Piece set at all")
+			continue
+		}
+		if *ev.Piece < 0 || *ev.Piece >= mi.NumPieces() {
+			t.Errorf("piece_verified Piece = %d, out of range [0,%d)", *ev.Piece, mi.NumPieces())
 		}
 	}
 
@@ -111,6 +115,62 @@ func TestTraceCapturesARealDownload(t *testing.T) {
 	}
 	if !sawSeeding {
 		t.Error("no state_changed event recorded the transition into seeding")
+	}
+}
+
+// TestTraceCoversEveryPiece is a regression test for a real bug the trace
+// viewer's own replay logic caught: piece 0 of a real download never
+// produced a single trace event (no picker_decision, piece_request,
+// block_received, or piece_verified) even though it was genuinely
+// downloaded and verified — Stats().HavePieces and the file on disk were
+// both correct, so nothing about the download itself was wrong, only the
+// trace record of it. A larger, single-fake-seeder torrent (20 pieces,
+// no risk of a throwaway multi-connection tracker script's self-dial
+// weirdness) isolates whether this is a real internal/torrent bug or an
+// artifact of how that manual trace was produced.
+func TestTraceCoversEveryPiece(t *testing.T) {
+	const pieceLength = 16384
+	mi, content := buildTorrent(t, "coverage.bin", pieceLength, []fileSpec{
+		{length: pieceLength * 20},
+	})
+
+	tracePath := filepath.Join(t.TempDir(), "trace.jsonl")
+	tw, err := trace.New(tracePath)
+	if err != nil {
+		t.Fatalf("trace.New: %v", err)
+	}
+
+	cfg := newTestConfig(t)
+	cfg.Trace = tw
+
+	tr, err := New(mi, cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_, _ = runInBackground(t, tr)
+
+	seeder := newFakeSeeder(t, mi, content)
+	tr.DialPeer(seeder.peerInfo())
+
+	waitForState(t, tr, StateSeeding, 30*time.Second)
+	if err := tw.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	events := readTraceEvents(t, tracePath)
+	verified := make(map[int]bool)
+	for _, ev := range events {
+		if ev.Kind == trace.KindPieceVerified && ev.OK && ev.Piece != nil {
+			verified[*ev.Piece] = true
+		}
+	}
+	for i := 0; i < mi.NumPieces(); i++ {
+		if !verified[i] {
+			t.Errorf("piece %d has no successful piece_verified trace event", i)
+		}
+	}
+	if len(verified) != mi.NumPieces() {
+		t.Errorf("got %d distinct verified pieces traced, want %d", len(verified), mi.NumPieces())
 	}
 }
 

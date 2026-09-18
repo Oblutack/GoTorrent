@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GoTorrent Trace Viewer</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>GoTorrent Trace Viewer</h1>
+  <p class="subtitle">Replays a <code>-trace</code> JSONL log from <code>gottrent</code>/<code>gottrentd</code> (Phase 8's explain/trace mode). Nothing here leaves the browser — the file is read locally and never uploaded anywhere.</p>
+  <div class="controls-row">
+    <label class="file-picker">
+      <input type="file" id="file-input" accept=".jsonl,.json,.log,.txt">
+      <span id="file-label">Choose a trace file&hellip;</span>
+    </label>
+    <select id="torrent-select" disabled>
+      <option>No trace loaded</option>
+    </select>
+    <span id="load-status" class="status"></span>
+  </div>
+</header>
+
+<main id="app" class="hidden">
+  <section class="transport">
+    <button id="btn-step-back" title="Step back one event">&#9664;</button>
+    <button id="btn-play" title="Play / pause">&#9654;</button>
+    <button id="btn-step-fwd" title="Step forward one event">&#9654;&#9654;</button>
+    <input type="range" id="scrubber" min="0" max="0" value="0">
+    <span id="position-label">0 / 0</span>
+    <span id="now-label" class="status"></span>
+    <select id="speed-select" title="Playback speed">
+      <option value="4">4 ev/s</option>
+      <option value="16" selected>16 ev/s</option>
+      <option value="64">64 ev/s</option>
+      <option value="256">256 ev/s</option>
+    </select>
+  </section>
+
+  <section class="grid">
+    <div class="panel" id="panel-piece-map">
+      <h2>Piece map</h2>
+      <canvas id="piece-map-canvas"></canvas>
+      <div class="legend" id="piece-map-legend"></div>
+    </div>
+
+    <div class="panel" id="panel-swarm">
+      <h2>Swarm</h2>
+      <canvas id="swarm-canvas"></canvas>
+    </div>
+
+    <div class="panel" id="panel-contribution">
+      <h2>Per-peer contribution (bytes downloaded from each)</h2>
+      <div id="contribution-bars"></div>
+    </div>
+
+    <div class="panel panel-wide" id="panel-choke">
+      <h2>Choke timeline (our outbound choke decision — upload access granted to each peer)</h2>
+      <canvas id="choke-canvas"></canvas>
+    </div>
+
+    <div class="panel panel-wide" id="panel-log">
+      <h2>Event log</h2>
+      <div id="event-log"></div>
+    </div>
+  </section>
+</main>
+
+<script src="viewer.js"></script>
+</body>
+</html>

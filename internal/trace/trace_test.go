@@ -17,7 +17,7 @@ func TestWriterEmitAppendsOneJSONLinePerEvent(t *testing.T) {
 	}
 
 	w.Emit(Event{Torrent: "abc", Kind: KindPeerConnected, Peer: "1.2.3.4:6881"})
-	w.Emit(Event{Torrent: "abc", Kind: KindPieceVerified, Piece: 5, OK: true})
+	w.Emit(Event{Torrent: "abc", Kind: KindPieceVerified, Piece: Int(5), OK: true})
 	if err := w.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
@@ -49,7 +49,7 @@ func TestWriterEmitAppendsOneJSONLinePerEvent(t *testing.T) {
 	if err := json.Unmarshal([]byte(lines[1]), &second); err != nil {
 		t.Fatalf("unmarshal second line: %v", err)
 	}
-	if second.Kind != KindPieceVerified || second.Piece != 5 || !second.OK {
+	if second.Kind != KindPieceVerified || second.Piece == nil || *second.Piece != 5 || !second.OK {
 		t.Errorf("second event = %+v, want piece_verified/piece=5/ok=true", second)
 	}
 }
@@ -77,7 +77,7 @@ func TestWriterEmitIsSafeForConcurrentUse(t *testing.T) {
 		go func(g int) {
 			defer wg.Done()
 			for i := 0; i < perGoroutine; i++ {
-				w.Emit(Event{Torrent: "abc", Kind: KindBlockReceived, Piece: g, Begin: i})
+				w.Emit(Event{Torrent: "abc", Kind: KindBlockReceived, Piece: Int(g), Begin: Int(i)})
 			}
 		}(g)
 	}

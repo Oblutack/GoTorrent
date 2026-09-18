@@ -26,10 +26,23 @@ type Event struct {
 	Torrent string    `json:"torrent"`
 	Kind    string    `json:"kind"`
 
-	Peer   string `json:"peer,omitempty"`
-	Piece  int    `json:"piece,omitempty"`
-	Begin  int    `json:"begin,omitempty"`
-	Length int    `json:"length,omitempty"`
+	Peer string `json:"peer,omitempty"`
+	// Piece and Begin are pointers, not plain ints: piece/block index 0 is
+	// the single most common real value a piece-carrying event ever has
+	// (the first piece, or a request/block starting at offset 0 — every
+	// request in a single-block piece has Begin 0), and a plain int with
+	// omitempty cannot tell "this event has no piece index" apart from
+	// "this event's piece index is 0" — Go's encoding/json omits a zero
+	// int just as eagerly as a genuinely absent one. A real trace-viewer
+	// bug caught this: piece 0 of a real download silently had zero
+	// trace events by every appearance, because every one of its events
+	// had its "piece" field dropped entirely. Int is the constructor;
+	// same "nil means not set, a real pointer to a real zero means
+	// explicitly zero" idiom internal/engine's SetSeedLimits already uses
+	// for this exact ambiguity.
+	Piece  *int `json:"piece,omitempty"`
+	Begin  *int `json:"begin,omitempty"`
+	Length int  `json:"length,omitempty"`
 
 	// From and To are the old and new state, for kind "state_changed".
 	From string `json:"from,omitempty"`
@@ -48,6 +61,11 @@ type Event struct {
 	Rarity   int    `json:"rarity,omitempty"`
 	Endgame  bool   `json:"endgame,omitempty"`
 }
+
+// Int returns a pointer to v, for populating Event.Piece/Begin — a plain
+// &v at the call site works just as well, but this reads better than a
+// bare & in front of a temporary like len(x) or a loop variable.
+func Int(v int) *int { return &v }
 
 // Kinds. Kept as constants rather than typed so Event.Kind stays a plain
 // string on the wire — a future viewer (or a future event kind this

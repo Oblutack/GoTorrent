@@ -760,7 +760,7 @@ func (t *Torrent) openMetadata(mi *metainfo.MetaInfo) error {
 		pk.OnPieceStarted = func(index int, priority picker.Priority, strategy picker.Strategy, rarity int, endgame bool) {
 			t.cfg.Trace.Emit(trace.Event{
 				Torrent: t.infoHash.String(), Kind: trace.KindPickerDecision,
-				Piece: index, Priority: priority.String(), Strategy: strategy.String(),
+				Piece: trace.Int(index), Priority: priority.String(), Strategy: strategy.String(),
 				Rarity: rarity, Endgame: endgame,
 			})
 		}

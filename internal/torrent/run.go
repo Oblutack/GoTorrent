@@ -762,7 +762,7 @@ func (t *Torrent) onBlock(pc *peerConn, block *peer.PieceBlock) {
 		return
 	}
 	t.downloaded.Add(int64(length))
-	t.cfg.Trace.Emit(trace.Event{Torrent: t.infoHash.String(), Kind: trace.KindBlockReceived, Peer: pc.addr, Piece: int(block.Index), Begin: int(block.Begin), Length: length})
+	t.cfg.Trace.Emit(trace.Event{Torrent: t.infoHash.String(), Kind: trace.KindBlockReceived, Peer: pc.addr, Piece: trace.Int(int(block.Index)), Begin: trace.Int(int(block.Begin)), Length: length})
 
 	if completed {
 		index := int(block.Index)
@@ -810,17 +810,17 @@ func (t *Torrent) verifyPiece(ctx context.Context, mi *metainfo.MetaInfo, index 
 func (t *Torrent) onPieceVerified(index int, ok bool, err error, peerAddr string) {
 	if err != nil {
 		logger.Error.Printf("torrent %s: verifying piece %d: %v\n", t.infoHash, index, err)
-		t.cfg.Trace.Emit(trace.Event{Torrent: t.infoHash.String(), Kind: trace.KindPieceVerified, Peer: peerAddr, Piece: index, OK: false, Err: err.Error()})
+		t.cfg.Trace.Emit(trace.Event{Torrent: t.infoHash.String(), Kind: trace.KindPieceVerified, Peer: peerAddr, Piece: trace.Int(index), OK: false, Err: err.Error()})
 		t.pick.MarkFailed(index)
 		return
 	}
 	if !ok {
 		logger.Warning.Printf("torrent %s: piece %d failed hash check, re-downloading\n", t.infoHash, index)
-		t.cfg.Trace.Emit(trace.Event{Torrent: t.infoHash.String(), Kind: trace.KindPieceVerified, Peer: peerAddr, Piece: index, OK: false})
+		t.cfg.Trace.Emit(trace.Event{Torrent: t.infoHash.String(), Kind: trace.KindPieceVerified, Peer: peerAddr, Piece: trace.Int(index), OK: false})
 		t.pick.MarkFailed(index)
 		return
 	}
-	t.cfg.Trace.Emit(trace.Event{Torrent: t.infoHash.String(), Kind: trace.KindPieceVerified, Peer: peerAddr, Piece: index, OK: true})
+	t.cfg.Trace.Emit(trace.Event{Torrent: t.infoHash.String(), Kind: trace.KindPieceVerified, Peer: peerAddr, Piece: trace.Int(index), OK: true})
 
 	t.pick.MarkVerified(index)
 	t.piecesVerifiedSinceCheckpoint++
@@ -908,7 +908,7 @@ func (t *Torrent) tick(now time.Time) {
 			select {
 			case pc.client.WorkQueue <- &peer.BlockRequest{Index: uint32(r.Index), Begin: uint32(r.Begin), Length: uint32(r.Length)}:
 				pc.outstanding++
-				t.cfg.Trace.Emit(trace.Event{Torrent: t.infoHash.String(), Kind: trace.KindPieceRequest, Peer: pc.addr, Piece: r.Index, Begin: r.Begin, Length: r.Length})
+				t.cfg.Trace.Emit(trace.Event{Torrent: t.infoHash.String(), Kind: trace.KindPieceRequest, Peer: pc.addr, Piece: trace.Int(r.Index), Begin: trace.Int(r.Begin), Length: r.Length})
 			default:
 				// The queue filled between the room check and now (another
 				// tick's leftover); the picker already marked it pending, so
