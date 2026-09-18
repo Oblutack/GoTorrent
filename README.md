@@ -215,7 +215,11 @@ GoTorrent/
 
 ## Demo
 
-Standard mode:
+**Desktop app** — a live transfer across a real multi-peer swarm: the torrent list, the live piece map, the swarm graph (per-peer contribution, choke state, and progress, colour-coded), and the command palette (Ctrl+K).
+
+![GoTorrent.Desktop in action](assets/gotorrent-desktop-demo.gif)
+
+**CLI**, standard mode:
 
 ![GoTorrent in action](assets/gif1.gif)
 
