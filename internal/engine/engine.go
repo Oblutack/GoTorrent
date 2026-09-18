@@ -31,6 +31,7 @@ import (
 	"github.com/Oblutack/GoTorrent/internal/ratelimit"
 	"github.com/Oblutack/GoTorrent/internal/storage"
 	"github.com/Oblutack/GoTorrent/internal/torrent"
+	"github.com/Oblutack/GoTorrent/internal/trace"
 	"github.com/Oblutack/GoTorrent/internal/tracker"
 )
 
@@ -162,6 +163,14 @@ type Defaults struct {
 	// inherit whatever this setting implies rather than needing their own
 	// special case here.
 	AnonymousMode bool
+	// Trace (Phase 8), if set, is handed to every torrent this Engine
+	// starts, unchanged — one *trace.Writer shared across the whole fleet,
+	// same "one instance, several owners" shape as DownLimit/UpLimit,
+	// except never swapped out at runtime the way those are (there is no
+	// SetTrace). Nil (the default) means tracing is off. Typically built
+	// once from a CLI -trace flag by the caller (cmd/gottrent, cmd/
+	// gottrentd) before New — see trace.New.
+	Trace *trace.Writer
 }
 
 // Summary is a point-in-time view of one managed torrent, safe to read from
@@ -1101,6 +1110,7 @@ func (e *Engine) torrentConfig(downloadDir string) torrent.Config {
 		IPFilter:             e.ipFilter,
 		ProxyDialer:          e.proxyDialer,
 		AnonymousMode:        e.defaults.AnonymousMode,
+		Trace:                e.defaults.Trace,
 	}
 	if e.defaults.DownLimit != nil {
 		cfg.DownLimit = append(cfg.DownLimit, e.defaults.DownLimit)

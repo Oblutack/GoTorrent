@@ -21,6 +21,7 @@ import (
 	"github.com/Oblutack/GoTorrent/internal/picker"
 	"github.com/Oblutack/GoTorrent/internal/ratelimit"
 	"github.com/Oblutack/GoTorrent/internal/storage"
+	"github.com/Oblutack/GoTorrent/internal/trace"
 )
 
 // torrentSources collects a flag that may be repeated, one -torrent per
@@ -135,6 +136,7 @@ func runFleet() {
 	proxyPassword := flag.String("proxy-password", "", "Proxy password, if it requires authentication")
 	proxyDNS := flag.Bool("proxy-dns", false, "Resolve hostnames through the SOCKS5 proxy itself instead of locally (meaningless for -proxy-type=http)")
 	anonymousMode := flag.Bool("anonymous-mode", false, "Strip the client fingerprint from the peer ID and disable LSD; requires -proxy-type to also be set")
+	tracePath := flag.String("trace", "", "Write a Phase 8 explain/trace JSONL event log (peer connects, choke decisions, requests, blocks, hash results, and the picker's own reasoning) to this path (empty = disabled)")
 	verbose := flag.Bool("verbose", false, "Enable verbose logging")
 	flag.Parse()
 
@@ -194,6 +196,14 @@ func runFleet() {
 			logger.Error.Fatalf("Error parsing -alt-schedule: %v\n", err)
 		}
 		defaults.AltSchedule = &sched
+	}
+	if *tracePath != "" {
+		tw, err := trace.New(*tracePath)
+		if err != nil {
+			logger.Error.Fatalf("Error opening -trace file: %v\n", err)
+		}
+		defer tw.Close()
+		defaults.Trace = tw
 	}
 
 	e, _, err := bootstrap.Engine(context.Background(), bootstrap.Options{

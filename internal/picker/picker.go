@@ -167,6 +167,19 @@ type Picker struct {
 	// order is a scratch slice reused by the rarest-first scan so picking does
 	// not allocate on every tick.
 	order []int
+
+	// OnPieceStarted, if set, is called every time start() begins a new
+	// piece — Phase 8's explain/trace mode uses this as the picker's own
+	// account of why this piece and not some other one: its priority tier,
+	// the active strategy, how many connected peers currently hold it
+	// (rarity — always >0, since nextPiece only ever considers a piece a
+	// peer actually has), and whether the picker was already in endgame
+	// when it made this decision (duplicate in-flight requests only ever
+	// happen for a piece already active, via fill — this flag is about the
+	// picker's overall mode at the moment, not this one piece). Called
+	// synchronously from start(), so — like every other Picker field —
+	// only ever from the single goroutine that owns this Picker.
+	OnPieceStarted func(index int, priority Priority, strategy Strategy, rarity int, endgame bool)
 }
 
 // New returns a Picker for a torrent.
@@ -503,5 +516,12 @@ func (p *Picker) start(index int) *pieceProgress {
 		requested: make([]time.Time, blocks),
 	}
 	p.active[index] = pp
+	if p.OnPieceStarted != nil {
+		priority := PriorityNormal
+		if p.priority != nil {
+			priority = p.priority[index]
+		}
+		p.OnPieceStarted(index, priority, p.cfg.Strategy, p.avail.Count(index), p.InEndgame())
+	}
 	return pp
 }

@@ -12,6 +12,7 @@ import (
 	"github.com/Oblutack/GoTorrent/internal/metainfo"
 	"github.com/Oblutack/GoTorrent/internal/peer"
 	"github.com/Oblutack/GoTorrent/internal/picker"
+	"github.com/Oblutack/GoTorrent/internal/trace"
 	"github.com/Oblutack/GoTorrent/internal/tracker"
 )
 
@@ -629,6 +630,7 @@ func (t *Torrent) sendEvent(ctx context.Context, ev any) {
 func (t *Torrent) registerPeer(pc *peerConn) {
 	delete(t.dialing, pc.addr)
 	t.peers[pc.addr] = pc
+	t.cfg.Trace.Emit(trace.Event{Torrent: t.infoHash.String(), Kind: trace.KindPeerConnected, Peer: pc.addr})
 	if t.onPeerConnected != nil {
 		t.onPeerConnected(pc.addr)
 	}
@@ -639,6 +641,7 @@ func (t *Torrent) removePeer(pc *peerConn) {
 		return
 	}
 	delete(t.peers, pc.addr)
+	t.cfg.Trace.Emit(trace.Event{Torrent: t.infoHash.String(), Kind: trace.KindPeerDisconnected, Peer: pc.addr})
 	t.flushUploaded(pc) // bank its final total before pc is discarded
 	if t.pick != nil {
 		t.pick.Availability().RemovePeer(pc.client.BitfieldSnapshot())
@@ -759,6 +762,7 @@ func (t *Torrent) onBlock(pc *peerConn, block *peer.PieceBlock) {
 		return
 	}
 	t.downloaded.Add(int64(length))
+	t.cfg.Trace.Emit(trace.Event{Torrent: t.infoHash.String(), Kind: trace.KindBlockReceived, Peer: pc.addr, Piece: int(block.Index), Begin: int(block.Begin), Length: length})
 
 	if completed {
 		index := int(block.Index)
@@ -806,14 +810,17 @@ func (t *Torrent) verifyPiece(ctx context.Context, mi *metainfo.MetaInfo, index 
 func (t *Torrent) onPieceVerified(index int, ok bool, err error, peerAddr string) {
 	if err != nil {
 		logger.Error.Printf("torrent %s: verifying piece %d: %v\n", t.infoHash, index, err)
+		t.cfg.Trace.Emit(trace.Event{Torrent: t.infoHash.String(), Kind: trace.KindPieceVerified, Peer: peerAddr, Piece: index, OK: false, Err: err.Error()})
 		t.pick.MarkFailed(index)
 		return
 	}
 	if !ok {
 		logger.Warning.Printf("torrent %s: piece %d failed hash check, re-downloading\n", t.infoHash, index)
+		t.cfg.Trace.Emit(trace.Event{Torrent: t.infoHash.String(), Kind: trace.KindPieceVerified, Peer: peerAddr, Piece: index, OK: false})
 		t.pick.MarkFailed(index)
 		return
 	}
+	t.cfg.Trace.Emit(trace.Event{Torrent: t.infoHash.String(), Kind: trace.KindPieceVerified, Peer: peerAddr, Piece: index, OK: true})
 
 	t.pick.MarkVerified(index)
 	t.piecesVerifiedSinceCheckpoint++
@@ -901,6 +908,7 @@ func (t *Torrent) tick(now time.Time) {
 			select {
 			case pc.client.WorkQueue <- &peer.BlockRequest{Index: uint32(r.Index), Begin: uint32(r.Begin), Length: uint32(r.Length)}:
 				pc.outstanding++
+				t.cfg.Trace.Emit(trace.Event{Torrent: t.infoHash.String(), Kind: trace.KindPieceRequest, Peer: pc.addr, Piece: r.Index, Begin: r.Begin, Length: r.Length})
 			default:
 				// The queue filled between the room check and now (another
 				// tick's leftover); the picker already marked it pending, so
@@ -951,12 +959,33 @@ func adaptPipeline(pc *peerConn, now time.Time) {
 	pc.pipelineTarget = target
 }
 
+// runChoker re-evaluates who to unchoke and traces (Phase 8) whichever
+// peers' outbound choke state actually flipped as a result — diffed
+// before/after rather than sourced from choker.Choker itself, which
+// deliberately knows nothing about tracing (a tit-for-tat algorithm package
+// has no business depending on a debug-tooling concern).
 func (t *Torrent) runChoker(now time.Time) {
 	peers := make([]choker.Peer, 0, len(t.peers))
+	before := make(map[string]bool, len(t.peers))
 	for _, pc := range t.peers {
 		peers = append(peers, pc)
+		before[pc.addr] = pc.client.AmChoking()
 	}
 	t.choke.Run(peers, now)
+	if t.cfg.Trace == nil {
+		return
+	}
+	for _, pc := range t.peers {
+		was, after := before[pc.addr], pc.client.AmChoking()
+		if was == after {
+			continue
+		}
+		kind := trace.KindUnchoke
+		if after {
+			kind = trace.KindChoke
+		}
+		t.cfg.Trace.Emit(trace.Event{Torrent: t.infoHash.String(), Kind: kind, Peer: pc.addr})
+	}
 }
 
 // --- shutdown and checkpointing ------------------------------------------

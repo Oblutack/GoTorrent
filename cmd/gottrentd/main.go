@@ -30,6 +30,7 @@ import (
 	"github.com/Oblutack/GoTorrent/internal/picker"
 	"github.com/Oblutack/GoTorrent/internal/ratelimit"
 	"github.com/Oblutack/GoTorrent/internal/storage"
+	"github.com/Oblutack/GoTorrent/internal/trace"
 	"github.com/Oblutack/GoTorrent/internal/version"
 )
 
@@ -101,6 +102,7 @@ func run() error {
 	apiAddress := flag.String("api-address", "", `Address the control API listens on, as "host:port" (default 127.0.0.1:6880); also this process's single-instance lock`)
 	tlsCertFile := flag.String("tls-cert", "", "TLS certificate file for the API listener (requires -tls-key too; empty = plain HTTP)")
 	tlsKeyFile := flag.String("tls-key", "", "TLS private key file for the API listener (requires -tls-cert too)")
+	tracePath := flag.String("trace", "", "Write a Phase 8 explain/trace JSONL event log (peer connects, choke decisions, requests, blocks, hash results, and the picker's own reasoning) to this path (empty = disabled)")
 	verbose := flag.Bool("verbose", false, "Enable verbose logging")
 	flag.Parse()
 
@@ -133,7 +135,7 @@ func run() error {
 		ipFilterUpdateInterval: ipFilterUpdateInterval,
 		proxyType:              proxyType, proxyAddress: proxyAddress, proxyUsername: proxyUsername, proxyPassword: proxyPassword,
 		proxyDNS: proxyDNS, anonymousMode: anonymousMode, apiAddress: apiAddress, verbose: verbose,
-		tlsCertFile: tlsCertFile, tlsKeyFile: tlsKeyFile,
+		tlsCertFile: tlsCertFile, tlsKeyFile: tlsKeyFile, tracePath: tracePath,
 		catPaths: catPaths,
 	})
 
@@ -142,6 +144,14 @@ func run() error {
 	defaults, err := buildDefaults(cfg)
 	if err != nil {
 		return fmt.Errorf("building engine defaults: %w", err)
+	}
+	if cfg.TracePath != "" {
+		tw, err := trace.New(cfg.TracePath)
+		if err != nil {
+			return fmt.Errorf("opening trace file: %w", err)
+		}
+		defer tw.Close()
+		defaults.Trace = tw
 	}
 
 	// The single-instance lock: bind cfg.APIAddress before doing anything
@@ -244,7 +254,7 @@ type flagValues struct {
 	proxyType, proxyAddress, proxyUsername, proxyPassword                       *string
 	proxyDNS, anonymousMode, verbose                                            *bool
 	maxActiveDownloads, maxActiveSeeds, maxActiveTotal, uploadSlots             *int
-	apiAddress, tlsCertFile, tlsKeyFile                                         *string
+	apiAddress, tlsCertFile, tlsKeyFile, tracePath                              *string
 	catPaths                                                                    categoryPaths
 }
 
@@ -377,6 +387,9 @@ func mergeFlags(cfg *Config, explicit map[string]bool, f flagValues) {
 	}
 	if explicit["tls-key"] {
 		cfg.TLSKeyFile = *f.tlsKeyFile
+	}
+	if explicit["trace"] {
+		cfg.TracePath = *f.tracePath
 	}
 	if explicit["verbose"] {
 		cfg.Verbose = *f.verbose

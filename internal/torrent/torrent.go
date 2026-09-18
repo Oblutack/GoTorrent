@@ -20,6 +20,7 @@ import (
 	"github.com/Oblutack/GoTorrent/internal/proxy"
 	"github.com/Oblutack/GoTorrent/internal/ratelimit"
 	"github.com/Oblutack/GoTorrent/internal/storage"
+	"github.com/Oblutack/GoTorrent/internal/trace"
 	"github.com/Oblutack/GoTorrent/internal/tracker"
 )
 
@@ -195,6 +196,16 @@ type Config struct {
 	// own comment. Only applies when there's no usable resume data to
 	// trust instead; irrelevant to an already-checkpointed torrent.
 	SkipHashCheck bool
+	// Trace (Phase 8) is where this torrent's actor emits a structured
+	// event for every protocol action worth explaining — peer connect/
+	// disconnect, state transitions, choke decisions, piece requests,
+	// blocks received, hash results, and the picker's own reasoning for
+	// each piece it starts. Nil (the default) means tracing is off; a
+	// *trace.Writer is nil-receiver-safe, so every emit call site below
+	// needs no nil check of its own. Typically one *trace.Writer shared
+	// across an engine's whole fleet, same "one instance, several owners"
+	// shape as IPFilter/ProxyDialer.
+	Trace *trace.Writer
 }
 
 // peerConn is one connected peer plus the bookkeeping the actor needs that
@@ -548,6 +559,7 @@ func (t *Torrent) setState(next State) {
 	}
 	t.state.Store(int32(next))
 	logger.Logf("torrent %s: %s -> %s\n", t.infoHash, cur, next)
+	t.cfg.Trace.Emit(trace.Event{Torrent: t.infoHash.String(), Kind: trace.KindStateChanged, From: cur.String(), To: next.String()})
 
 	// BEP 21: tell every already-connected peer our upload-only status
 	// just changed. New connections learn it from the extended handshake
@@ -743,6 +755,15 @@ func (t *Torrent) openMetadata(mi *metainfo.MetaInfo) error {
 	}
 	if err := pk.SetPriorities(pp); err != nil {
 		return fmt.Errorf("applying file priorities: %w", err)
+	}
+	if t.cfg.Trace != nil {
+		pk.OnPieceStarted = func(index int, priority picker.Priority, strategy picker.Strategy, rarity int, endgame bool) {
+			t.cfg.Trace.Emit(trace.Event{
+				Torrent: t.infoHash.String(), Kind: trace.KindPickerDecision,
+				Piece: index, Priority: priority.String(), Strategy: strategy.String(),
+				Rarity: rarity, Endgame: endgame,
+			})
+		}
 	}
 	t.pick = pk
 

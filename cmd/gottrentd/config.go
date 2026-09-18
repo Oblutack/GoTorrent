@@ -71,7 +71,11 @@ type Config struct {
 	// defenses, not transport encryption a same-box client doesn't need.
 	TLSCertFile string `json:"tlsCertFile"`
 	TLSKeyFile  string `json:"tlsKeyFile"`
-	Verbose     bool   `json:"verbose"`
+	// TracePath (Phase 8), if set, enables the explain/trace mode JSONL
+	// event log for the whole fleet — see internal/trace and cmd/gottrent's
+	// own -trace flag, which this mirrors.
+	TracePath string `json:"tracePath"`
+	Verbose   bool   `json:"verbose"`
 }
 
 // defaultConfig mirrors cmd/gottrent's own flag defaults field for field,
