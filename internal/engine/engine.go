@@ -365,6 +365,13 @@ type Engine struct {
 	eventMu        sync.Mutex
 	eventSubs      map[int]chan Event
 	nextEventSubID int
+
+	// dedupeMu guards dedupeIndex — its own lock for the same reason eventMu
+	// is separate from mu: OnPieceVerified fires from arbitrary
+	// torrent-callback goroutines that must never contend with (or risk
+	// deadlocking behind) the heavier fleet-management lock. See dedupe.go.
+	dedupeMu    sync.Mutex
+	dedupeIndex map[metainfo.Hash]dedupeLocation
 }
 
 // New creates an Engine whose manifest lives under stateDir. It does not load
@@ -392,10 +399,11 @@ func New(stateDir string, defaults Defaults) (*Engine, error) {
 	}
 
 	e := &Engine{
-		stateDir: stateDir,
-		defaults: defaults,
-		torrents: make(map[metainfo.Hash]*managedTorrent),
-		ipFilter: ipfilter.New(),
+		stateDir:    stateDir,
+		defaults:    defaults,
+		torrents:    make(map[metainfo.Hash]*managedTorrent),
+		dedupeIndex: make(map[metainfo.Hash]dedupeLocation),
+		ipFilter:    ipfilter.New(),
 		proxyDialer: proxy.NewDialer(proxy.Config{
 			Type:     defaults.ProxyType,
 			Address:  defaults.ProxyAddress,
@@ -564,6 +572,27 @@ func (e *Engine) AddWithOptions(source, downloadDir string, opts AddOptions) (me
 		// it never calls back into tr, so unlike the goroutines above it
 		// needs no go of its own to stay safe on the actor goroutine.
 		e.broadcast(Event{Kind: EventTorrentStateChanged, InfoHash: hash, State: s})
+		// Cross-torrent dedupe (Phase 8). Two separate passes, both needed:
+		// applyDedupe *consumes* the fleet-wide index (only meaningful once
+		// there's something missing to want, i.e. Downloading) — calls back
+		// into tr (ApplyDedupedPiece), so it needs the same
+		// detached-goroutine treatment as reevaluateQueue/
+		// dispatchCompletionHook above. publishAllDedupeSources *produces*
+		// into it: OnPieceVerified below already records each piece as it
+		// downloads, but a torrent that was already complete when Added
+		// (bulk-verified) or resumed from trusted resume data never sends a
+		// single piece through that per-piece hook — both paths call
+		// t.pick.SetHave directly — so without this bulk publish here, on
+		// reaching Downloading or Seeding, that torrent's pieces would never
+		// become available to any other torrent's dedupe lookups at all,
+		// defeating the single most common real case for this feature (an
+		// already-seeded file, re-added under a second torrent).
+		if s == torrent.StateDownloading {
+			go e.applyDedupe(hash)
+		}
+		if s == torrent.StateDownloading || s == torrent.StateSeeding {
+			go e.publishAllDedupeSources(hash)
+		}
 	})
 	// Same constraint as OnStateChange above — must not block or call back
 	// into tr synchronously, since it fires from the actor's own tick
@@ -578,6 +607,7 @@ func (e *Engine) AddWithOptions(source, downloadDir string, opts AddOptions) (me
 	})
 	tr.OnPieceVerified(func(index int, peerAddr string) {
 		e.broadcast(Event{Kind: EventPieceVerified, InfoHash: hash, PieceIndex: index, PeerAddr: peerAddr})
+		e.recordDedupeSource(hash, index)
 	})
 
 	e.broadcast(Event{Kind: EventTorrentAdded, InfoHash: hash})

@@ -32,6 +32,7 @@ const (
 	ctrlSetFirstLastPieceFirst
 	ctrlSetSeedLimits
 	ctrlSetStreamPosition
+	ctrlApplyDedupedPiece
 )
 
 type controlMsg struct {
@@ -59,10 +60,14 @@ type controlMsg struct {
 	// the torrent's flat content space (the same addressing ReadAt and peer
 	// upload requests already use).
 	streamByteOffset int64
+	// dedupeIndex and dedupeData are set for ctrlApplyDedupedPiece.
+	dedupeIndex int
+	dedupeData  []byte
 
 	// errReply receives the result of Pause/Resume/Recheck/SetMetadata/
 	// SetFilePriority/AddTracker/Reannounce/SetSequential/SetSuperSeeding/
-	// SetFirstLastPieceFirst/SetSeedLimits/SetStreamPosition.
+	// SetFirstLastPieceFirst/SetSeedLimits/SetStreamPosition/
+	// ApplyDedupedPiece.
 	errReply chan error
 	// statsReply receives the actor-owned half of a Stats snapshot.
 	statsReply chan Stats

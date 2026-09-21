@@ -120,6 +120,9 @@ func (t *Torrent) handleControl(msg controlMsg) {
 	case ctrlSetStreamPosition:
 		msg.errReply <- t.doSetStreamPosition(msg.streamByteOffset)
 
+	case ctrlApplyDedupedPiece:
+		msg.errReply <- t.doApplyDedupedPiece(msg.dedupeIndex, msg.dedupeData)
+
 	case ctrlPeers:
 		msg.peersReply <- t.peersSnapshot()
 	}
@@ -377,6 +380,46 @@ func (t *Torrent) doSetStreamPosition(off int64) error {
 	if err := t.pick.SetPriorities(pp); err != nil {
 		return fmt.Errorf("torrent: applying priorities: %w", err)
 	}
+	return nil
+}
+
+// doApplyDedupedPiece writes a piece's bytes straight to storage from data
+// already sitting on this machine (another managed torrent that happens to
+// share this exact piece's content, per Phase 8's cross-torrent dedupe —
+// see internal/engine's own dedupe.go for how a match is found) instead of
+// ever requesting it from a peer. Deliberately reuses the exact same
+// hash-verify-then-publish path a real network download ends in
+// (verifyPiece -> eventPieceVerified -> onPieceVerified) rather than
+// trusting the caller's copy was correct — defense in depth against a bug
+// in the dedupe matching logic, at the cost of one redundant SHA-1 over
+// data that (if the match was real) already passed one. A no-op, not an
+// error, if this piece is already verified — a real, harmless race against
+// a peer download completing the very same piece first; both write
+// identical bytes by definition, so whichever finishes first wins and the
+// other is simply redundant.
+func (t *Torrent) doApplyDedupedPiece(index int, data []byte) error {
+	mi := t.mi.Load()
+	if mi == nil || t.pick == nil || t.storage == nil {
+		return errors.New("torrent: no metadata yet")
+	}
+	if index < 0 || index >= mi.NumPieces() {
+		return fmt.Errorf("torrent: piece index %d out of range (%d pieces)", index, mi.NumPieces())
+	}
+	if t.pick.Have().Has(index) {
+		return nil
+	}
+	if want := mi.PieceLen(index); int64(len(data)) != want {
+		return fmt.Errorf("torrent: deduped piece %d is %d bytes, want %d", index, len(data), want)
+	}
+
+	offset := int64(index) * mi.Info.PieceLength
+	if _, err := t.storage.WriteAt(data, offset); err != nil {
+		return fmt.Errorf("torrent: writing deduped piece %d: %w", index, err)
+	}
+	t.downloaded.Add(int64(len(data)))
+
+	t.wg.Add(1)
+	go t.verifyPiece(t.ctx, mi, index, "")
 	return nil
 }
 
