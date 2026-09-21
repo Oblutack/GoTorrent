@@ -521,7 +521,7 @@ func (t *Torrent) handleEvent(ev any) {
 	case eventPieceVerified:
 		t.onPieceVerified(e.index, e.ok, e.err, e.peerAddr)
 	case eventTrackerPeers:
-		for _, pi := range e.peers {
+		for _, pi := range t.orderDiscoveredPeers(e.peers) {
 			t.dial(pi)
 		}
 	default:

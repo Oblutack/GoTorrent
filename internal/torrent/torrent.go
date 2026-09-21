@@ -203,6 +203,18 @@ type Config struct {
 	// and Pause() is a no-op on the non-Active StateAdded it might still
 	// be in.
 	StartPaused bool
+	// LocalIP is this machine's own internet-facing address, when known —
+	// typically learned by engine.Engine.StartPortMapping as a side effect
+	// of its own gateway query, nil if port mapping never ran or never
+	// succeeded. Used for BEP 40 canonical peer priority (peer.
+	// CanonicalPriority) to rank freshly-discovered tracker/DHT/PEX peers
+	// before dialing them — see run.go's handling of eventTrackerPeers.
+	// Nil just means that ranking is skipped and peers are dialed in
+	// whatever order they were discovered, same as before this existed —
+	// a graceful degradation, not an error, since not every setup
+	// (no gateway found, a real public IP with no NAT at all) ever learns
+	// one.
+	LocalIP net.IP
 	// SkipHashCheck trusts that every piece is already correct without
 	// actually reading and hashing it back — see Torrent.openMetadata's
 	// own comment. Only applies when there's no usable resume data to

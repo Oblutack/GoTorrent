@@ -312,6 +312,15 @@ type Engine struct {
 	// failed, which is not fatal: inbound connections still work if the
 	// port is already reachable some other way.
 	portmapClient *portmap.Client
+	// externalIP is this machine's own internet-facing address, learned
+	// as a side effect of StartPortMapping's own gateway query — nil
+	// until then (or forever, if port mapping never succeeds, e.g. no
+	// UPnP/NAT-PMP gateway found). Fed to every torrentConfig as
+	// Config.LocalIP for BEP 40 canonical peer priority (peer.
+	// CanonicalPriority needs to know "our own" address to rank discovered
+	// candidates against); nothing else in this codebase uses it. Guarded
+	// by mu like portmapClient, since both are set together.
+	externalIP net.IP
 
 	// lsdNode is non-nil once StartLSD has joined the multicast group — see
 	// StartLSD. One node for the whole fleet, same reasoning as dhtNode and
@@ -958,6 +967,9 @@ func (e *Engine) StartPortMapping(ctx context.Context, internalPort uint16) erro
 	if mapping.ExternalPort != 0 {
 		e.defaults.ListenPort = mapping.ExternalPort
 	}
+	if mapping.ExternalIP != nil {
+		e.externalIP = mapping.ExternalIP
+	}
 	e.mu.Unlock()
 
 	logger.Logf("engine: mapped external port %d -> internal %d via %s (external IP %s)\n",
@@ -1141,6 +1153,7 @@ func (e *Engine) torrentConfig(downloadDir string) torrent.Config {
 		ProxyDialer:          e.proxyDialer,
 		AnonymousMode:        e.defaults.AnonymousMode,
 		Trace:                e.defaults.Trace,
+		LocalIP:              e.externalIP,
 	}
 	if e.defaults.DownLimit != nil {
 		cfg.DownLimit = append(cfg.DownLimit, e.defaults.DownLimit)
