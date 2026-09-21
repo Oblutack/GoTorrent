@@ -78,7 +78,7 @@ func (e *Engine) publishAllDedupeSources(hash metainfo.Hash) {
 // covers every piece this pass doesn't manage to shortcut. Called from
 // OnStateChange on reaching StateDownloading — after openMetadata has
 // already built real storage and a real have-bitfield to compare against —
-// via a detached goroutine, since ApplyDedupedPiece calls back into tr.
+// via a detached goroutine, since ApplyExternalPiece calls back into tr.
 func (e *Engine) applyDedupe(hash metainfo.Hash) {
 	tr, ok := e.Get(hash)
 	if !ok {
@@ -118,7 +118,7 @@ func (e *Engine) applyDedupe(hash metainfo.Hash) {
 			continue
 		}
 
-		if err := tr.ApplyDedupedPiece(index, data); err != nil {
+		if err := tr.ApplyExternalPiece(index, data); err != nil {
 			logger.Warning.Printf("engine: dedupe: applying piece %d of %s from %s: %v\n", index, hash, loc.owner, err)
 		}
 	}

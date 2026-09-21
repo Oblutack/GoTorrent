@@ -120,8 +120,8 @@ func (t *Torrent) handleControl(msg controlMsg) {
 	case ctrlSetStreamPosition:
 		msg.errReply <- t.doSetStreamPosition(msg.streamByteOffset)
 
-	case ctrlApplyDedupedPiece:
-		msg.errReply <- t.doApplyDedupedPiece(msg.dedupeIndex, msg.dedupeData)
+	case ctrlApplyExternalPiece:
+		msg.errReply <- t.doApplyExternalPiece(msg.externalPieceIndex, msg.externalPieceData)
 
 	case ctrlPeers:
 		msg.peersReply <- t.peersSnapshot()
@@ -134,6 +134,7 @@ func (t *Torrent) doPause() error {
 	}
 	t.stopAnnounceLoop()
 	t.stopDHTLoop()
+	t.stopWebSeedLoops()
 	t.shutdownPeers()
 	t.checkpoint()
 	t.announceOnce(tracker.EventStopped, announceTimeout)
@@ -156,6 +157,7 @@ func (t *Torrent) doResume() error {
 	}
 	t.restartAnnounceLoop(tracker.EventStarted)
 	t.restartDHTLoop()
+	t.restartWebSeedLoops()
 	return nil
 }
 
@@ -181,6 +183,7 @@ func (t *Torrent) doRecheck() error {
 	t.afterVerify()
 	t.restartAnnounceLoop(tracker.EventNone)
 	t.restartDHTLoop()
+	t.restartWebSeedLoops()
 	return nil
 }
 
@@ -215,6 +218,16 @@ func (t *Torrent) doSetMetadata(mi *metainfo.MetaInfo) error {
 			continue
 		}
 		t.pick.Availability().AddPeer(pc.client.BitfieldSnapshot())
+	}
+
+	// A magnet URI has no web-seed-equivalent parameter (unlike tr=, BEP 9
+	// only ever exchanges the info dict) — mi.UrlList only exists once real
+	// metadata arrives, right here. Only fills in when the caller never set
+	// Config.WebSeeds explicitly, same precedence New's own version of this
+	// follows for a torrent that had metadata from the start.
+	if len(t.cfg.WebSeeds) == 0 && len(mi.UrlList) > 0 {
+		t.cfg.WebSeeds = mi.UrlList
+		t.restartWebSeedLoops()
 	}
 	return nil
 }
@@ -383,21 +396,22 @@ func (t *Torrent) doSetStreamPosition(off int64) error {
 	return nil
 }
 
-// doApplyDedupedPiece writes a piece's bytes straight to storage from data
-// already sitting on this machine (another managed torrent that happens to
-// share this exact piece's content, per Phase 8's cross-torrent dedupe —
-// see internal/engine's own dedupe.go for how a match is found) instead of
-// ever requesting it from a peer. Deliberately reuses the exact same
+// doApplyExternalPiece writes a piece's bytes straight to storage from data
+// obtained some way other than the BitTorrent wire protocol — cross-torrent
+// dedupe (internal/engine's dedupe.go finds a piece another managed torrent
+// already verified with the exact same content hash) or a web seed
+// (internal/torrent's own webseed.go, a plain HTTP GET per BEP 19) are the
+// two real callers today. Deliberately reuses the exact same
 // hash-verify-then-publish path a real network download ends in
 // (verifyPiece -> eventPieceVerified -> onPieceVerified) rather than
 // trusting the caller's copy was correct — defense in depth against a bug
-// in the dedupe matching logic, at the cost of one redundant SHA-1 over
-// data that (if the match was real) already passed one. A no-op, not an
-// error, if this piece is already verified — a real, harmless race against
-// a peer download completing the very same piece first; both write
-// identical bytes by definition, so whichever finishes first wins and the
-// other is simply redundant.
-func (t *Torrent) doApplyDedupedPiece(index int, data []byte) error {
+// in either caller's own fetch/match logic, at the cost of one redundant
+// SHA-1 over data that (if the source was honest) already passed one. A
+// no-op, not an error, if this piece is already verified — a real, harmless
+// race against a peer download (or the other external source) completing
+// the very same piece first; both write identical bytes by definition, so
+// whichever finishes first wins and the other is simply redundant.
+func (t *Torrent) doApplyExternalPiece(index int, data []byte) error {
 	mi := t.mi.Load()
 	if mi == nil || t.pick == nil || t.storage == nil {
 		return errors.New("torrent: no metadata yet")
@@ -409,7 +423,7 @@ func (t *Torrent) doApplyDedupedPiece(index int, data []byte) error {
 		return nil
 	}
 	if want := mi.PieceLen(index); int64(len(data)) != want {
-		return fmt.Errorf("torrent: deduped piece %d is %d bytes, want %d", index, len(data), want)
+		return fmt.Errorf("torrent: external piece %d is %d bytes, want %d", index, len(data), want)
 	}
 
 	offset := int64(index) * mi.Info.PieceLength

@@ -575,7 +575,7 @@ func (e *Engine) AddWithOptions(source, downloadDir string, opts AddOptions) (me
 		// Cross-torrent dedupe (Phase 8). Two separate passes, both needed:
 		// applyDedupe *consumes* the fleet-wide index (only meaningful once
 		// there's something missing to want, i.e. Downloading) — calls back
-		// into tr (ApplyDedupedPiece), so it needs the same
+		// into tr (ApplyExternalPiece), so it needs the same
 		// detached-goroutine treatment as reevaluateQueue/
 		// dispatchCompletionHook above. publishAllDedupeSources *produces*
 		// into it: OnPieceVerified below already records each piece as it

@@ -141,6 +141,18 @@ type Config struct {
 	// which is also what happens automatically, mid-flight, if metadata
 	// later reveals the torrent is private (BEP 27).
 	DHT DHTClient
+	// WebSeeds is Phase 8's BEP 19 support — HTTP(S) URLs (typically a
+	// torrent's own mi.UrlList, but nothing requires that) that serve this
+	// torrent's content directly, tried alongside real BitTorrent peers as
+	// an additional download source. Scoped to single-file torrents only —
+	// see internal/webseed's own package doc comment for why; a multi-file
+	// torrent with WebSeeds configured just never starts a loop for them,
+	// no error, since a magnet-shaped Config can't always know file layout
+	// at construction time anyway. Unlike Trackers, never re-derived from
+	// metadata once it's known — a web seed URL is either given upfront or
+	// not at all, there being no BEP 9-equivalent way to learn one from a
+	// peer mid-flight.
+	WebSeeds []string
 	// FilePriorities sets each file's initial download priority, in the
 	// same order as the torrent's own file list (one entry for a
 	// single-file torrent). Empty (the default) starts every file at
@@ -344,6 +356,11 @@ type Torrent struct {
 	// dhtCancel is announceCancel's DHT-loop counterpart — see
 	// restartDHTLoop in dht.go.
 	dhtCancel context.CancelFunc
+	// webSeedCancel stops every currently-running web seed loop at once —
+	// one shared context for every Config.WebSeeds URL (one loop each), the
+	// same reasoning as dhtCancel, just fanned out to N goroutines instead
+	// of one. See restartWebSeedLoops in webseed.go.
+	webSeedCancel context.CancelFunc
 	// --- end actor-owned ---
 
 	downloaded atomic.Int64
@@ -388,6 +405,13 @@ type Torrent struct {
 func New(mi *metainfo.MetaInfo, cfg Config) (*Torrent, error) {
 	if mi == nil {
 		return nil, errors.New("torrent: metainfo is required, use NewFromInfoHash for a magnet link")
+	}
+	// A caller that already set Config.WebSeeds explicitly is left alone —
+	// this only fills in the torrent's own authored BEP 19 list (mi.UrlList)
+	// when nothing more specific was given, the same "caller's own value
+	// wins" precedence FilePriorities' normalization already follows.
+	if len(cfg.WebSeeds) == 0 {
+		cfg.WebSeeds = mi.UrlList
 	}
 	t, err := newTorrent(mi.InfoHash, cfg)
 	if err != nil {
@@ -698,6 +722,7 @@ func (t *Torrent) Run(ctx context.Context) error {
 		// metadata arrives — see announceLoop's comment.
 		t.restartAnnounceLoop(tracker.EventStarted)
 		t.restartDHTLoop()
+		t.restartWebSeedLoops()
 	}
 
 	t.run(t.ctx)
