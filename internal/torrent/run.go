@@ -117,6 +117,9 @@ func (t *Torrent) handleControl(msg controlMsg) {
 	case ctrlSetSeedLimits:
 		msg.errReply <- t.doSetSeedLimits(msg.seedRatioLimit, msg.seedTimeLimit)
 
+	case ctrlSetStreamPosition:
+		msg.errReply <- t.doSetStreamPosition(msg.streamByteOffset)
+
 	case ctrlPeers:
 		msg.peersReply <- t.peersSnapshot()
 	}
@@ -344,6 +347,33 @@ func (t *Torrent) doSetFirstLastPieceFirst(enabled bool) error {
 	if enabled {
 		boostFirstAndLastPiece(mi, t.filePriorities, pp)
 	}
+	if err := t.pick.SetPriorities(pp); err != nil {
+		return fmt.Errorf("torrent: applying priorities: %w", err)
+	}
+	return nil
+}
+
+// doSetStreamPosition is Phase 8's streaming-mode picker: boosts a window of
+// pieces starting at off's piece to PriorityHigh, on top of whatever
+// piecePriorities/FirstLastPieceFirst already computed — the same
+// "boost on top, never lower, never touch skip" shape
+// boostFirstAndLastPiece already established, just windowed around a moving
+// read position instead of fixed at each file's first/last piece.
+// internal/stream calls this every time a streaming HTTP read crosses into
+// a new piece, so the window follows playback (and jumps immediately on a
+// seek, since a Range request lands wherever the player asks). Same
+// "no metadata yet" guard every other t.pick.SetPriorities caller in this
+// file already has.
+func (t *Torrent) doSetStreamPosition(off int64) error {
+	mi := t.mi.Load()
+	if mi == nil || t.pick == nil {
+		return errors.New("torrent: no metadata yet")
+	}
+	pp := piecePriorities(mi, t.filePriorities)
+	if t.cfg.FirstLastPieceFirst {
+		boostFirstAndLastPiece(mi, t.filePriorities, pp)
+	}
+	boostStreamWindow(mi, off, pp)
 	if err := t.pick.SetPriorities(pp); err != nil {
 		return fmt.Errorf("torrent: applying priorities: %w", err)
 	}

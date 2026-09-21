@@ -8,6 +8,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -21,6 +22,7 @@ import (
 	"github.com/Oblutack/GoTorrent/internal/picker"
 	"github.com/Oblutack/GoTorrent/internal/ratelimit"
 	"github.com/Oblutack/GoTorrent/internal/storage"
+	"github.com/Oblutack/GoTorrent/internal/stream"
 	"github.com/Oblutack/GoTorrent/internal/trace"
 )
 
@@ -137,6 +139,7 @@ func runFleet() {
 	proxyDNS := flag.Bool("proxy-dns", false, "Resolve hostnames through the SOCKS5 proxy itself instead of locally (meaningless for -proxy-type=http)")
 	anonymousMode := flag.Bool("anonymous-mode", false, "Strip the client fingerprint from the peer ID and disable LSD; requires -proxy-type to also be set")
 	tracePath := flag.String("trace", "", "Write a Phase 8 explain/trace JSONL event log (peer connects, choke decisions, requests, blocks, hash results, and the picker's own reasoning) to this path (empty = disabled)")
+	streamAddr := flag.String("stream", "", `Serve every managed torrent's files over HTTP with byte-range support at this address, e.g. ":8080" (empty = disabled) - point a media player at it and watch while downloading`)
 	verbose := flag.Bool("verbose", false, "Enable verbose logging")
 	flag.Parse()
 
@@ -228,6 +231,17 @@ func runFleet() {
 		fmt.Println("Usage: gottrent -torrent <path_to_torrent_file | magnet_uri> [-torrent <another> ...] [-dir <download_directory>] [-port <listen_port>]")
 		flag.PrintDefaults()
 		return
+	}
+
+	if *streamAddr != "" {
+		streamServer := &http.Server{Addr: *streamAddr, Handler: stream.NewServer(e).Handler()}
+		go func() {
+			if err := streamServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				logger.Error.Printf("stream server: %v\n", err)
+			}
+		}()
+		defer streamServer.Close()
+		logger.Logf("Streaming at http://%s/\n", *streamAddr)
 	}
 
 	// Ctrl-C (and SIGTERM) triggers a graceful shutdown of the whole fleet:
