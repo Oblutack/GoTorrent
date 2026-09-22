@@ -25,6 +25,7 @@ import (
 
 	"github.com/Oblutack/GoTorrent/internal/api"
 	"github.com/Oblutack/GoTorrent/internal/bootstrap"
+	"github.com/Oblutack/GoTorrent/internal/debugserver"
 	"github.com/Oblutack/GoTorrent/internal/engine"
 	"github.com/Oblutack/GoTorrent/internal/logger"
 	"github.com/Oblutack/GoTorrent/internal/picker"
@@ -104,6 +105,7 @@ func run() error {
 	tlsCertFile := flag.String("tls-cert", "", "TLS certificate file for the API listener (requires -tls-key too; empty = plain HTTP)")
 	tlsKeyFile := flag.String("tls-key", "", "TLS private key file for the API listener (requires -tls-cert too)")
 	tracePath := flag.String("trace", "", "Write a Phase 8 explain/trace JSONL event log (peer connects, choke decisions, requests, blocks, hash results, and the picker's own reasoning) to this path (empty = disabled)")
+	pprofAddr := flag.String("pprof-addr", "", "Serve pprof CPU/heap/goroutine profiles and a JSON stats endpoint at this address, e.g. 127.0.0.1:6062 (empty = disabled). Never -api-address — this exposes raw profiling data, bind it to loopback only.")
 	verbose := flag.Bool("verbose", false, "Enable verbose logging")
 	flag.Parse()
 
@@ -137,7 +139,8 @@ func run() error {
 		proxyType:              proxyType, proxyAddress: proxyAddress, proxyUsername: proxyUsername, proxyPassword: proxyPassword,
 		proxyDNS: proxyDNS, anonymousMode: anonymousMode, apiAddress: apiAddress, verbose: verbose,
 		tlsCertFile: tlsCertFile, tlsKeyFile: tlsKeyFile, tracePath: tracePath,
-		catPaths: catPaths,
+		pprofAddr: pprofAddr,
+		catPaths:  catPaths,
 	})
 
 	logger.Init(cfg.Verbose)
@@ -189,6 +192,21 @@ func run() error {
 		return fmt.Errorf("starting engine: %w", err)
 	}
 	logger.Logf("gottrentd %s: engine started, peer port %d, API listening on %s\n", version.UserAgent, actualPort, apiListener.Addr())
+
+	if cfg.PprofAddr != "" {
+		dbg, err := debugserver.New(cfg.PprofAddr)
+		if err != nil {
+			return fmt.Errorf("starting pprof/debug server: %w", err)
+		}
+		dbg.Publish("fleet", func() any { return fleetDebugStats(e) })
+		go func() {
+			if err := dbg.Serve(); err != nil {
+				logger.Error.Printf("gottrentd: debug server: %v\n", err)
+			}
+		}()
+		defer dbg.Close()
+		logger.Logf("gottrentd: debug/profiling at http://%s/debug/pprof/ and http://%s/debug/vars\n", cfg.PprofAddr, cfg.PprofAddr)
+	}
 
 	token, err := api.LoadOrCreateToken(filepath.Join(filepath.Dir(path), "api-token"))
 	if err != nil {
@@ -257,6 +275,7 @@ type flagValues struct {
 	maxActiveDownloads, maxActiveSeeds, maxActiveTotal, uploadSlots             *int
 	writeCacheMB                                                                *int
 	apiAddress, tlsCertFile, tlsKeyFile, tracePath                              *string
+	pprofAddr                                                                   *string
 	catPaths                                                                    categoryPaths
 }
 
@@ -396,6 +415,9 @@ func mergeFlags(cfg *Config, explicit map[string]bool, f flagValues) {
 	if explicit["trace"] {
 		cfg.TracePath = *f.tracePath
 	}
+	if explicit["pprof-addr"] {
+		cfg.PprofAddr = *f.pprofAddr
+	}
 	if explicit["verbose"] {
 		cfg.Verbose = *f.verbose
 	}
@@ -407,6 +429,28 @@ func mergeFlags(cfg *Config, explicit map[string]bool, f flagValues) {
 // the alt-schedule grammar) and erroring on anything malformed rather than
 // silently falling back to a zero value a user would never notice was
 // wrong.
+// fleetDebugStats is the -pprof-addr server's "fleet" published value —
+// see cmd/gottrent's own identical helper for why this small a function
+// is duplicated rather than shared: internal/debugserver stays engine-
+// agnostic on purpose, and the two binaries are separate `package main`s
+// that cannot import one another.
+func fleetDebugStats(e *engine.Engine) any {
+	list := e.List()
+	var downloaded, uploaded int64
+	var peers int
+	for _, s := range list {
+		downloaded += s.Stats.Downloaded
+		uploaded += s.Stats.Uploaded
+		peers += s.Stats.PeerCount
+	}
+	return map[string]any{
+		"torrents":   len(list),
+		"downloaded": downloaded,
+		"uploaded":   uploaded,
+		"peers":      peers,
+	}
+}
+
 func buildDefaults(cfg Config) (engine.Defaults, error) {
 	contentLayout, err := parseContentLayout(cfg.ContentLayout)
 	if err != nil {

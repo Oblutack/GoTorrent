@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Oblutack/GoTorrent/internal/bootstrap"
+	"github.com/Oblutack/GoTorrent/internal/debugserver"
 	"github.com/Oblutack/GoTorrent/internal/engine"
 	"github.com/Oblutack/GoTorrent/internal/logger"
 	"github.com/Oblutack/GoTorrent/internal/metainfo"
@@ -140,6 +141,7 @@ func runFleet() {
 	proxyDNS := flag.Bool("proxy-dns", false, "Resolve hostnames through the SOCKS5 proxy itself instead of locally (meaningless for -proxy-type=http)")
 	anonymousMode := flag.Bool("anonymous-mode", false, "Strip the client fingerprint from the peer ID and disable LSD; requires -proxy-type to also be set")
 	tracePath := flag.String("trace", "", "Write a Phase 8 explain/trace JSONL event log (peer connects, choke decisions, requests, blocks, hash results, and the picker's own reasoning) to this path (empty = disabled)")
+	pprofAddr := flag.String("pprof-addr", "", "Serve pprof CPU/heap/goroutine profiles and a JSON stats endpoint at this address, e.g. 127.0.0.1:6062 (empty = disabled). Never the control API's own address — this exposes raw profiling data, bind it to loopback only.")
 	streamAddr := flag.String("stream", "", `Serve every managed torrent's files over HTTP with byte-range support at this address, e.g. ":8080" (empty = disabled) - point a media player at it and watch while downloading`)
 	verbose := flag.Bool("verbose", false, "Enable verbose logging")
 	flag.Parse()
@@ -246,6 +248,21 @@ func runFleet() {
 		logger.Logf("Streaming at http://%s/\n", *streamAddr)
 	}
 
+	if *pprofAddr != "" {
+		dbg, err := debugserver.New(*pprofAddr)
+		if err != nil {
+			logger.Error.Fatalf("Error starting -pprof-addr server: %v\n", err)
+		}
+		dbg.Publish("fleet", func() any { return fleetDebugStats(e) })
+		go func() {
+			if err := dbg.Serve(); err != nil {
+				logger.Error.Printf("debug server: %v\n", err)
+			}
+		}()
+		defer dbg.Close()
+		logger.Logf("Debug/profiling at http://%s/debug/pprof/ and http://%s/debug/vars\n", *pprofAddr, *pprofAddr)
+	}
+
 	// Ctrl-C (and SIGTERM) triggers a graceful shutdown of the whole fleet:
 	// every torrent saves a final checkpoint, tells its tracker it is
 	// stopping, and disconnects its peers before Shutdown returns. No
@@ -264,6 +281,31 @@ func runFleet() {
 	displayFleet(e, shutdownDone)
 
 	logger.Logf("GoTorrent finished.\n")
+}
+
+// fleetDebugStats is the -pprof-addr server's "fleet" published value — a
+// plain rollup over e.List(), the same cheap-to-sum-on-demand shape
+// internal/api's own sessionStatsSnapshot already uses for identical
+// reasons (engine.Engine keeps no running aggregate of its own). Kept as
+// a local map rather than importing internal/api's own SessionStats DTO,
+// so internal/debugserver's one real consumer here stays independent of
+// the control API package entirely — this endpoint has nothing to do
+// with that one, and shouldn't need to change if that one does.
+func fleetDebugStats(e *engine.Engine) any {
+	list := e.List()
+	var downloaded, uploaded int64
+	var peers int
+	for _, s := range list {
+		downloaded += s.Stats.Downloaded
+		uploaded += s.Stats.Uploaded
+		peers += s.Stats.PeerCount
+	}
+	return map[string]any{
+		"torrents":   len(list),
+		"downloaded": downloaded,
+		"uploaded":   uploaded,
+		"peers":      peers,
+	}
 }
 
 // displayFleet prints one self-overwriting status line per managed torrent

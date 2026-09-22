@@ -76,6 +76,11 @@ type Config struct {
 	// event log for the whole fleet — see internal/trace and cmd/gottrent's
 	// own -trace flag, which this mirrors.
 	TracePath string `json:"tracePath"`
+	// PprofAddr, if set, serves pprof profiles and a JSON stats endpoint
+	// (internal/debugserver) at this address — never APIAddress itself,
+	// since this exposes raw profiling data with no auth of its own;
+	// bind it to loopback only.
+	PprofAddr string `json:"pprofAddr"`
 	Verbose   bool   `json:"verbose"`
 }
 
