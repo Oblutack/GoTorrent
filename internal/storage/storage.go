@@ -56,6 +56,9 @@ type Storage struct {
 	total int64
 
 	cache         *handleCache
+	mmaps         *mmapCache // non-nil only when useMmap; see WithMmap
+	useMmap       bool
+	maxOpenFiles  int
 	allocation    Allocation
 	contentLayout ContentLayout
 	dirMode       os.FileMode
@@ -90,9 +93,22 @@ func WithContentLayout(c ContentLayout) Option {
 	return func(s *Storage) { s.contentLayout = c }
 }
 
-// WithMaxOpenFiles bounds the open file handle cache.
+// WithMaxOpenFiles bounds the open file handle cache — or, with
+// WithMmap, the active memory-mapping cache instead; both are the same
+// kind of bounded OS-resource budget, so one option sizes whichever is
+// actually in use.
 func WithMaxOpenFiles(n int) Option {
-	return func(s *Storage) { s.cache = newHandleCache(n) }
+	return func(s *Storage) { s.maxOpenFiles = n }
+}
+
+// WithMmap backs every file this Storage touches with a whole-file
+// memory mapping instead of the ordinary handle-cache-based ReadAt/
+// WriteAt path — see mmap.go's own doc comment for the mechanics, and
+// mmapRegion.sync/platformFlushView for why Sync's durability guarantee
+// needed real platform-specific attention to still hold under this
+// backend. false (the default) is the original, most-tested path.
+func WithMmap(enabled bool) Option {
+	return func(s *Storage) { s.useMmap = enabled }
 }
 
 // WithFileMode sets the permissions used for created files and directories.
@@ -122,14 +138,20 @@ func New(downloadDir string, mi *metainfo.MetaInfo, opts ...Option) (*Storage, e
 	}
 
 	s := &Storage{
-		total:      mi.TotalLength,
-		cache:      newHandleCache(DefaultMaxOpenFiles),
-		allocation: Sparse,
-		dirMode:    0o755,
-		fileMode:   0o644,
+		total:        mi.TotalLength,
+		maxOpenFiles: DefaultMaxOpenFiles,
+		allocation:   Sparse,
+		dirMode:      0o755,
+		fileMode:     0o644,
 	}
 	for _, opt := range opts {
 		opt(s)
+	}
+	// Built after every option has run: WithMaxOpenFiles must be able to
+	// size whichever of the two this Storage ends up actually using.
+	s.cache = newHandleCache(s.maxOpenFiles)
+	if s.useMmap {
+		s.mmaps = newMmapCache(s.maxOpenFiles)
 	}
 
 	// Built after options are applied: WithContentLayout must be able to
@@ -371,6 +393,18 @@ func (s *Storage) ReadAt(p []byte, off int64) (int, error) {
 			continue
 		}
 
+		if s.useMmap {
+			data, release, err := s.mmaps.acquire(region.Path, region.Length)
+			if err != nil {
+				return read, fmt.Errorf("storage: mapping %s: %w", region.Path, err)
+			}
+			regionOff := current - region.Offset
+			n := copy(p[read:read+want], data[regionOff:regionOff+int64(want)])
+			release()
+			read += n
+			continue
+		}
+
 		f, release, err := s.cache.acquire(region.Path, false)
 		if err != nil {
 			return read, fmt.Errorf("storage: opening %s: %w", region.Path, err)
@@ -417,6 +451,18 @@ func (s *Storage) WriteAt(p []byte, off int64) (int, error) {
 			continue
 		}
 
+		if s.useMmap {
+			data, release, err := s.mmaps.acquire(region.Path, region.Length)
+			if err != nil {
+				return written, fmt.Errorf("storage: mapping %s for writing: %w", region.Path, err)
+			}
+			regionOff := current - region.Offset
+			n := copy(data[regionOff:regionOff+int64(want)], p[written:written+want])
+			release()
+			written += n
+			continue
+		}
+
 		f, release, err := s.cache.acquire(region.Path, true)
 		if err != nil {
 			return written, fmt.Errorf("storage: opening %s for writing: %w", region.Path, err)
@@ -434,8 +480,14 @@ func (s *Storage) WriteAt(p []byte, off int64) (int, error) {
 	return written, nil
 }
 
-// Sync flushes every cached handle to disk.
+// Sync flushes every cached handle to disk — or, with WithMmap, every
+// mapped region (mmapCache.syncAll, which needs its own platform-specific
+// care to actually be durable; see mmapRegion.sync's own doc comment).
 func (s *Storage) Sync() error {
+	if s.useMmap {
+		return s.mmaps.syncAll()
+	}
+
 	s.cache.mu.Lock()
 	files := make([]*os.File, 0, s.cache.lru.Len())
 	for elem := s.cache.lru.Front(); elem != nil; elem = elem.Next() {
@@ -455,7 +507,8 @@ func (s *Storage) Sync() error {
 	return firstErr
 }
 
-// Close releases every open handle.
+// Close releases every open handle — or, with WithMmap, unmaps and closes
+// every mapped region instead.
 func (s *Storage) Close() error {
 	s.mu.Lock()
 	if s.closed {
@@ -464,5 +517,12 @@ func (s *Storage) Close() error {
 	}
 	s.closed = true
 	s.mu.Unlock()
-	return s.cache.closeAll()
+
+	err := s.cache.closeAll()
+	if s.useMmap {
+		if mmapErr := s.mmaps.closeAll(); mmapErr != nil && err == nil {
+			err = mmapErr
+		}
+	}
+	return err
 }

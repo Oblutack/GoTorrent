@@ -121,6 +121,7 @@ func runFleet() {
 	maxActiveTotal := flag.Int("max-active", 0, "Maximum torrents active (downloading or seeding) at once across the fleet (0 = unlimited)")
 	uploadSlots := flag.Int("upload-slots", 0, "Peers unchoked for upload at once, per torrent (0 = choker default)")
 	writeCacheMB := flag.Int("write-cache-mb", 0, "Buffer whole pieces in memory before one coalesced disk write, per torrent, in MiB (0 = disabled, write each block as it arrives)")
+	useMmap := flag.Bool("mmap", false, "Back every torrent's files with memory-mapped I/O instead of ordinary file reads/writes")
 	excludeLAN := flag.Bool("exclude-lan-limits", false, "Don't apply -down-limit/-up-limit to peers on a private or loopback address")
 	altDownLimitKB := flag.Uint("alt-down-limit", 0, "Download rate cap in KiB/s while -alt-schedule is active (0 = unlimited)")
 	altUpLimitKB := flag.Uint("alt-up-limit", 0, "Upload rate cap in KiB/s while -alt-schedule is active (0 = unlimited)")
@@ -171,6 +172,7 @@ func runFleet() {
 		MaxActiveTotal:         *maxActiveTotal,
 		UploadSlots:            *uploadSlots,
 		WriteCacheBytes:        int64(*writeCacheMB) << 20,
+		UseMmap:                *useMmap,
 		ExcludeLANFromLimits:   *excludeLAN,
 		AltDownLimit:           int64(*altDownLimitKB) * 1024,
 		AltUpLimit:             int64(*altUpLimitKB) * 1024,

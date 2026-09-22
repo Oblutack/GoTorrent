@@ -96,6 +96,10 @@ type Config struct {
 	// ContentLayout selects whether this torrent's data gets a wrapping
 	// <DownloadDir>/<name>/ directory. Defaults to storage.LayoutOriginal.
 	ContentLayout storage.ContentLayout
+	// UseMmap backs this torrent's files with memory mappings instead of
+	// the ordinary handle-cache-based file I/O — see storage.WithMmap.
+	// false (the default) is the original, most-tested path.
+	UseMmap bool
 	// PickerStrategy selects piece ordering. Defaults to rarest-first.
 	PickerStrategy picker.Strategy
 	// DownLimit and UpLimit cap this torrent's aggregate transfer rate,
@@ -805,7 +809,8 @@ func (t *Torrent) openMetadata(mi *metainfo.MetaInfo) error {
 	st, err := storage.New(t.cfg.DownloadDir, mi,
 		storage.WithAllocation(t.cfg.Allocation),
 		storage.WithContentLayout(t.cfg.ContentLayout),
-		storage.WithSkipFiles(skip))
+		storage.WithSkipFiles(skip),
+		storage.WithMmap(t.cfg.UseMmap))
 	if err != nil {
 		return fmt.Errorf("opening storage: %w", err)
 	}

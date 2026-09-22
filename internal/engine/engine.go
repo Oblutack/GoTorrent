@@ -107,6 +107,9 @@ type Defaults struct {
 	// WriteCacheBytes applies to every torrent this Engine starts — see
 	// torrent.Config.WriteCacheBytes.
 	WriteCacheBytes int64
+	// UseMmap applies to every torrent this Engine starts — see
+	// torrent.Config.UseMmap.
+	UseMmap bool
 	// AltDownLimit, AltUpLimit, and AltSchedule configure 3.3's alternative
 	// ("slow") speed schedule: while AltSchedule says the current time is
 	// in-window, DownLimit/UpLimit are set to these rates instead of their
@@ -1153,6 +1156,7 @@ func (e *Engine) torrentConfig(downloadDir string) torrent.Config {
 		UploadSlots:          e.defaults.UploadSlots,
 		ExcludeLANFromLimits: e.defaults.ExcludeLANFromLimits,
 		WriteCacheBytes:      e.defaults.WriteCacheBytes,
+		UseMmap:              e.defaults.UseMmap,
 		IPFilter:             e.ipFilter,
 		ProxyDialer:          e.proxyDialer,
 		AnonymousMode:        e.defaults.AnonymousMode,
