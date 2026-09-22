@@ -15,6 +15,9 @@ import (
 type PreviewFile struct {
 	Path   []string `json:"path"`
 	Length int64    `json:"length"`
+	// Padding is true for a BEP 47 padding file - see FileEntry's own
+	// field of the same name.
+	Padding bool `json:"padding,omitempty"`
 }
 
 // PreviewResponse is POST /api/v1/torrents/preview's response body -
@@ -93,7 +96,7 @@ func PreviewTorrentHandler() http.HandlerFunc {
 		if mi.Info.IsMultiFile() {
 			files = make([]PreviewFile, len(mi.Info.Files))
 			for i, f := range mi.Info.Files {
-				files[i] = PreviewFile{Path: f.Path, Length: f.Length}
+				files[i] = PreviewFile{Path: f.Path, Length: f.Length, Padding: f.IsPadding()}
 			}
 		} else {
 			files = []PreviewFile{{Path: []string{mi.Info.Name}, Length: mi.Info.Length}}

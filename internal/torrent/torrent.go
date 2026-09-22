@@ -761,9 +761,23 @@ func (t *Torrent) Run(ctx context.Context) error {
 // CheckingFiles state, whichever way the torrent got here.
 func (t *Torrent) openMetadata(mi *metainfo.MetaInfo) error {
 	t.filePriorities = normalizedFilePriorities(mi, t.cfg.FilePriorities)
-	skip := make([]bool, len(t.filePriorities))
-	for i, pr := range t.filePriorities {
-		skip[i] = pr == picker.PrioritySkip
+
+	// pp has to be known before storage is built: a piece straddling a
+	// skipped file (including a BEP 47 padding file, which defaults to
+	// Skip above) and a wanted one is still downloaded — see
+	// piecePriorities' own doc comment — and WriteAt needs the skipped
+	// file's own byte range to actually exist on disk to write into it.
+	// filesNeedingAllocation is what decides which "skipped" files that
+	// really applies to; see its own doc comment for the general gap this
+	// closes.
+	pp := piecePriorities(mi, t.filePriorities)
+	if t.cfg.FirstLastPieceFirst {
+		boostFirstAndLastPiece(mi, t.filePriorities, pp)
+	}
+	need := filesNeedingAllocation(mi, t.filePriorities, pp)
+	skip := make([]bool, len(need))
+	for i, n := range need {
+		skip[i] = !n
 	}
 
 	st, err := storage.New(t.cfg.DownloadDir, mi,
@@ -785,10 +799,6 @@ func (t *Torrent) openMetadata(mi *metainfo.MetaInfo) error {
 	})
 	if err != nil {
 		return fmt.Errorf("creating picker: %w", err)
-	}
-	pp := piecePriorities(mi, t.filePriorities)
-	if t.cfg.FirstLastPieceFirst {
-		boostFirstAndLastPiece(mi, t.filePriorities, pp)
 	}
 	if err := pk.SetPriorities(pp); err != nil {
 		return fmt.Errorf("applying file priorities: %w", err)

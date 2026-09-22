@@ -330,6 +330,53 @@ func TestMultiFileTotals(t *testing.T) {
 	}
 }
 
+// TestFileAttrParsesBEP47Padding proves the 'attr' field round-trips from
+// real bencode into FileInfo.Attr, and that IsPadding correctly reads the
+// 'p' flag out of it — including alongside an unrelated attribute
+// character, since BEP 47 lets several appear in the same string.
+func TestFileAttrParsesBEP47Padding(t *testing.T) {
+	type fileWire struct {
+		Length int64    `bencode:"length"`
+		Path   []string `bencode:"path"`
+		Attr   string   `bencode:"attr,omitempty"`
+	}
+	raw, err := bencode.Marshal(struct {
+		Files       []fileWire `bencode:"files"`
+		Name        string     `bencode:"name"`
+		PieceLength int64      `bencode:"piece length"`
+		Pieces      []byte     `bencode:"pieces"`
+	}{
+		Files: []fileWire{
+			{Length: 12000, Path: []string{"movie.mkv"}},
+			{Length: 4384, Path: []string{".pad", "4384"}, Attr: "p"},
+			{Length: 16384, Path: []string{"sample.mkv"}, Attr: "xp"},
+		},
+		Name:        "Bundle",
+		PieceLength: 16384,
+		Pieces:      make([]byte, 2*HashSize),
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	mi, err := Parse(wrapTorrent(t, raw))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(mi.Info.Files) != 3 {
+		t.Fatalf("got %d files, want 3", len(mi.Info.Files))
+	}
+	if mi.Info.Files[0].Attr != "" || mi.Info.Files[0].IsPadding() {
+		t.Fatalf("file 0 (no attr): Attr=%q IsPadding=%v, want empty/false", mi.Info.Files[0].Attr, mi.Info.Files[0].IsPadding())
+	}
+	if mi.Info.Files[1].Attr != "p" || !mi.Info.Files[1].IsPadding() {
+		t.Fatalf("file 1 (attr=p): Attr=%q IsPadding=%v, want p/true", mi.Info.Files[1].Attr, mi.Info.Files[1].IsPadding())
+	}
+	if mi.Info.Files[2].Attr != "xp" || !mi.Info.Files[2].IsPadding() {
+		t.Fatalf("file 2 (attr=xp, 'p' alongside an unrelated char): Attr=%q IsPadding=%v, want xp/true", mi.Info.Files[2].Attr, mi.Info.Files[2].IsPadding())
+	}
+}
+
 func TestLoadRejectsOversizedFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "huge.torrent")
 	if err := os.WriteFile(path, make([]byte, MaxTorrentFileSize+1), 0o644); err != nil {

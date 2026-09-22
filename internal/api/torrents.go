@@ -190,6 +190,11 @@ type FileEntry struct {
 	Path     []string        `json:"path"`
 	Length   int64           `json:"length"`
 	Priority picker.Priority `json:"priority"`
+	// Padding is true for a BEP 47 padding file - always false for a
+	// single-file torrent, which has no per-file attr at all. A caller can
+	// use this to grey one out or hide it, the way this client's own
+	// picker already defaults it to PrioritySkip.
+	Padding bool `json:"padding,omitempty"`
 }
 
 // FilesHandler serves GET /api/v1/torrents/{hash}/files. A magnet-shaped
@@ -225,7 +230,7 @@ func FilesHandler(e *engine.Engine) http.HandlerFunc {
 		if mi.Info.IsMultiFile() {
 			files = make([]FileEntry, len(mi.Info.Files))
 			for i, f := range mi.Info.Files {
-				files[i] = FileEntry{Path: f.Path, Length: f.Length, Priority: priorityFor(i)}
+				files[i] = FileEntry{Path: f.Path, Length: f.Length, Priority: priorityFor(i), Padding: f.IsPadding()}
 			}
 		} else {
 			files = []FileEntry{{Path: []string{mi.Info.Name}, Length: mi.Info.Length, Priority: priorityFor(0)}}

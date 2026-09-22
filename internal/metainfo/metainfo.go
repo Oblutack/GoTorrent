@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/Oblutack/GoTorrent/internal/bencode"
 )
@@ -77,6 +78,20 @@ type FileInfo struct {
 	Length int64
 	Path   []string
 	Md5sum string
+	// Attr is BEP 47's per-file attribute string — a variable-length string
+	// of single-character flags, order and unknown characters ignored. The
+	// only one this client acts on is 'p' (padding file, see IsPadding).
+	Attr string
+}
+
+// IsPadding reports whether this is a BEP 47 padding file: a synthetic
+// entry inserted purely to align the next real file to a piece boundary,
+// its content defined as all zeros. A compliant client should never write
+// one to disk or request byte-ranges covering it — see
+// internal/torrent/priority.go's normalizedFilePriorities, which defaults
+// exactly these files to PrioritySkip.
+func (f FileInfo) IsPadding() bool {
+	return strings.Contains(f.Attr, "p")
 }
 
 // IsMultiFile reports whether the torrent describes a directory of files.
@@ -148,6 +163,7 @@ type fileDictWire struct {
 	Length int64    `bencode:"length"`
 	Path   []string `bencode:"path"`
 	Md5sum string   `bencode:"md5sum,omitempty"`
+	Attr   string   `bencode:"attr,omitempty"`
 }
 
 // --- parsing --------------------------------------------------------------
@@ -278,7 +294,7 @@ func (mi *MetaInfo) setFiles(wire *infoDictWire) error {
 			if err := ValidatePath(f.Path); err != nil {
 				return fmt.Errorf("metainfo: unsafe path in file %d: %w", i, err)
 			}
-			mi.Info.Files[i] = FileInfo{Length: f.Length, Path: f.Path, Md5sum: f.Md5sum}
+			mi.Info.Files[i] = FileInfo{Length: f.Length, Path: f.Path, Md5sum: f.Md5sum, Attr: f.Attr}
 			total += f.Length
 			if total < 0 {
 				return errors.New("metainfo: total length overflows")

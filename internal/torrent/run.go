@@ -237,9 +237,14 @@ func (t *Torrent) doSetMetadata(mi *metainfo.MetaInfo) error {
 // again in full because a single piece can span several files, so one
 // file's change can shift what a piece straddling it is entitled to.
 //
-// A file moving out of PrioritySkip that was never allocated (it started
-// skipped, or was skipped before ever being allocated) is allocated here,
-// on demand — see storage.EnsureFileAllocated. A file moving into
+// Any file that filesNeedingAllocation now says needs to exist on disk —
+// the file whose priority just changed, moving out of PrioritySkip, and
+// any *other* skipped file (a BEP 47 padding file, most commonly) that
+// shares a piece boundary with something now wanted — is allocated here,
+// on demand — see storage.EnsureFileAllocated, and filesNeedingAllocation's
+// own doc comment for the general gap this closes. EnsureFileAllocated is
+// a no-op for a file already on disk, so calling it for every "need" file
+// on every change is cheap, not just correct. A file moving into
 // PrioritySkip is never retroactively deleted; this only ever changes what
 // gets requested from peers from this point on.
 func (t *Torrent) doSetFilePriority(fileIndex int, priority picker.Priority) error {
@@ -259,20 +264,24 @@ func (t *Torrent) doSetFilePriority(fileIndex int, priority picker.Priority) err
 		return fmt.Errorf("torrent: file index %d out of range (%d files)", fileIndex, n)
 	}
 
-	wasSkip := t.filePriorities[fileIndex] == picker.PrioritySkip
+	prev := t.filePriorities[fileIndex]
 	t.filePriorities[fileIndex] = priority
-
-	if wasSkip && priority != picker.PrioritySkip {
-		if err := t.storage.EnsureFileAllocated(t.ctx, fileIndex); err != nil {
-			t.filePriorities[fileIndex] = picker.PrioritySkip // still isn't there; don't pretend it is
-			return fmt.Errorf("torrent: allocating file %d: %w", fileIndex, err)
-		}
-	}
 
 	pp := piecePriorities(mi, t.filePriorities)
 	if t.cfg.FirstLastPieceFirst {
 		boostFirstAndLastPiece(mi, t.filePriorities, pp)
 	}
+
+	for i, needed := range filesNeedingAllocation(mi, t.filePriorities, pp) {
+		if !needed {
+			continue
+		}
+		if err := t.storage.EnsureFileAllocated(t.ctx, i); err != nil {
+			t.filePriorities[fileIndex] = prev // still isn't there; don't pretend it is
+			return fmt.Errorf("torrent: allocating file %d: %w", i, err)
+		}
+	}
+
 	if err := t.pick.SetPriorities(pp); err != nil {
 		return fmt.Errorf("torrent: applying file priorities: %w", err)
 	}

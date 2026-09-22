@@ -35,6 +35,10 @@ func TestMain(m *testing.M) {
 type fileSpec struct {
 	path   []string
 	length int64
+	// attr is BEP 47's per-file attribute string (e.g. "p" for a padding
+	// file); zero value omits the field entirely, matching every existing
+	// fileSpec caller.
+	attr string
 }
 
 func buildTorrent(t *testing.T, name string, pieceLength int64, files []fileSpec) (*metainfo.MetaInfo, []byte) {
@@ -60,6 +64,7 @@ func buildTorrent(t *testing.T, name string, pieceLength int64, files []fileSpec
 	type fileWire struct {
 		Length int64    `bencode:"length"`
 		Path   []string `bencode:"path"`
+		Attr   string   `bencode:"attr,omitempty"`
 	}
 	type infoWire struct {
 		Files       []fileWire `bencode:"files,omitempty"`
@@ -73,7 +78,7 @@ func buildTorrent(t *testing.T, name string, pieceLength int64, files []fileSpec
 		info.Length = files[0].length
 	} else {
 		for _, f := range files {
-			info.Files = append(info.Files, fileWire{Length: f.length, Path: f.path})
+			info.Files = append(info.Files, fileWire{Length: f.length, Path: f.path, Attr: f.attr})
 		}
 	}
 
