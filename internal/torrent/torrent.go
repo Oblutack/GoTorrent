@@ -350,6 +350,14 @@ type Torrent struct {
 	// diffs it against t.peers to compute each cycle's added/dropped lists.
 	pexKnownPeers map[string]tracker.PeerInfo
 
+	// pendingHolepunches tracks BEP 55 rendezvous requests this torrent has
+	// sent and is still waiting on a connect or error for — see
+	// holepunch.go's own doc comment for why an unsolicited connect/error
+	// (no matching entry here) is ignored rather than acted on, and for the
+	// expiry sweep that keeps this from growing unbounded if a relay never
+	// answers at all.
+	pendingHolepunches map[string]time.Time
+
 	piecesVerifiedSinceCheckpoint int
 	lastCheckpoint                time.Time
 
@@ -487,16 +495,17 @@ func newTorrent(hash metainfo.Hash, cfg Config) (*Torrent, error) {
 	}
 
 	t := &Torrent{
-		infoHash:      hash,
-		cfg:           cfg,
-		trackerClient: tracker.NewClient(httpClient),
-		peers:         make(map[string]*peerConn),
-		dialing:       make(map[string]bool),
-		pexKnownPeers: make(map[string]tracker.PeerInfo),
-		choke:         choker.New(chokerOpts...),
-		events:        make(chan any, 256),
-		control:       make(chan controlMsg),
-		done:          make(chan struct{}),
+		infoHash:           hash,
+		cfg:                cfg,
+		trackerClient:      tracker.NewClient(httpClient),
+		peers:              make(map[string]*peerConn),
+		dialing:            make(map[string]bool),
+		pexKnownPeers:      make(map[string]tracker.PeerInfo),
+		pendingHolepunches: make(map[string]time.Time),
+		choke:              choker.New(chokerOpts...),
+		events:             make(chan any, 256),
+		control:            make(chan controlMsg),
+		done:               make(chan struct{}),
 	}
 	t.ctx, t.cancel = context.WithCancel(context.Background())
 	t.haveSnapshot.Store(bitfield.New(0))

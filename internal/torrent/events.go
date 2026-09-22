@@ -33,6 +33,7 @@ const (
 	ctrlSetSeedLimits
 	ctrlSetStreamPosition
 	ctrlApplyExternalPiece
+	ctrlRequestHolepunch
 )
 
 type controlMsg struct {
@@ -63,11 +64,16 @@ type controlMsg struct {
 	// externalPieceIndex and externalPieceData are set for ctrlApplyExternalPiece.
 	externalPieceIndex int
 	externalPieceData  []byte
+	// holepunchRelayAddr, holepunchTargetIP and holepunchTargetPort are
+	// set for ctrlRequestHolepunch.
+	holepunchRelayAddr  string
+	holepunchTargetIP   net.IP
+	holepunchTargetPort uint16
 
 	// errReply receives the result of Pause/Resume/Recheck/SetMetadata/
 	// SetFilePriority/AddTracker/Reannounce/SetSequential/SetSuperSeeding/
 	// SetFirstLastPieceFirst/SetSeedLimits/SetStreamPosition/
-	// ApplyExternalPiece.
+	// ApplyExternalPiece/RequestHolepunch.
 	errReply chan error
 	// statsReply receives the actor-owned half of a Stats snapshot.
 	statsReply chan Stats
@@ -131,6 +137,12 @@ type eventMetadataPiece struct {
 type eventPEXUpdate struct {
 	pc     *peerConn
 	update peer.PEXUpdate
+}
+
+// eventHolepunchMessage is one arrived BEP 55 ut_holepunch message.
+type eventHolepunchMessage struct {
+	pc  *peerConn
+	msg peer.HolepunchMessage
 }
 
 // eventPeerGone reports that a peer's connection ended, for any reason.

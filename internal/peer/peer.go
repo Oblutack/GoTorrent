@@ -342,6 +342,11 @@ type Client struct {
 	// alongside Results when Run returns.
 	PEXUpdates chan PEXUpdate
 
+	// HolepunchMessages carries BEP 55 ut_holepunch messages as they
+	// arrive — data-bearing like Results, not lightweight like Events.
+	// Closed alongside Results when Run returns.
+	HolepunchMessages chan HolepunchMessage
+
 	// outbound carries serialized frames to the single writer goroutine.
 	outbound  chan []byte
 	done      chan struct{}
@@ -370,6 +375,8 @@ type Client struct {
 	peerUtPexID atomic.Int32
 	// peerUploadOnlyID mirrors peerUtMetadataID for BEP 21 upload_only.
 	peerUploadOnlyID atomic.Int32
+	// peerUtHolepunchID mirrors peerUtMetadataID for BEP 55 ut_holepunch.
+	peerUtHolepunchID atomic.Int32
 	// peerUploadOnly is the peer's most recently announced BEP 21 status
 	// (via the extended handshake's own "upload_only" key, or a live
 	// upload_only message) — false until they say otherwise. Parsed and
@@ -481,6 +488,7 @@ func newClient(conn net.Conn, torrent TorrentInfo, ourID [20]byte, peerHandshake
 		Events:            make(chan Event, eventQueueSize),
 		MetadataPieces:    make(chan MetadataPiece),
 		PEXUpdates:        make(chan PEXUpdate),
+		HolepunchMessages: make(chan HolepunchMessage),
 		outbound:          make(chan []byte, outboundQueueSize),
 		done:              make(chan struct{}),
 		limits:            limits,
@@ -631,6 +639,7 @@ func (c *Client) Run() {
 	defer close(c.Results)
 	defer close(c.MetadataPieces)
 	defer close(c.PEXUpdates)
+	defer close(c.HolepunchMessages)
 	defer c.Close()
 
 	logger.Logf("Starting communication loop for peer %s\n", c.Conn.RemoteAddr())
@@ -843,6 +852,8 @@ func (c *Client) handleMessage(msg *Message) bool {
 			err = c.handleUtPexMessage(body)
 		case int(extID) == localUploadOnlyID:
 			err = c.handleUploadOnlyMessage(body)
+		case int(extID) == localUtHolepunchID:
+			err = c.handleHolepunchMessage(body)
 		default:
 			// An extended id for something we didn't advertise support for —
 			// either a stale id from before a renegotiation, or the peer

@@ -32,6 +32,10 @@ const localUtPexID = 2
 // localUtMetadataID.
 const localUploadOnlyID = 3
 
+// localUtHolepunchID is BEP 55 holepunch's counterpart to
+// localUtMetadataID.
+const localUtHolepunchID = 4
+
 // MetadataPieceSize is BEP 9's fixed chunk size for info-dictionary
 // transfer, same as a regular block. Exported so a caller assembling a
 // fetch (internal/torrent) can compute how many pieces a given
@@ -89,9 +93,10 @@ type MetadataPiece struct {
 // there's no reason to find out.
 func (c *Client) sendExtendedHandshake() error {
 	hs := extHandshakeWire{M: map[string]int{
-		"ut_metadata": localUtMetadataID,
-		"ut_pex":      localUtPexID,
-		"upload_only": localUploadOnlyID,
+		"ut_metadata":  localUtMetadataID,
+		"ut_pex":       localUtPexID,
+		"upload_only":  localUploadOnlyID,
+		"ut_holepunch": localUtHolepunchID,
 	}}
 	if c.metadataBytes != nil {
 		if b := c.metadataBytes(); b != nil {
@@ -157,6 +162,9 @@ func (c *Client) handleExtendedHandshake(body []byte) error {
 	}
 	if id, ok := hs.M["upload_only"]; ok && id > 0 && id <= 255 {
 		c.peerUploadOnlyID.Store(int32(id))
+	}
+	if id, ok := hs.M["ut_holepunch"]; ok && id > 0 && id <= 255 {
+		c.peerUtHolepunchID.Store(int32(id))
 	}
 	if hs.UploadOnly != 0 {
 		c.peerUploadOnly.Store(true)

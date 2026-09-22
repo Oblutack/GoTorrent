@@ -42,6 +42,7 @@ func (t *Torrent) run(ctx context.Context) {
 
 		case now := <-pickTicker.C:
 			t.tick(now)
+			t.expireHolepunches(now)
 
 		case now := <-chokeTicker.C:
 			t.runChoker(now)
@@ -122,6 +123,9 @@ func (t *Torrent) handleControl(msg controlMsg) {
 
 	case ctrlApplyExternalPiece:
 		msg.errReply <- t.doApplyExternalPiece(msg.externalPieceIndex, msg.externalPieceData)
+
+	case ctrlRequestHolepunch:
+		msg.errReply <- t.doRequestHolepunch(msg.holepunchRelayAddr, msg.holepunchTargetIP, msg.holepunchTargetPort)
 
 	case ctrlPeers:
 		msg.peersReply <- t.peersSnapshot()
@@ -525,6 +529,8 @@ func (t *Torrent) handleEvent(ev any) {
 		t.onMetadataPiece(e.pc, e.piece)
 	case eventPEXUpdate:
 		t.onPEXUpdate(e.pc, e.update)
+	case eventHolepunchMessage:
+		t.onHolepunchMessage(e.pc, e.msg)
 	case eventPeerGone:
 		t.removePeer(e.pc)
 	case eventPieceVerified:
@@ -635,10 +641,11 @@ func (t *Torrent) acceptAndPump(ctx context.Context, conn net.Conn, hs *peer.Han
 }
 
 // registerAndPump reports a newly-constructed connection to the actor and
-// then relays its Results/Events/MetadataPieces/PEXUpdates to the actor
-// until it closes, finally reporting eventPeerGone. Shared by
-// connectAndPump and acceptAndPump once each has its own *peer.Client,
-// regardless of which side initiated the connection.
+// then relays its Results/Events/MetadataPieces/PEXUpdates/
+// HolepunchMessages to the actor until it closes, finally reporting
+// eventPeerGone. Shared by connectAndPump and acceptAndPump once each has
+// its own *peer.Client, regardless of which side initiated the
+// connection.
 func (t *Torrent) registerAndPump(ctx context.Context, pc *peerConn) {
 	select {
 	case t.events <- eventPeerConnected{pc: pc}:
@@ -650,8 +657,8 @@ func (t *Torrent) registerAndPump(ctx context.Context, pc *peerConn) {
 	go pc.client.Run()
 
 	client := pc.client
-	resultsOpen, eventsOpen, metadataOpen, pexOpen := true, true, true, true
-	for resultsOpen || eventsOpen || metadataOpen || pexOpen {
+	resultsOpen, eventsOpen, metadataOpen, pexOpen, holepunchOpen := true, true, true, true, true
+	for resultsOpen || eventsOpen || metadataOpen || pexOpen || holepunchOpen {
 		select {
 		case <-ctx.Done():
 			client.Close()
@@ -675,6 +682,11 @@ func (t *Torrent) registerAndPump(ctx context.Context, pc *peerConn) {
 			for pexOpen {
 				if _, ok := <-client.PEXUpdates; !ok {
 					pexOpen = false
+				}
+			}
+			for holepunchOpen {
+				if _, ok := <-client.HolepunchMessages; !ok {
+					holepunchOpen = false
 				}
 			}
 		case block, ok := <-client.Results:
@@ -701,6 +713,12 @@ func (t *Torrent) registerAndPump(ctx context.Context, pc *peerConn) {
 				continue
 			}
 			t.sendEvent(ctx, eventPEXUpdate{pc: pc, update: pu})
+		case hp, ok := <-client.HolepunchMessages:
+			if !ok {
+				holepunchOpen = false
+				continue
+			}
+			t.sendEvent(ctx, eventHolepunchMessage{pc: pc, msg: hp})
 		}
 	}
 
