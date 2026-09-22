@@ -110,6 +110,12 @@ type Config struct {
 	// UploadSlots overrides how many peers this torrent unchokes at once
 	// (choker.WithSlots) — 0 means choker.DefaultSlots.
 	UploadSlots int
+	// WriteCacheBytes bounds an optional per-torrent storage.PieceCache
+	// that buffers whole pieces in memory before a single coalesced write
+	// (and verifies straight from the buffer, skipping a disk read) — see
+	// its own doc comment. 0 (the default) disables it: every block goes
+	// straight to storage.WriteAt as it always has.
+	WriteCacheBytes int64
 	// ExcludeLANFromLimits skips DownLimit/UpLimit entirely for a peer whose
 	// address is a private or loopback IP, so a same-LAN transfer always
 	// runs at full local speed regardless of the internet-facing cap.
@@ -296,6 +302,13 @@ type Torrent struct {
 	// WriteAt are safe for concurrent use, so once published this way it
 	// needs no further synchronization.
 	storage *storage.Storage
+
+	// pieceCache is nil unless Config.WriteCacheBytes > 0 — set once
+	// alongside storage in openMetadata, never reassigned. Safe for
+	// concurrent use by design (onBlock writes on the actor goroutine;
+	// verifyPiece's own spawned goroutines call TryVerify for different
+	// pieces concurrently), same publish-once shape as storage itself.
+	pieceCache *storage.PieceCache
 
 	// haveSnapshot is a read-only copy of the verified-pieces bitfield, swept
 	// forward by the actor every time a piece verifies. Peer goroutines read
@@ -800,6 +813,9 @@ func (t *Torrent) openMetadata(mi *metainfo.MetaInfo) error {
 		return fmt.Errorf("allocating files: %w", err)
 	}
 	t.storage = st
+	if t.cfg.WriteCacheBytes > 0 {
+		t.pieceCache = storage.NewPieceCache(st, t.cfg.WriteCacheBytes)
+	}
 
 	pk, err := picker.New(picker.Config{
 		NumPieces:   mi.NumPieces(),

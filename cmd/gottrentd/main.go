@@ -80,6 +80,7 @@ func run() error {
 	maxActiveSeeds := flag.Int("max-active-seeds", 0, "Maximum torrents actively seeding at once across the fleet (0 = unlimited)")
 	maxActiveTotal := flag.Int("max-active", 0, "Maximum torrents active (downloading or seeding) at once across the fleet (0 = unlimited)")
 	uploadSlots := flag.Int("upload-slots", 0, "Peers unchoked for upload at once, per torrent (0 = choker default)")
+	writeCacheMB := flag.Int("write-cache-mb", 0, "Buffer whole pieces in memory before one coalesced disk write, per torrent, in MiB (0 = disabled, write each block as it arrives)")
 	excludeLAN := flag.Bool("exclude-lan-limits", false, "Don't apply -down-limit/-up-limit to peers on a private or loopback address")
 	altDownLimitKB := flag.Uint("alt-down-limit", 0, "Download rate cap in KiB/s while -alt-schedule is active (0 = unlimited)")
 	altUpLimitKB := flag.Uint("alt-up-limit", 0, "Upload rate cap in KiB/s while -alt-schedule is active (0 = unlimited)")
@@ -128,7 +129,7 @@ func run() error {
 		seedTimeLimit: seedTimeLimit, seedLimitAction: seedLimitAction,
 		sequential: sequential, firstLastPiece: firstLastPiece, superSeeding: superSeeding,
 		maxActiveDownloads: maxActiveDownloads, maxActiveSeeds: maxActiveSeeds, maxActiveTotal: maxActiveTotal,
-		uploadSlots: uploadSlots, excludeLAN: excludeLAN,
+		uploadSlots: uploadSlots, writeCacheMB: writeCacheMB, excludeLAN: excludeLAN,
 		altDownLimitKB: altDownLimitKB, altUpLimitKB: altUpLimitKB, altSchedule: altSchedule,
 		contentLayout: contentLayoutFlag, watchDir: watchDir, onComplete: onComplete,
 		ipFilterPath: ipFilterPath, ipFilterURL: ipFilterURL, ipFilterFormat: ipFilterFormat,
@@ -254,6 +255,7 @@ type flagValues struct {
 	proxyType, proxyAddress, proxyUsername, proxyPassword                       *string
 	proxyDNS, anonymousMode, verbose                                            *bool
 	maxActiveDownloads, maxActiveSeeds, maxActiveTotal, uploadSlots             *int
+	writeCacheMB                                                                *int
 	apiAddress, tlsCertFile, tlsKeyFile, tracePath                              *string
 	catPaths                                                                    categoryPaths
 }
@@ -319,6 +321,9 @@ func mergeFlags(cfg *Config, explicit map[string]bool, f flagValues) {
 	}
 	if explicit["upload-slots"] {
 		cfg.UploadSlots = *f.uploadSlots
+	}
+	if explicit["write-cache-mb"] {
+		cfg.WriteCacheMB = *f.writeCacheMB
 	}
 	if explicit["exclude-lan-limits"] {
 		cfg.ExcludeLANFromLimits = *f.excludeLAN
@@ -433,6 +438,7 @@ func buildDefaults(cfg Config) (engine.Defaults, error) {
 		MaxActiveSeeds:         cfg.MaxActiveSeeds,
 		MaxActiveTotal:         cfg.MaxActiveTotal,
 		UploadSlots:            cfg.UploadSlots,
+		WriteCacheBytes:        int64(cfg.WriteCacheMB) << 20,
 		ExcludeLANFromLimits:   cfg.ExcludeLANFromLimits,
 		AltDownLimit:           int64(cfg.AltDownLimitKB) * 1024,
 		AltUpLimit:             int64(cfg.AltUpLimitKB) * 1024,

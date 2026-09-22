@@ -38,6 +38,7 @@ type Config struct {
 	MaxActiveSeeds         int               `json:"maxActiveSeeds"`
 	MaxActiveTotal         int               `json:"maxActiveTotal"`
 	UploadSlots            int               `json:"uploadSlots"`
+	WriteCacheMB           int               `json:"writeCacheMB"`
 	ExcludeLANFromLimits   bool              `json:"excludeLanFromLimits"`
 	AltDownLimitKB         uint              `json:"altDownLimitKB"`
 	AltUpLimitKB           uint              `json:"altUpLimitKB"`

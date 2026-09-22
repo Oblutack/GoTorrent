@@ -843,6 +843,14 @@ func (t *Torrent) onPeerControl(pc *peerConn, ev peer.Event) {
 // 16 KiB write on any storage this client is likely to run on; a bounded
 // write-worker-pool with a completion barrier would be the next step if
 // profiling ever shows otherwise.
+//
+// When Config.WriteCacheBytes enables t.pieceCache, a block goes there
+// first instead — see storage.PieceCache's own doc comment for why that's
+// still safe under the same "every block finished before Received reports
+// complete" reasoning above: WriteBlock only ever buffers in memory or
+// falls through to this exact WriteAt call, so a block has always either
+// landed on disk or is sitting in a buffer verifyPiece will hash directly,
+// by the time this function returns.
 func (t *Torrent) onBlock(pc *peerConn, block *peer.PieceBlock) {
 	mi := t.mi.Load()
 	if mi == nil || t.pick == nil {
@@ -859,16 +867,20 @@ func (t *Torrent) onBlock(pc *peerConn, block *peer.PieceBlock) {
 		pc.outstanding--
 	}
 
+	index := int(block.Index)
 	offset := int64(block.Index)*mi.Info.PieceLength + int64(block.Begin)
-	if _, err := t.storage.WriteAt(block.Block, offset); err != nil {
-		logger.Error.Printf("torrent %s: write failed for piece %d block %d: %v\n",
-			t.infoHash, block.Index, block.Begin, err)
-		// Leave the block outstanding; the picker's timeout re-requests it,
-		// possibly from a peer whose path to the disk works better — though
-		// if the disk itself is the problem that will not help. Turning a
-		// run of write failures into StateError is future work; today it
-		// just retries forever, which is at least never wrong.
-		return
+	buffered := t.pieceCache != nil && t.pieceCache.WriteBlock(index, int64(block.Index)*mi.Info.PieceLength, mi.PieceLen(index), int(block.Begin), block.Block)
+	if !buffered {
+		if _, err := t.storage.WriteAt(block.Block, offset); err != nil {
+			logger.Error.Printf("torrent %s: write failed for piece %d block %d: %v\n",
+				t.infoHash, block.Index, block.Begin, err)
+			// Leave the block outstanding; the picker's timeout re-requests it,
+			// possibly from a peer whose path to the disk works better — though
+			// if the disk itself is the problem that will not help. Turning a
+			// run of write failures into StateError is future work; today it
+			// just retries forever, which is at least never wrong.
+			return
+		}
 	}
 
 	completed, wanted := t.pick.Received(int(block.Index), int(block.Begin), length)
@@ -915,9 +927,28 @@ func (t *Torrent) cancelDuplicates(mi *metainfo.MetaInfo, index int) {
 // (large piece length) does not stall picking or event handling. peerAddr is
 // carried through unchanged, for onPieceVerified/OnPieceVerified to report -
 // see eventPieceVerified's own doc comment for what it means.
+//
+// Tries t.pieceCache first when one exists: a piece it actually buffered
+// (found == true) is hashed straight from memory and, on success, flushed
+// to storage in one write — no disk read at all, unlike the ordinary path
+// below. found == false means every block of this piece went straight
+// through to storage already (the cache had no room for it, or is
+// disabled entirely), so the usual VerifyOne read-and-hash is what
+// actually has the bytes to check.
 func (t *Torrent) verifyPiece(ctx context.Context, mi *metainfo.MetaInfo, index int, peerAddr string) {
 	defer t.wg.Done()
-	ok, err := t.storage.VerifyOne(ctx, mi, index)
+
+	var ok bool
+	var err error
+	if t.pieceCache != nil {
+		var found bool
+		ok, found, err = t.pieceCache.TryVerify(index, mi.PieceHashes[index])
+		if !found {
+			ok, err = t.storage.VerifyOne(ctx, mi, index)
+		}
+	} else {
+		ok, err = t.storage.VerifyOne(ctx, mi, index)
+	}
 	t.sendEvent(ctx, eventPieceVerified{index: index, ok: ok, err: err, peerAddr: peerAddr})
 }
 
