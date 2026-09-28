@@ -1,0 +1,63 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    A deliberately SEPARATE test project from GoTorrent.Desktop.Tests, not
+    a folder inside it - two real reasons, both confirmed by hand rather
+    than assumed:
+
+    1. Avalonia.Headless.XUnit needs xunit v3 (its own AvaloniaFactAttribute
+       derives from Xunit.v3's FactAttribute); GoTorrent.Desktop.Tests uses
+       xunit v2. Referencing both xunit major versions in one project fails
+       to build outright (CS0433: "FactAttribute exists in both xunit.core
+       and xunit.v3.core") - confirmed by actually trying it, not guessed.
+
+    2. Even the xunit-version conflict aside, bootstrapping Avalonia's
+       headless platform creates a real, process-wide Application.Current
+       that persists for the rest of that test process's life - it broke
+       an unrelated, pre-existing ViewModel-only test
+       (SetLightTheme_PersistsAndUpdatesTheProperty, which relies on
+       Application.Current being null to skip its own live-UI-update
+       branch) the moment both kinds of test shared one assembly, since
+       xunit runs a whole assembly's tests in one process. A real,
+       separate test project is a real, separate process - the only clean
+       way to keep "tests that need a real live Application" from
+       contaminating "tests that specifically assume there isn't one."
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Avalonia.Headless.XUnit" Version="12.1.2" />
+    <PackageReference Include="coverlet.collector" Version="6.0.4" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit.v3" Version="3.2.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Desktop\GoTorrent.Desktop\GoTorrent.Desktop.csproj" />
+  </ItemGroup>
+
+  <!--
+    Linked, not project-referenced: GoTorrent.Desktop.Tests itself can't be
+    referenced (that would pull in its xunit v2 packages transitively,
+    reintroducing the exact version conflict this whole project exists to
+    avoid). These two fakes have no xunit dependency of their own - each
+    project compiles its own copy of the same source file, so there is
+    still only one place either one is maintained.
+  -->
+  <ItemGroup>
+    <Compile Include="..\GoTorrent.Desktop.Tests\FakeEngineClient.cs" Link="FakeEngineClient.cs" />
+    <Compile Include="..\GoTorrent.Desktop.Tests\FakeSettingsStore.cs" Link="FakeSettingsStore.cs" />
+  </ItemGroup>
+
+</Project>

@@ -43,10 +43,31 @@ public sealed class FakeEngineClient : IEngineClient
     /// </summary>
     public Dictionary<string, TaskCompletionSource> DetailGatesByHash { get; } = [];
 
-    public Task<IReadOnlyList<TorrentSummary>> ListTorrentsAsync(CancellationToken cancellationToken) =>
-        Failure is not null
-            ? Task.FromException<IReadOnlyList<TorrentSummary>>(Failure)
-            : Task.FromResult<IReadOnlyList<TorrentSummary>>(Torrents);
+    /// <summary>
+    /// Optional gate on <see cref="ListTorrentsAsync"/> - same shape as
+    /// <see cref="PauseGate"/>/<see cref="DetailGatesByHash"/>, for a test
+    /// that needs to hold a real <c>RefreshAsync</c> open (simulating a
+    /// slow daemon) long enough to prove a second, concurrently-started
+    /// one is actually skipped rather than just racing to finish first.
+    /// </summary>
+    public TaskCompletionSource? ListGate { get; set; }
+
+    /// <summary>How many times <see cref="ListTorrentsAsync"/> has actually been called - what a re-entrancy-guard test checks, not just the end state.</summary>
+    public int ListCallCount { get; private set; }
+
+    public async Task<IReadOnlyList<TorrentSummary>> ListTorrentsAsync(CancellationToken cancellationToken)
+    {
+        ListCallCount++;
+        if (ListGate is { } gate)
+        {
+            await gate.Task;
+        }
+        if (Failure is not null)
+        {
+            throw Failure;
+        }
+        return Torrents;
+    }
 
     public Task<SessionStats> GetSessionAsync(CancellationToken cancellationToken) =>
         Failure is not null ? Task.FromException<SessionStats>(Failure) : Task.FromResult(Session);
@@ -192,10 +213,25 @@ public sealed class FakeEngineClient : IEngineClient
             : Task.FromResult<IReadOnlyList<FileEntry>>(Files);
     }
 
-    public Task<IReadOnlyList<PeerEntry>> GetPeersAsync(string infoHash, CancellationToken cancellationToken) =>
-        Failure is not null
-            ? Task.FromException<IReadOnlyList<PeerEntry>>(Failure)
-            : Task.FromResult<IReadOnlyList<PeerEntry>>(Peers);
+    /// <summary>Optional gate on <see cref="GetPeersAsync"/> - <see cref="ListGate"/>'s exact counterpart, for testing <see cref="MainViewModel.GuardedPeerRefreshAsync"/>'s re-entrancy guard the same way.</summary>
+    public TaskCompletionSource? PeersGate { get; set; }
+
+    /// <summary>How many times <see cref="GetPeersAsync"/> has actually been called.</summary>
+    public int PeersCallCount { get; private set; }
+
+    public async Task<IReadOnlyList<PeerEntry>> GetPeersAsync(string infoHash, CancellationToken cancellationToken)
+    {
+        PeersCallCount++;
+        if (PeersGate is { } gate)
+        {
+            await gate.Task;
+        }
+        if (Failure is not null)
+        {
+            throw Failure;
+        }
+        return Peers;
+    }
 
     public Task<IReadOnlyList<TrackerEntry>> GetTrackersAsync(string infoHash, CancellationToken cancellationToken)
     {

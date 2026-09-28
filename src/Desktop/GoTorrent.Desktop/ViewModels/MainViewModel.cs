@@ -2233,24 +2233,39 @@ public partial class MainViewModel : ViewModelBase, IDisposable
             return;
         }
         _timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
-        _timer.Tick += async (_, _) =>
-        {
-            if (_autoRefreshInFlight)
-            {
-                return;
-            }
-            _autoRefreshInFlight = true;
-            try
-            {
-                await RefreshAsync();
-            }
-            finally
-            {
-                _autoRefreshInFlight = false;
-            }
-        };
+        _timer.Tick += async (_, _) => await GuardedAutoRefreshAsync();
         _timer.Start();
         _ = RefreshAsync();
+    }
+
+    /// <summary>
+    /// The re-entrancy-guarded body <see cref="StartAutoRefresh"/>'s timer
+    /// tick calls - pulled out into its own method (rather than left
+    /// inline in the <c>Tick</c> lambda) specifically so a test can call it
+    /// directly, twice, without needing a real <see cref="DispatcherTimer"/>
+    /// or Avalonia dispatcher at all: the guard itself is pure state
+    /// (<c>_autoRefreshInFlight</c>), the timer is only ever the trigger,
+    /// never part of what's actually being protected. Public for the same
+    /// reason <see cref="RefreshAsync"/> itself is - this project has no
+    /// <c>InternalsVisibleTo</c> set up, and adding one for a single test
+    /// method would be more machinery than a public method already
+    /// documented as test-facing.
+    /// </summary>
+    public async Task GuardedAutoRefreshAsync()
+    {
+        if (_autoRefreshInFlight)
+        {
+            return;
+        }
+        _autoRefreshInFlight = true;
+        try
+        {
+            await RefreshAsync();
+        }
+        finally
+        {
+            _autoRefreshInFlight = false;
+        }
     }
 
     /// <summary>
@@ -2270,23 +2285,30 @@ public partial class MainViewModel : ViewModelBase, IDisposable
             return;
         }
         _peerTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
-        _peerTimer.Tick += async (_, _) =>
-        {
-            if (_peerRefreshInFlight)
-            {
-                return;
-            }
-            _peerRefreshInFlight = true;
-            try
-            {
-                await RefreshPeerRatesAsync();
-            }
-            finally
-            {
-                _peerRefreshInFlight = false;
-            }
-        };
+        _peerTimer.Tick += async (_, _) => await GuardedPeerRefreshAsync();
         _peerTimer.Start();
+    }
+
+    /// <summary>
+    /// <see cref="GuardedAutoRefreshAsync"/>'s exact counterpart for
+    /// <see cref="StartPeerRefresh"/>'s timer - same reasoning, same
+    /// "directly callable from a test with no real timer" purpose.
+    /// </summary>
+    public async Task GuardedPeerRefreshAsync()
+    {
+        if (_peerRefreshInFlight)
+        {
+            return;
+        }
+        _peerRefreshInFlight = true;
+        try
+        {
+            await RefreshPeerRatesAsync();
+        }
+        finally
+        {
+            _peerRefreshInFlight = false;
+        }
     }
 
     /// <summary>

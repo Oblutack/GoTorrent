@@ -1096,6 +1096,78 @@ public sealed class MainViewModelTests
         Assert.Equal("B", viewModel.DetailTorrent!.Name);
     }
 
+    /// <summary>
+    /// Pins the re-entrancy guard <see cref="StartAutoRefresh"/>'s real
+    /// <c>DispatcherTimer.Tick</c> handler relies on
+    /// (<c>_autoRefreshInFlight</c>) - without a real timer, since the
+    /// guard's own logic lives in <see cref="MainViewModel.GuardedAutoRefreshAsync"/>,
+    /// pulled out of the <c>Tick</c> lambda specifically so a test can call
+    /// it directly. A slow (gated) first call simulates a daemon that
+    /// hasn't answered yet when the next tick would otherwise fire; a
+    /// second concurrent call must be skipped outright, not merely slower -
+    /// <see cref="FakeEngineClient.ListCallCount"/> proves that directly,
+    /// the same "assert the call genuinely didn't happen" discipline the
+    /// Stage 6.5 tab-visibility gating tests already established.
+    /// </summary>
+    [Fact]
+    public async Task GuardedAutoRefreshAsync_SkipsAConcurrentCallWhileOneIsAlreadyInFlight()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+
+        client.ListGate = new TaskCompletionSource();
+        var firstCall = viewModel.GuardedAutoRefreshAsync();
+        var secondCall = viewModel.GuardedAutoRefreshAsync();
+
+        // The second call must return immediately (skipped by the guard)
+        // even though the first is still gated open - if the guard didn't
+        // work, awaiting secondCall here would hang forever instead.
+        await secondCall;
+        Assert.Equal(1, client.ListCallCount);
+
+        client.ListGate.SetResult();
+        await firstCall;
+        Assert.Equal(1, client.ListCallCount);
+
+        // Once the in-flight flag is cleared, a genuinely new call must
+        // go through for real - the guard only skips concurrent overlap,
+        // never refreshing again at all.
+        await viewModel.GuardedAutoRefreshAsync();
+        Assert.Equal(2, client.ListCallCount);
+    }
+
+    /// <summary>
+    /// <see cref="GuardedAutoRefreshAsync_SkipsAConcurrentCallWhileOneIsAlreadyInFlight"/>'s
+    /// exact counterpart for <see cref="MainViewModel.GuardedPeerRefreshAsync"/>.
+    /// </summary>
+    [Fact]
+    public async Task GuardedPeerRefreshAsync_SkipsAConcurrentCallWhileOneIsAlreadyInFlight()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        client.Torrents.Add(MakeTorrent("ubuntu.iso"));
+        await viewModel.RefreshAsync();
+        viewModel.SelectedTorrent = viewModel.Torrents[0];
+
+        client.PeersGate = new TaskCompletionSource();
+        var firstCall = viewModel.GuardedPeerRefreshAsync();
+        var secondCall = viewModel.GuardedPeerRefreshAsync();
+
+        await secondCall;
+        Assert.Equal(1, client.PeersCallCount);
+
+        client.PeersGate.SetResult();
+        await firstCall;
+        Assert.Equal(1, client.PeersCallCount);
+
+        await viewModel.GuardedPeerRefreshAsync();
+        Assert.Equal(2, client.PeersCallCount);
+    }
+
     [Fact]
     public async Task RefreshAsync_ReloadsTheDetailPaneForTheSelectedTorrent()
     {
