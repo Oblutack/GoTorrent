@@ -921,6 +921,14 @@ func (c *countedConn) Close() error {
 // bound; bootstrapping and ongoing lookups continue after that. A zero port
 // means "don't start DHT" and is a no-op, matching Listen's convention for
 // the TCP side.
+//
+// Reads e.externalIP without holding e.mu (unlike torrentConfig's own read
+// of the same field, called from within an already-locked section) — safe
+// specifically because internal/bootstrap.Engine calls StartPortMapping
+// (the only writer) and StartDHT sequentially, on the same goroutine,
+// before either the caller returns or any handler that could ever call
+// StartDHT concurrently exists; this is not a general license to read
+// e.externalIP unlocked from any other call site.
 func (e *Engine) StartDHT(ctx context.Context, port uint16) error {
 	if port == 0 {
 		return nil
@@ -930,7 +938,7 @@ func (e *Engine) StartDHT(ctx context.Context, port uint16) error {
 	if e.stateDir != "" {
 		statePath = filepath.Join(e.stateDir, "dht.nodes")
 	}
-	node, err := dht.New(dht.Config{Port: port, StatePath: statePath})
+	node, err := dht.New(dht.Config{Port: port, StatePath: statePath, ExternalIP: e.externalIP})
 	if err != nil {
 		return fmt.Errorf("engine: starting DHT: %w", err)
 	}

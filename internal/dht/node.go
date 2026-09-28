@@ -43,6 +43,14 @@ type Config struct {
 	// runs: read once at New, written by the periodic maintenance sweep and
 	// by Close. Empty disables persistence.
 	StatePath string
+	// ExternalIP, if set, is this machine's own internet-facing address -
+	// New derives this node's own ID from it via BEP 42 (GenerateNodeIDForIP)
+	// instead of a purely random one, so any other node that itself
+	// validates BEP 42 IDs (VerifyNodeID) sees this client as legitimate.
+	// Nil (the default, and the common case until a NAT gateway is
+	// actually queried - see Engine.StartPortMapping) falls back to
+	// RandomNodeID, identical to this field never having existed.
+	ExternalIP net.IP
 }
 
 // DHT is one BitTorrent mainline DHT node (BEP 5): a UDP socket, a Kademlia
@@ -95,7 +103,13 @@ type peerEntry struct {
 // bootstrapping the network — call Bootstrap separately, typically from a
 // spawned goroutine, once New returns.
 func New(cfg Config) (*DHT, error) {
-	id, err := RandomNodeID()
+	var id NodeID
+	var err error
+	if cfg.ExternalIP != nil {
+		id, err = GenerateNodeIDForIP(cfg.ExternalIP)
+	} else {
+		id, err = RandomNodeID()
+	}
 	if err != nil {
 		return nil, err
 	}
