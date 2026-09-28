@@ -130,6 +130,7 @@ func runFleet() {
 	catPaths := make(categoryPaths)
 	flag.Var(catPaths, "category-path", `Default save path for a category, as "name=path" (repeat for multiple categories; no CLI flag adds a torrent under a category yet, see AddOptions)`)
 	watchDir := flag.String("watch-dir", "", "Directory to poll for .torrent files and auto-add (empty = disabled)")
+	incompleteDir := flag.String("incomplete-dir", "", "Download here while a torrent is incomplete, then move it to its real download directory once it finishes (empty = disabled, download straight into the final directory)")
 	onComplete := flag.String("on-complete", "", `Shell command to run the first time a torrent finishes seeding, with %N/%F/%D substituted for its name/content path/download directory (empty = disabled)`)
 	ipFilterPath := flag.String("ip-filter", "", "Path to an eMule ipfilter.dat or PeerGuardian .p2p blocklist file (empty = disabled)")
 	ipFilterURL := flag.String("ip-filter-url", "", "URL to auto-update the IP filter from, in addition to -ip-filter (empty = disabled)")
@@ -178,6 +179,7 @@ func runFleet() {
 		AltUpLimit:             int64(*altUpLimitKB) * 1024,
 		ContentLayout:          contentLayout,
 		CategoryPaths:          catPaths,
+		IncompleteDir:          *incompleteDir,
 		OnComplete:             *onComplete,
 		IPFilterPath:           *ipFilterPath,
 		IPFilterURL:            *ipFilterURL,

@@ -23,7 +23,14 @@ func (e *Engine) dispatchCompletionHook(hash metainfo.Hash, s torrent.State) {
 
 	e.mu.Lock()
 	mt, ok := e.torrents[hash]
-	if !ok || mt.completionHookFired {
+	// mt.incompleteDir != "" means this Seeding transition is the *pre*-
+	// move one (see maybeMoveFromIncompleteDir, incompletedir.go) - %F
+	// would resolve to the soon-to-be-renamed-away staging path, not the
+	// torrent's real final location, and the move itself may not even
+	// have started yet. The real completion, with the real path, fires
+	// on the second Seeding transition that follows the move, once
+	// incompleteDir has already been cleared.
+	if !ok || mt.completionHookFired || mt.incompleteDir != "" {
 		e.mu.Unlock()
 		return
 	}
@@ -55,7 +62,10 @@ func (e *Engine) recordCompletedAt(hash metainfo.Hash, s torrent.State) {
 
 	e.mu.Lock()
 	mt, ok := e.torrents[hash]
-	if !ok || !mt.completedAt.IsZero() {
+	// Same incompleteDir guard as dispatchCompletionHook just above, same
+	// reasoning: the real "completed at" moment is the second, post-move
+	// Seeding transition, not this pre-move one.
+	if !ok || !mt.completedAt.IsZero() || mt.incompleteDir != "" {
 		e.mu.Unlock()
 		return
 	}

@@ -91,6 +91,7 @@ func run() error {
 	catPaths := make(categoryPaths)
 	flag.Var(catPaths, "category-path", `Default save path for a category, as "name=path" (repeat for multiple categories)`)
 	watchDir := flag.String("watch-dir", "", "Directory to poll for .torrent files and auto-add (empty = disabled)")
+	incompleteDir := flag.String("incomplete-dir", "", "Download here while a torrent is incomplete, then move it to its real download directory once it finishes (empty = disabled, download straight into the final directory)")
 	onComplete := flag.String("on-complete", "", `Shell command to run the first time a torrent finishes seeding, with %N/%F/%D substituted for its name/content path/download directory (empty = disabled)`)
 	ipFilterPath := flag.String("ip-filter", "", "Path to an eMule ipfilter.dat or PeerGuardian .p2p blocklist file (empty = disabled)")
 	ipFilterURL := flag.String("ip-filter-url", "", "URL to auto-update the IP filter from, in addition to -ip-filter (empty = disabled)")
@@ -134,7 +135,7 @@ func run() error {
 		maxActiveDownloads: maxActiveDownloads, maxActiveSeeds: maxActiveSeeds, maxActiveTotal: maxActiveTotal,
 		uploadSlots: uploadSlots, writeCacheMB: writeCacheMB, useMmap: useMmap, excludeLAN: excludeLAN,
 		altDownLimitKB: altDownLimitKB, altUpLimitKB: altUpLimitKB, altSchedule: altSchedule,
-		contentLayout: contentLayoutFlag, watchDir: watchDir, onComplete: onComplete,
+		contentLayout: contentLayoutFlag, watchDir: watchDir, incompleteDir: incompleteDir, onComplete: onComplete,
 		ipFilterPath: ipFilterPath, ipFilterURL: ipFilterURL, ipFilterFormat: ipFilterFormat,
 		ipFilterUpdateInterval: ipFilterUpdateInterval,
 		proxyType:              proxyType, proxyAddress: proxyAddress, proxyUsername: proxyUsername, proxyPassword: proxyPassword,
@@ -263,21 +264,21 @@ func run() error {
 // helper (overkill for ~30 fields with mixed types) or duplicating this
 // list a second time.
 type flagValues struct {
-	downloadDir, stateDir, bindAddress                                          *string
-	listenPort                                                                  *uint
-	randomPort, noPortMap, sequential, firstLastPiece, superSeeding, excludeLAN *bool
-	downLimitKB, upLimitKB, altDownLimitKB, altUpLimitKB                        *uint
-	ratioLimit                                                                  *float64
-	seedTimeLimit, ipFilterUpdateInterval                                       *time.Duration
-	seedLimitAction, altSchedule, contentLayout, watchDir, onComplete           *string
-	ipFilterPath, ipFilterURL, ipFilterFormat                                   *string
-	proxyType, proxyAddress, proxyUsername, proxyPassword                       *string
-	proxyDNS, anonymousMode, verbose, useMmap                                   *bool
-	maxActiveDownloads, maxActiveSeeds, maxActiveTotal, uploadSlots             *int
-	writeCacheMB                                                                *int
-	apiAddress, tlsCertFile, tlsKeyFile, tracePath                              *string
-	pprofAddr                                                                   *string
-	catPaths                                                                    categoryPaths
+	downloadDir, stateDir, bindAddress                                               *string
+	listenPort                                                                       *uint
+	randomPort, noPortMap, sequential, firstLastPiece, superSeeding, excludeLAN      *bool
+	downLimitKB, upLimitKB, altDownLimitKB, altUpLimitKB                             *uint
+	ratioLimit                                                                       *float64
+	seedTimeLimit, ipFilterUpdateInterval                                            *time.Duration
+	seedLimitAction, altSchedule, contentLayout, watchDir, incompleteDir, onComplete *string
+	ipFilterPath, ipFilterURL, ipFilterFormat                                        *string
+	proxyType, proxyAddress, proxyUsername, proxyPassword                            *string
+	proxyDNS, anonymousMode, verbose, useMmap                                        *bool
+	maxActiveDownloads, maxActiveSeeds, maxActiveTotal, uploadSlots                  *int
+	writeCacheMB                                                                     *int
+	apiAddress, tlsCertFile, tlsKeyFile, tracePath                                   *string
+	pprofAddr                                                                        *string
+	catPaths                                                                         categoryPaths
 }
 
 // mergeFlags overlays onto cfg only the flags actually present in explicit
@@ -373,6 +374,9 @@ func mergeFlags(cfg *Config, explicit map[string]bool, f flagValues) {
 	}
 	if explicit["watch-dir"] {
 		cfg.WatchDir = *f.watchDir
+	}
+	if explicit["incomplete-dir"] {
+		cfg.IncompleteDir = *f.incompleteDir
 	}
 	if explicit["on-complete"] {
 		cfg.OnComplete = *f.onComplete
@@ -493,6 +497,7 @@ func buildDefaults(cfg Config) (engine.Defaults, error) {
 		AltUpLimit:             int64(cfg.AltUpLimitKB) * 1024,
 		ContentLayout:          contentLayout,
 		CategoryPaths:          cfg.CategoryPaths,
+		IncompleteDir:          cfg.IncompleteDir,
 		OnComplete:             cfg.OnComplete,
 		IPFilterPath:           cfg.IPFilterPath,
 		IPFilterURL:            cfg.IPFilterURL,

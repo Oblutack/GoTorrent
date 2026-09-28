@@ -67,15 +67,18 @@ func writeSingleFileTorrentWithContent(t *testing.T, dir, name string) (path str
 	return path, mi.InfoHash, content
 }
 
-// writeMultiFileTorrentFile builds a minimal two-file .torrent (no real
-// data needed by its callers — see TestMoveDataRefusesNoSubfolderMultiFileTorrent,
-// which fails before ever touching disk content).
-func writeMultiFileTorrentFile(t *testing.T, dir, name string) (path string, hash metainfo.Hash) {
+// writeMultiFileTorrentFile builds a minimal multi-file-structure .torrent
+// (a single "files" entry is enough to make Info.IsMultiFile() true, which
+// is all TestMoveDataRefusesNoSubfolderMultiFileTorrent needs — that test
+// fails before ever touching disk content). Also returns the exact content
+// bytes the recorded piece hashes describe, for callers (incompletedir_test.go)
+// that do need real, verifiable data on disk.
+func writeMultiFileTorrentFile(t *testing.T, dir, name string) (path string, hash metainfo.Hash, content []byte) {
 	t.Helper()
 
 	const pieceLength = 16384
 	total := int64(pieceLength * 2)
-	content := make([]byte, total)
+	content = make([]byte, total)
 	rand.New(rand.NewSource(17)).Read(content)
 
 	var hashes []byte
@@ -124,7 +127,7 @@ func writeMultiFileTorrentFile(t *testing.T, dir, name string) (path string, has
 	if err := os.WriteFile(path, torrentBytes, 0o644); err != nil {
 		t.Fatalf("write torrent file: %v", err)
 	}
-	return path, mi.InfoHash
+	return path, mi.InfoHash, content
 }
 
 // TestMoveDataRelocatesFilesAndResumesWithoutRedownloading proves the whole
@@ -201,7 +204,7 @@ func TestMoveDataRefusesNoSubfolderMultiFileTorrent(t *testing.T) {
 	t.Cleanup(e.Shutdown)
 
 	torrentDir := t.TempDir()
-	path, hash := writeMultiFileTorrentFile(t, torrentDir, "multi")
+	path, hash, _ := writeMultiFileTorrentFile(t, torrentDir, "multi")
 	if _, err := e.Add(path, ""); err != nil {
 		t.Fatalf("Add: %v", err)
 	}

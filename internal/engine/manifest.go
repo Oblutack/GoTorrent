@@ -28,20 +28,27 @@ import (
 // worth reconstructing, just start fresh" treatment as the v2->v3 bump;
 // an older manifest's torrents come back with a fresh AddedAt (the moment
 // of the reload) rather than a fabricated history.
-const manifestVersion = 4
+// v5: added incomplete_dir (Phase 1.4's incomplete-folder staging) — a
+// still-downloading staged torrent needs its exact staging directory
+// restored on reload, not silently re-decided from the engine's current
+// Defaults.IncompleteDir (which might have changed, or might not even be
+// configured on this run). Same no-migration precedent as every version
+// bump before it.
+const manifestVersion = 5
 
 var manifestMagic = [4]byte{'G', 'T', 'F', 'L'}
 
 // manifestEntry is one torrent recorded in the manifest, decoded from its
 // wire form.
 type manifestEntry struct {
-	InfoHash    metainfo.Hash
-	Source      string
-	DownloadDir string
-	Category    string
-	Tags        []string
-	AddedAt     time.Time
-	CompletedAt time.Time
+	InfoHash      metainfo.Hash
+	Source        string
+	DownloadDir   string
+	Category      string
+	Tags          []string
+	AddedAt       time.Time
+	CompletedAt   time.Time
+	IncompleteDir string
 }
 
 // manifestEntryWire and manifestWire are the exact bencoded shapes, kept
@@ -52,13 +59,14 @@ type manifestEntry struct {
 // CompletedAt of 0 means "not completed yet" (matching CompletedAt's own
 // time.Time zero-value convention everywhere else in this package).
 type manifestEntryWire struct {
-	InfoHash    string   `bencode:"info_hash"`
-	Source      string   `bencode:"source"`
-	DownloadDir string   `bencode:"download_dir"`
-	Category    string   `bencode:"category,omitempty"`
-	Tags        []string `bencode:"tags,omitempty"`
-	AddedAt     int64    `bencode:"added_at"`
-	CompletedAt int64    `bencode:"completed_at,omitempty"`
+	InfoHash      string   `bencode:"info_hash"`
+	Source        string   `bencode:"source"`
+	DownloadDir   string   `bencode:"download_dir"`
+	Category      string   `bencode:"category,omitempty"`
+	Tags          []string `bencode:"tags,omitempty"`
+	AddedAt       int64    `bencode:"added_at"`
+	CompletedAt   int64    `bencode:"completed_at,omitempty"`
+	IncompleteDir string   `bencode:"incomplete_dir,omitempty"`
 }
 
 type manifestWire struct {
@@ -86,13 +94,14 @@ func (e *Engine) saveManifestLocked() error {
 			completedAt = mt.completedAt.Unix()
 		}
 		wire.Entries = append(wire.Entries, manifestEntryWire{
-			InfoHash:    hash.String(),
-			Source:      mt.source,
-			DownloadDir: mt.downloadDir,
-			Category:    mt.category,
-			Tags:        mt.tags,
-			AddedAt:     mt.addedAt.Unix(),
-			CompletedAt: completedAt,
+			InfoHash:      hash.String(),
+			Source:        mt.source,
+			DownloadDir:   mt.downloadDir,
+			Category:      mt.category,
+			Tags:          mt.tags,
+			AddedAt:       mt.addedAt.Unix(),
+			CompletedAt:   completedAt,
+			IncompleteDir: mt.incompleteDir,
 		})
 	}
 	sort.Slice(wire.Entries, func(i, j int) bool { return wire.Entries[i].InfoHash < wire.Entries[j].InfoHash })
@@ -150,12 +159,13 @@ func (e *Engine) readManifest() ([]manifestEntry, error) {
 			return nil, fmt.Errorf("engine: manifest entry %q: %w", we.Source, err)
 		}
 		entry := manifestEntry{
-			InfoHash:    hash,
-			Source:      we.Source,
-			DownloadDir: we.DownloadDir,
-			Category:    we.Category,
-			Tags:        we.Tags,
-			AddedAt:     time.Unix(we.AddedAt, 0),
+			InfoHash:      hash,
+			Source:        we.Source,
+			DownloadDir:   we.DownloadDir,
+			Category:      we.Category,
+			Tags:          we.Tags,
+			AddedAt:       time.Unix(we.AddedAt, 0),
+			IncompleteDir: we.IncompleteDir,
 		}
 		if we.CompletedAt != 0 {
 			entry.CompletedAt = time.Unix(we.CompletedAt, 0)

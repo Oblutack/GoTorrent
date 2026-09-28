@@ -47,6 +47,7 @@ type Config struct {
 	ContentLayout          string            `json:"contentLayout"`
 	CategoryPaths          map[string]string `json:"categoryPaths"`
 	WatchDir               string            `json:"watchDir"`
+	IncompleteDir          string            `json:"incompleteDir"`
 	OnComplete             string            `json:"onComplete"`
 	IPFilterPath           string            `json:"ipFilterPath"`
 	IPFilterURL            string            `json:"ipFilterURL"`

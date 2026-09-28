@@ -88,11 +88,16 @@ func (e *Engine) MoveData(hash metainfo.Hash, newDir string) error {
 		return fmt.Errorf("engine: persisting manifest after move: %w", err)
 	}
 
-	tr.OnStateChange(func(s torrent.State) {
-		go e.reevaluateQueue()
-		go e.dispatchCompletionHook(hash, s)
-	})
-	tr.OnSeedLimitReached(func() { go e.applySeedLimitAction(hash) })
+	// wireTorrentHooks (incompletedir.go) - previously this only rewired
+	// OnStateChange's queue/completion-hook pair and OnSeedLimitReached, a
+	// real gap found while building incomplete-directory staging: a
+	// torrent moved via MoveData silently stopped reporting peer connect/
+	// disconnect and per-piece verification (and, since recordCompletedAt
+	// rides the same OnStateChange callback, its completed-at timestamp)
+	// for the rest of its life. Fixed by sharing the exact same helper
+	// AddWithOptions and maybeMoveFromIncompleteDir use, rather than a
+	// third hand-copied subset.
+	e.wireTorrentHooks(hash, tr)
 	go func() {
 		if err := tr.Run(context.Background()); err != nil {
 			logger.Error.Printf("engine: torrent %s: %v\n", hash, err)

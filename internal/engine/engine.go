@@ -142,6 +142,19 @@ type Defaults struct {
 	// DownloadDir. Changing a torrent's category later (SetCategory) does
 	// not move its files; see MoveData for that.
 	CategoryPaths map[string]string
+	// IncompleteDir, if set, is where a torrent downloads to while still
+	// incomplete — moved to its real (final) download directory the
+	// moment it first reaches StateSeeding, via the same stop-rename-
+	// restart mechanism MoveData already uses (see maybeMoveFromIncompleteDir
+	// in incompletedir.go). Empty (the default) means no staging at all —
+	// a torrent downloads straight into its final directory, unchanged
+	// from before this existed. Applied only to a genuinely fresh Add,
+	// never retroactively to a torrent already in the manifest (Load
+	// restores whatever AddOptions.IncompleteDir that torrent was already
+	// using, which for an already-completed one is empty — see
+	// AddWithOptions's own reasoning for exactly how it tells these two
+	// "empty" cases apart).
+	IncompleteDir string
 	// ProxyType, ProxyAddress, ProxyUsername, ProxyPassword, and ProxyDNS
 	// configure the fleet-wide outbound proxy for peer connections and
 	// HTTP(S) tracker announces — see proxy.Config, which these map onto
@@ -281,6 +294,17 @@ type managedTorrent struct {
 	// StateSeeding.
 	addedAt     time.Time
 	completedAt time.Time
+
+	// incompleteDir is non-empty while this torrent is currently staged
+	// under Defaults.IncompleteDir and hasn't yet moved to its real
+	// downloadDir — see incompletedir.go. downloadDir above always means
+	// the final, logical directory (what the API/manifest/on-complete
+	// hook report), never the staging one; this field is the only place
+	// that's tracked. Persisted in the manifest so a restart mid-download
+	// resumes staging in the same directory rather than picking a
+	// possibly-different current Defaults.IncompleteDir, or worse,
+	// silently dropping staging partway through.
+	incompleteDir string
 }
 
 // displayNameFor picks the best name available for mt — see Summary.Name.
@@ -473,6 +497,16 @@ type AddOptions struct {
 	// instant it's added.
 	AddedAt     time.Time
 	CompletedAt time.Time
+	// IncompleteDir exists purely for Load to restore a still-downloading
+	// torrent's exact in-progress staging directory (see
+	// Defaults.IncompleteDir) — a real, external Add call has no business
+	// setting this either. AddWithOptions applies Defaults.IncompleteDir
+	// itself, but only when AddedAt is also zero (the "this is a genuinely
+	// fresh add, not a manifest replay" signal every real caller's AddedAt
+	// already gives for free) — otherwise a torrent reloaded after already
+	// completing (IncompleteDir correctly persisted as "") would get
+	// re-staged into a directory its content has already moved out of.
+	IncompleteDir string
 }
 
 // Add starts a torrent running under the engine's management from either a
@@ -527,7 +561,28 @@ func (e *Engine) AddWithOptions(source, downloadDir string, opts AddOptions) (me
 		return metainfo.Hash{}, errors.New("engine: no download directory given and no default configured")
 	}
 
-	cfg := e.torrentConfig(downloadDir)
+	// incompleteDir is empty (no staging) unless Defaults.IncompleteDir
+	// applies. opts.IncompleteDir, set only by Load, always wins outright —
+	// it's the exact persisted state of a torrent that already existed,
+	// which must never be second-guessed against the engine's *current*
+	// IncompleteDir setting (which could have changed, or a completed
+	// torrent's own correctly-persisted "" must never be re-staged).
+	// Defaults.IncompleteDir only applies when opts.AddedAt is also zero —
+	// the signal every genuinely fresh Add already gives for free (Load
+	// always supplies a real restored AddedAt; see AddOptions's own doc
+	// comment), so a manifest replay never accidentally re-stages a
+	// torrent this build's current default wasn't configured for when it
+	// was first added.
+	incompleteDir := opts.IncompleteDir
+	if incompleteDir == "" && opts.AddedAt.IsZero() && e.defaults.IncompleteDir != "" {
+		incompleteDir = e.defaults.IncompleteDir
+	}
+	operationalDir := downloadDir
+	if incompleteDir != "" {
+		operationalDir = incompleteDir
+	}
+
+	cfg := e.torrentConfig(operationalDir)
 	cfg.Trackers = trackers
 	cfg.StartPaused = opts.StartPaused
 	cfg.SkipHashCheck = opts.SkipHashCheck
@@ -563,6 +618,7 @@ func (e *Engine) AddWithOptions(source, downloadDir string, opts AddOptions) (me
 		queuePos: e.nextQueuePos, downLimit: downLimit, upLimit: upLimit,
 		category: opts.Category, tags: append([]string(nil), opts.Tags...),
 		addedAt: addedAt, completedAt: opts.CompletedAt,
+		incompleteDir: incompleteDir,
 	}
 	e.nextQueuePos++
 	e.torrents[hash] = mt
@@ -572,58 +628,9 @@ func (e *Engine) AddWithOptions(source, downloadDir string, opts AddOptions) (me
 		return metainfo.Hash{}, fmt.Errorf("engine: persisting manifest: %w", err)
 	}
 
-	// Must be set before Run (see OnStateChange's own doc comment), and must
-	// never call back into tr itself from the actor goroutine it fires on —
-	// reevaluateQueue can Pause/Resume tr, which would deadlock if run
-	// synchronously here, so this only ever schedules it to run separately.
-	// dispatchCompletionHook has the same constraint (it may run an external
-	// program, which must not block the actor either) so it goes through the
-	// same detached goroutine.
-	tr.OnStateChange(func(s torrent.State) {
-		go e.reevaluateQueue()
-		go e.dispatchCompletionHook(hash, s)
-		go e.recordCompletedAt(hash, s)
-		// broadcast only touches eventMu and non-blocking channel sends —
-		// it never calls back into tr, so unlike the goroutines above it
-		// needs no go of its own to stay safe on the actor goroutine.
-		e.broadcast(Event{Kind: EventTorrentStateChanged, InfoHash: hash, State: s})
-		// Cross-torrent dedupe (Phase 8). Two separate passes, both needed:
-		// applyDedupe *consumes* the fleet-wide index (only meaningful once
-		// there's something missing to want, i.e. Downloading) — calls back
-		// into tr (ApplyExternalPiece), so it needs the same
-		// detached-goroutine treatment as reevaluateQueue/
-		// dispatchCompletionHook above. publishAllDedupeSources *produces*
-		// into it: OnPieceVerified below already records each piece as it
-		// downloads, but a torrent that was already complete when Added
-		// (bulk-verified) or resumed from trusted resume data never sends a
-		// single piece through that per-piece hook — both paths call
-		// t.pick.SetHave directly — so without this bulk publish here, on
-		// reaching Downloading or Seeding, that torrent's pieces would never
-		// become available to any other torrent's dedupe lookups at all,
-		// defeating the single most common real case for this feature (an
-		// already-seeded file, re-added under a second torrent).
-		if s == torrent.StateDownloading {
-			go e.applyDedupe(hash)
-		}
-		if s == torrent.StateDownloading || s == torrent.StateSeeding {
-			go e.publishAllDedupeSources(hash)
-		}
-	})
-	// Same constraint as OnStateChange above — must not block or call back
-	// into tr synchronously, since it fires from the actor's own tick
-	// goroutine. A no-op when SeedLimitAction is the default (Pause): the
-	// pause itself already happened inside the actor before this fires.
-	tr.OnSeedLimitReached(func() { go e.applySeedLimitAction(hash) })
-	tr.OnPeerConnected(func(addr string) {
-		e.broadcast(Event{Kind: EventPeerConnected, InfoHash: hash, PeerAddr: addr})
-	})
-	tr.OnPeerDisconnected(func(addr string) {
-		e.broadcast(Event{Kind: EventPeerDisconnected, InfoHash: hash, PeerAddr: addr})
-	})
-	tr.OnPieceVerified(func(index int, peerAddr string) {
-		e.broadcast(Event{Kind: EventPieceVerified, InfoHash: hash, PieceIndex: index, PeerAddr: peerAddr})
-		e.recordDedupeSource(hash, index)
-	})
+	// Must be set before Run — see wireTorrentHooks's own doc comment for
+	// why every hook it attaches is safe to call from here.
+	e.wireTorrentHooks(hash, tr)
 
 	e.broadcast(Event{Kind: EventTorrentAdded, InfoHash: hash})
 
@@ -649,7 +656,7 @@ func (e *Engine) Load() error {
 		return fmt.Errorf("engine: reading manifest: %w", err)
 	}
 	for _, ent := range entries {
-		opts := AddOptions{Category: ent.Category, Tags: ent.Tags, AddedAt: ent.AddedAt, CompletedAt: ent.CompletedAt}
+		opts := AddOptions{Category: ent.Category, Tags: ent.Tags, AddedAt: ent.AddedAt, CompletedAt: ent.CompletedAt, IncompleteDir: ent.IncompleteDir}
 		if _, err := e.AddWithOptions(ent.Source, ent.DownloadDir, opts); err != nil {
 			logger.Warning.Printf("engine: could not reload %s: %v\n", ent.Source, err)
 		}
