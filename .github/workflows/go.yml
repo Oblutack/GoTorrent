@@ -36,4 +36,19 @@ jobs:
     # The race detector needs a 64-bit C toolchain, which the Windows dev
     # machine does not have. CI is where this gate is actually enforced.
     - name: Test (race)
-      run: go test -race -v ./...
+      run: go test -race -v -coverprofile=coverage.out -covermode=atomic ./...
+
+    - name: Coverage summary
+      run: |
+        {
+          echo "### Go coverage"
+          echo '```'
+          go tool cover -func=coverage.out
+          echo '```'
+        } >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Upload coverage report
+      uses: actions/upload-artifact@v4
+      with:
+        name: go-coverage
+        path: coverage.out

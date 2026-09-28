@@ -28,4 +28,23 @@ jobs:
       run: dotnet build GoTorrent.sln --no-restore --configuration Release
 
     - name: Test
-      run: dotnet test GoTorrent.sln --no-build --configuration Release
+      run: >
+        dotnet test GoTorrent.sln --no-build --configuration Release
+        --collect:"XPlat Code Coverage" --results-directory ./coverage
+
+    - name: Generate coverage report
+      run: |
+        dotnet tool install -g dotnet-reportgenerator-globaltool
+        reportgenerator -reports:"coverage/**/coverage.cobertura.xml" -targetdir:coveragereport -reporttypes:"Html;TextSummary"
+        {
+          echo "### .NET coverage"
+          echo '```'
+          cat coveragereport/Summary.txt
+          echo '```'
+        } >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Upload coverage report
+      uses: actions/upload-artifact@v4
+      with:
+        name: dotnet-coverage
+        path: coveragereport
