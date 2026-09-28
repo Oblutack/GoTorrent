@@ -54,14 +54,17 @@
             <Image Grid.Column="0" Source="/Assets/app-icon.ico" Width="16" Height="16" Margin="10,0,6,0" />
             <TextBlock Grid.Column="1" Text="GoTorrent" VerticalAlignment="Center" FontSize="12" Foreground="{DynamicResource GtSubtle}" />
             <Button Grid.Column="2" Classes="caption" Click="OnMinimizeClick"
+                    ToolTip.Tip="Minimize" AutomationProperties.Name="Minimize"
                     chrome:WindowDecorationProperties.ElementRole="MinimizeButton">
                 <Path Data="M0,5 L10,5" StrokeThickness="1" />
             </Button>
             <Button Grid.Column="3" Classes="caption" Click="OnMaximizeRestoreClick"
+                    ToolTip.Tip="Maximize" AutomationProperties.Name="Maximize"
                     chrome:WindowDecorationProperties.ElementRole="MaximizeButton">
                 <Path Data="M0.5,0.5 L9.5,0.5 L9.5,9.5 L0.5,9.5 Z" StrokeThickness="1" />
             </Button>
             <Button Grid.Column="4" Classes="caption captionClose" Click="OnCloseClick"
+                    ToolTip.Tip="Close" AutomationProperties.Name="Close"
                     chrome:WindowDecorationProperties.ElementRole="CloseButton">
                 <Path Data="M0,0 L10,10 M10,0 L0,10" StrokeThickness="1" />
             </Button>
@@ -87,16 +90,16 @@
         <!-- Toolbar: shown once connected. -->
         <Grid Grid.Row="1" IsVisible="{Binding IsConnected}" ColumnDefinitions="Auto,Auto,Auto,Auto,Auto,*,Auto,Auto,Auto,Auto"
               Background="{DynamicResource GtPanel}" Height="48">
-            <Button Grid.Column="0" Classes="toolbar" ToolTip.Tip="Add Torrent" Click="OnAddTorrentClick" Margin="4,0,0,0">
+            <Button Grid.Column="0" Classes="toolbar" ToolTip.Tip="Add Torrent" AutomationProperties.Name="Add Torrent" Click="OnAddTorrentClick" Margin="4,0,0,0">
                 <PathIcon Data="{StaticResource IconAdd}" />
             </Button>
-            <Button Grid.Column="1" Classes="toolbar" ToolTip.Tip="Resume" Command="{Binding ResumeSelectedCommand}">
+            <Button Grid.Column="1" Classes="toolbar" ToolTip.Tip="Resume" AutomationProperties.Name="Resume" Command="{Binding ResumeSelectedCommand}">
                 <PathIcon Data="{StaticResource IconPlay}" />
             </Button>
-            <Button Grid.Column="2" Classes="toolbar" ToolTip.Tip="Pause" Command="{Binding PauseSelectedCommand}">
+            <Button Grid.Column="2" Classes="toolbar" ToolTip.Tip="Pause" AutomationProperties.Name="Pause" Command="{Binding PauseSelectedCommand}">
                 <PathIcon Data="{StaticResource IconPause}" />
             </Button>
-            <Button Grid.Column="3" Classes="toolbar" ToolTip.Tip="Delete" Command="{Binding DeleteSelectedCommand}">
+            <Button Grid.Column="3" Classes="toolbar" ToolTip.Tip="Delete" AutomationProperties.Name="Delete" Command="{Binding DeleteSelectedCommand}">
                 <PathIcon Data="{StaticResource IconDelete}" />
             </Button>
             <PathIcon Grid.Column="4" Data="{StaticResource IconSearch}" Width="15" Height="15"
@@ -105,7 +108,7 @@
                       VerticalAlignment="Center" Margin="0,0,12,0" MaxWidth="320" HorizontalAlignment="Left" MinWidth="200" />
             <TextBlock Grid.Column="6" VerticalAlignment="Center" Margin="0,0,12,0" Foreground="{DynamicResource GtSubtle}"
                         Text="{Binding Session.TorrentCount, StringFormat='{}{0} torrents'}" />
-            <Button Grid.Column="7" Classes="toolbar" ToolTip.Tip="Choose Columns">
+            <Button Grid.Column="7" Classes="toolbar" ToolTip.Tip="Choose Columns" AutomationProperties.Name="Choose Columns">
                 <PathIcon Data="{StaticResource IconColumns}" />
                 <Button.Flyout>
                     <Flyout>
@@ -126,10 +129,10 @@
                     </Flyout>
                 </Button.Flyout>
             </Button>
-            <Button Grid.Column="8" Classes="toolbar" ToolTip.Tip="Statistics" Click="OnStatisticsClick">
+            <Button Grid.Column="8" Classes="toolbar" ToolTip.Tip="Statistics" AutomationProperties.Name="Statistics" Click="OnStatisticsClick">
                 <PathIcon Data="{StaticResource IconChart}" />
             </Button>
-            <Button Grid.Column="9" Classes="toolbar" ToolTip.Tip="Preferences" Click="OnPreferencesClick" Margin="0,0,8,0">
+            <Button Grid.Column="9" Classes="toolbar" ToolTip.Tip="Preferences" AutomationProperties.Name="Preferences" Click="OnPreferencesClick" Margin="0,0,8,0">
                 <PathIcon Data="{StaticResource IconSettings}" />
             </Button>
         </Grid>

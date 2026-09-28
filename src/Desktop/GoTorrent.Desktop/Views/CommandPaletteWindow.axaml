@@ -22,6 +22,7 @@
             <Image Grid.Column="0" Source="/Assets/app-icon.ico" Width="14" Height="14" Margin="10,0,6,0" />
             <TextBlock Grid.Column="1" Text="Command Palette" VerticalAlignment="Center" FontSize="12" Foreground="{DynamicResource GtSubtle}" />
             <Button Grid.Column="2" Classes="caption captionClose" Click="OnCloseClick"
+                    ToolTip.Tip="Close" AutomationProperties.Name="Close"
                     chrome:WindowDecorationProperties.ElementRole="CloseButton">
                 <Path Data="M0,0 L10,10 M10,0 L0,10" StrokeThickness="1" />
             </Button>
