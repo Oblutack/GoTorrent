@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"time"
@@ -8,6 +9,13 @@ import (
 	"github.com/Oblutack/GoTorrent/internal/engine"
 	"github.com/Oblutack/GoTorrent/internal/torrent"
 )
+
+// scrapeTimeout bounds how long ScrapeHandler waits on the trackers it
+// asks — a dead UDP tracker's own retry/backoff schedule can otherwise run
+// for a very long time (see internal/tracker's udpRoundTrip), and this is
+// a synchronous, user-triggered request expecting a quick answer, not a
+// background loop.
+const scrapeTimeout = 20 * time.Second
 
 // TrackerEntry is one tracker's most recent announce result, as reported
 // by GET /api/v1/torrents/{hash}/trackers.
@@ -89,5 +97,63 @@ func AddTrackerHandler(e *engine.Engine) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"url": req.URL})
+	}
+}
+
+// ScrapeEntry is one tracker's scrape result, as reported by
+// POST /api/v1/torrents/{hash}/scrape. Complete/Incomplete/Downloaded are
+// only meaningful when Error is empty — a tracker that failed or doesn't
+// support scraping (e.g. its announce URL doesn't follow the scrape URL
+// convention) reports Error instead, rather than the request as a whole
+// failing over one bad tracker among several.
+type ScrapeEntry struct {
+	URL        string `json:"url"`
+	Complete   int    `json:"complete,omitempty"`
+	Incomplete int    `json:"incomplete,omitempty"`
+	Downloaded int    `json:"downloaded,omitempty"`
+	Error      string `json:"error,omitempty"`
+}
+
+func scrapeEntryDTO(r torrent.TorrentScrapeResult) ScrapeEntry {
+	entry := ScrapeEntry{URL: r.URL}
+	if r.Err != nil {
+		entry.Error = r.Err.Error()
+		return entry
+	}
+	entry.Complete = r.Result.Complete
+	entry.Incomplete = r.Result.Incomplete
+	entry.Downloaded = r.Result.Downloaded
+	return entry
+}
+
+// ScrapeHandler serves POST /api/v1/torrents/{hash}/scrape: an on-demand
+// swarm-statistics refresh (BEP 48 for HTTP(S) trackers, BEP 15's scrape
+// action for UDP ones) that, unlike GET .../trackers, doesn't wait for the
+// next scheduled announce and carries a real all-time "downloaded" count
+// no announce response has ever provided. Every tracker this torrent
+// knows about is asked in parallel and reported independently — a torrent
+// with five trackers where one is dead still returns four real answers
+// plus one error entry, not a single failed request.
+func ScrapeHandler(e *engine.Engine) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		hash, ok := parseHashParam(w, r)
+		if !ok {
+			return
+		}
+		tr, ok := e.Get(hash)
+		if !ok {
+			writeError(w, http.StatusNotFound, "torrent not managed by this engine")
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), scrapeTimeout)
+		defer cancel()
+
+		results := tr.Scrape(ctx)
+		out := make([]ScrapeEntry, len(results))
+		for i, res := range results {
+			out[i] = scrapeEntryDTO(res)
+		}
+		writeJSON(w, http.StatusOK, out)
 	}
 }

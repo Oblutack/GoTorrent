@@ -37,6 +37,7 @@ func Routes(e *engine.Engine, userAgent, uploadDir string) *http.ServeMux {
 	mux.HandleFunc("GET /api/v1/torrents/{hash}/peers", PeersHandler(e))
 	mux.HandleFunc("GET /api/v1/torrents/{hash}/trackers", TrackersHandler(e))
 	mux.HandleFunc("POST /api/v1/torrents/{hash}/trackers", AddTrackerHandler(e))
+	mux.HandleFunc("POST /api/v1/torrents/{hash}/scrape", ScrapeHandler(e))
 	mux.HandleFunc("GET /api/v1/torrents/{hash}/pieces", PiecesHandler(e))
 	mux.HandleFunc("POST /api/v1/torrents/{hash}/pause", PauseHandler(e))
 	mux.HandleFunc("POST /api/v1/torrents/{hash}/resume", ResumeHandler(e))

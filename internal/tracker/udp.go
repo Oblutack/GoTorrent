@@ -19,6 +19,7 @@ const (
 	udpProtocolMagic  = 0x41727101980
 	udpActionConnect  = 0
 	udpActionAnnounce = 1
+	udpActionScrape   = 2
 	udpActionError    = 3
 
 	udpConnectionIDTTL = 60 * time.Second
@@ -240,4 +241,94 @@ func parseUDPAnnounceResponse(body []byte) (*AnnounceResponse, error) {
 		Incomplete: int(leechers),
 		Peers:      peers,
 	}, nil
+}
+
+// scrapeUDP implements BEP 15's scrape action (2) over the URL's
+// host:port, reusing the same cached connection id an announce to this
+// tracker would (udpConnectionID) — a scrape and an announce to the same
+// UDP tracker share one BEP 15 "connection" for as long as its 60s TTL
+// lasts.
+func (c *Client) scrapeUDP(ctx context.Context, target *url.URL, infoHashes [][20]byte) ([]ScrapeResult, error) {
+	host := target.Host
+	if _, _, err := net.SplitHostPort(host); err != nil {
+		return nil, fmt.Errorf("tracker: udp scrape URL %q has no port", target)
+	}
+
+	raddr, err := net.ResolveUDPAddr("udp", host)
+	if err != nil {
+		return nil, fmt.Errorf("tracker: resolving %s: %w", host, err)
+	}
+	conn, err := net.DialUDP("udp", nil, raddr)
+	if err != nil {
+		return nil, fmt.Errorf("tracker: dialing %s: %w", host, err)
+	}
+	defer conn.Close()
+
+	watcherDone := make(chan struct{})
+	defer close(watcherDone)
+	go func() {
+		select {
+		case <-ctx.Done():
+			conn.SetDeadline(time.Now())
+		case <-watcherDone:
+		}
+	}()
+
+	connID, err := c.udpConnectionID(ctx, conn, host)
+	if err != nil {
+		return nil, err
+	}
+
+	txID, err := randomUint32()
+	if err != nil {
+		return nil, fmt.Errorf("tracker: generating transaction id: %w", err)
+	}
+
+	buf := make([]byte, 16+20*len(infoHashes))
+	binary.BigEndian.PutUint64(buf[0:8], connID)
+	binary.BigEndian.PutUint32(buf[8:12], udpActionScrape)
+	binary.BigEndian.PutUint32(buf[12:16], txID)
+	for i, h := range infoHashes {
+		copy(buf[16+20*i:16+20*(i+1)], h[:])
+	}
+
+	resp, err := udpRoundTrip(ctx, conn, buf, txID)
+	if err != nil {
+		return nil, err
+	}
+	return parseUDPScrapeResponse(resp, infoHashes)
+}
+
+// parseUDPScrapeResponse decodes a BEP 15 scrape reply. Unlike the HTTP
+// scrape response (a dict keyed by infohash, so a tracker can just omit a
+// torrent it has no data for), the UDP response is purely positional — one
+// 12-byte seeders/completed/leechers triple per requested infohash, in the
+// exact order they were requested, with no way to signal "unknown" at all
+// — so this always returns exactly len(infoHashes) results (barring a
+// malformed/truncated response, which is a hard error) rather than
+// filtering anything out.
+func parseUDPScrapeResponse(body []byte, infoHashes [][20]byte) ([]ScrapeResult, error) {
+	if len(body) < 8 {
+		return nil, errors.New("tracker: udp scrape response too short")
+	}
+	if action := binary.BigEndian.Uint32(body[0:4]); action != udpActionScrape {
+		return nil, fmt.Errorf("tracker: udp scrape response has action %d, want %d", action, udpActionScrape)
+	}
+
+	want := 8 + 12*len(infoHashes)
+	if len(body) < want {
+		return nil, fmt.Errorf("tracker: udp scrape response is %d bytes, want at least %d for %d torrent(s)", len(body), want, len(infoHashes))
+	}
+
+	out := make([]ScrapeResult, len(infoHashes))
+	for i, h := range infoHashes {
+		off := 8 + 12*i
+		out[i] = ScrapeResult{
+			InfoHash:   h,
+			Complete:   int(binary.BigEndian.Uint32(body[off : off+4])),
+			Downloaded: int(binary.BigEndian.Uint32(body[off+4 : off+8])),
+			Incomplete: int(binary.BigEndian.Uint32(body[off+8 : off+12])),
+		}
+	}
+	return out, nil
 }
