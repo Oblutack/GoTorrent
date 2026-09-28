@@ -42,6 +42,7 @@ public partial class MainViewModel : ViewModelBase, IDisposable
     private DateTimeOffset? _lastPeerSampleTime;
     private Dictionary<string, (long Downloaded, long Uploaded)> _lastPeerTotals = [];
     private string? _pieceOwnersForHash;
+    private string? _detailLoadedForHash;
     private CancellationTokenSource? _detailLoadCts;
     private bool _autoRefreshInFlight;
     private bool _peerRefreshInFlight;
@@ -161,6 +162,25 @@ public partial class MainViewModel : ViewModelBase, IDisposable
     [ObservableProperty]
     public partial TorrentDetail? DetailTorrent { get; set; }
 
+    /// <summary>
+    /// Which detail tab (General=0/Files=1/Peers=2/Trackers=3/Pieces=4) is
+    /// currently showing, bound two-way to <c>TabControl.SelectedIndex</c>.
+    /// <see cref="LoadSelectedDetailAsync"/> uses this to skip fetching a
+    /// tab's own data while it isn't visible - Files/Trackers/Pieces used
+    /// to be re-fetched every 2s regardless of which tab a user actually
+    /// had open, which was pure waste for the three tabs not showing.
+    /// Changing it re-triggers a load immediately (see
+    /// <see cref="OnSelectedDetailTabIndexChanged"/>) so switching to a
+    /// tab feels instant rather than waiting out the rest of the poll
+    /// interval, the same "feels instant" reasoning
+    /// <c>OnTorrentSelectionChanged</c> already established for switching
+    /// torrents.
+    /// </summary>
+    [ObservableProperty]
+    public partial int SelectedDetailTabIndex { get; set; }
+
+    partial void OnSelectedDetailTabIndexChanged(int value) => _ = LoadSelectedDetailAsync();
+
     [ObservableProperty]
     public partial ObservableCollection<FileEntry> DetailFiles { get; set; } = [];
 
@@ -173,8 +193,24 @@ public partial class MainViewModel : ViewModelBase, IDisposable
     [ObservableProperty]
     public partial ObservableCollection<TrackerEntry> DetailTrackers { get; set; } = [];
 
+    /// <summary>
+    /// A plain array, not an <see cref="ObservableCollection{T}"/> - the
+    /// whole bitfield is always replaced wholesale on a real refresh
+    /// (gottrentd's API has no way to report a partial delta), so there
+    /// was never anything for per-element <c>CollectionChanged</c>
+    /// machinery to buy here, only the extra allocation and event-
+    /// subscription overhead of wrapping an already-perfect
+    /// <see cref="PiecesInfo.ToHaveArray"/> array in a heavier collection
+    /// type on every poll - a real cost for a torrent with many pieces.
+    /// A single live-verified piece (see <see cref="HandleEvent"/>) still
+    /// reassigns through the normal generated setter - a shallow copy of
+    /// the (small, one-element-changed) array, not a mutate-in-place, so
+    /// the change is a genuine new reference the property system reliably
+    /// notifies on, unlike mutating this array and hoping a same-
+    /// reference "change" still triggers a redraw.
+    /// </summary>
     [ObservableProperty]
-    public partial ObservableCollection<bool> PieceHave { get; set; } = [];
+    public partial bool[] PieceHave { get; set; } = [];
 
     /// <summary>
     /// Parallel to <see cref="PieceHave"/> - the peer address that
@@ -187,7 +223,7 @@ public partial class MainViewModel : ViewModelBase, IDisposable
     /// events arrive for the selected torrent (see <see cref="HandleEvent"/>).
     /// </summary>
     [ObservableProperty]
-    public partial ObservableCollection<string?> PieceOwners { get; set; } = [];
+    public partial string?[] PieceOwners { get; set; } = [];
 
     /// <summary>
     /// Stage 6's "why is this slow?" diagnostics panel - see
@@ -1144,18 +1180,31 @@ public partial class MainViewModel : ViewModelBase, IDisposable
     }
 
     /// <summary>
-    /// Fetches the detail pane's four tabs for whatever torrent is
-    /// currently selected. Called after every auto-refresh tick (so the
-    /// detail pane stays live while a torrent is selected) and directly
-    /// from the View when the user picks a different row, for an instant
+    /// Fetches the detail pane's tabs for whatever torrent is currently
+    /// selected. Called after every auto-refresh tick (so the detail pane
+    /// stays live while a torrent is selected), directly from the View
+    /// when the user picks a different row, and whenever
+    /// <see cref="SelectedDetailTabIndex"/> changes - each for an instant
     /// update instead of waiting out the rest of the 2s interval.
     /// Clears the detail pane rather than erroring when nothing is
     /// selected - that's a normal state, not a failure.
     ///
     /// <para>
+    /// Files/Trackers/Pieces are only fetched when their own tab is the
+    /// one actually showing (General always needs Trackers too, for the
+    /// Diagnosis row's tracker-failure check) - these three used to be
+    /// re-fetched every 2s regardless of which tab was visible, pure
+    /// waste for the tabs a user wasn't looking at. On a genuine change of
+    /// selected torrent, everything is fetched (and anything not fetched
+    /// is cleared rather than left showing the previous torrent's stale
+    /// data) regardless of which tab is open, matching the old
+    /// always-fetch-everything behavior for that one case.
+    /// </para>
+    ///
+    /// <para>
     /// Cancels its own previous in-flight call before starting a new one:
     /// selecting torrent A (slow to respond) then quickly torrent B (fast)
-    /// used to let A's four awaits resolve after B's already had, silently
+    /// used to let A's awaits resolve after B's already had, silently
     /// overwriting the detail pane with the wrong torrent's files/trackers/
     /// pieces. Every request this method makes now carries the same
     /// per-call token, so a superseded call's requests are actually
@@ -1180,34 +1229,78 @@ public partial class MainViewModel : ViewModelBase, IDisposable
             PieceHave = [];
             PieceOwners = [];
             _pieceOwnersForHash = null;
+            _detailLoadedForHash = null;
             DiagnosisMessages = [];
             return;
         }
         var hash = SelectedTorrent.InfoHash;
+        var freshSelection = hash != _detailLoadedForHash;
+        var wantFiles = freshSelection || SelectedDetailTabIndex == 1;
+        var wantTrackers = freshSelection || SelectedDetailTabIndex is 0 or 3;
+        var wantPieces = freshSelection || SelectedDetailTabIndex == 4;
+
         try
         {
             var detail = await _client.GetTorrentDetailAsync(hash, token);
-            var files = await _client.GetFilesAsync(hash, token);
-            var trackers = await _client.GetTrackersAsync(hash, token);
-            var pieces = await _client.GetPiecesAsync(hash, token);
-            var have = pieces.ToHaveArray();
             DetailTorrent = detail;
-            DetailFiles = new ObservableCollection<FileEntry>(files);
-            DetailTrackers = new ObservableCollection<TrackerEntry>(trackers);
-            PieceHave = new ObservableCollection<bool>(have);
-            // Only start PieceOwners fresh on an actual selection change -
-            // rebuilding it every 2s refresh of the SAME torrent would
-            // throw away attribution HandleEvent already accumulated live
-            // for pieces verified between polls (the bitfield itself is
-            // idempotent across polls, but "who delivered it" is only ever
-            // known from the live pieceVerified event, never re-derivable
-            // from a later poll - see the property's own doc comment).
-            if (hash != _pieceOwnersForHash || PieceOwners.Count != have.Length)
+
+            if (wantFiles)
             {
-                _pieceOwnersForHash = hash;
-                PieceOwners = new ObservableCollection<string?>(new string?[have.Length]);
+                var files = await _client.GetFilesAsync(hash, token);
+                DetailFiles = new ObservableCollection<FileEntry>(files);
             }
-            await RecomputeDiagnosisAsync(detail, trackers, token);
+            else if (freshSelection)
+            {
+                DetailFiles = [];
+            }
+
+            if (wantTrackers)
+            {
+                var trackers = await _client.GetTrackersAsync(hash, token);
+                DetailTrackers = new ObservableCollection<TrackerEntry>(trackers);
+            }
+            else if (freshSelection)
+            {
+                DetailTrackers = [];
+            }
+
+            if (wantPieces)
+            {
+                var pieces = await _client.GetPiecesAsync(hash, token);
+                var have = pieces.ToHaveArray();
+                PieceHave = have;
+                // Only start PieceOwners fresh on an actual selection
+                // change - rebuilding it every 2s refresh of the SAME
+                // torrent would throw away attribution HandleEvent
+                // already accumulated live for pieces verified between
+                // polls (the bitfield itself is idempotent across polls,
+                // but "who delivered it" is only ever known from the live
+                // pieceVerified event, never re-derivable from a later
+                // poll - see the property's own doc comment).
+                if (hash != _pieceOwnersForHash || PieceOwners.Length != have.Length)
+                {
+                    _pieceOwnersForHash = hash;
+                    PieceOwners = new string?[have.Length];
+                }
+            }
+            else if (freshSelection)
+            {
+                PieceHave = [];
+                PieceOwners = [];
+                _pieceOwnersForHash = null;
+            }
+
+            // DiagnosisMessages is only ever rendered on the General tab -
+            // recomputing it (including its own GetSessionLimitsAsync
+            // call) while a different tab is showing is exactly the same
+            // kind of invisible-tab waste this method's own Files/
+            // Trackers/Pieces gating exists to eliminate.
+            if (SelectedDetailTabIndex == 0)
+            {
+                await RecomputeDiagnosisAsync(detail, DetailTrackers, token);
+            }
+
+            _detailLoadedForHash = hash;
         }
         catch (OperationCanceledException)
         {
@@ -1445,13 +1538,28 @@ public partial class MainViewModel : ViewModelBase, IDisposable
                 RecordSpeedSample(ev.Session);
                 break;
             case "pieceVerified" when ev.PieceIndex is { } index && SelectedTorrent is not null && ev.InfoHash == SelectedTorrent.InfoHash:
-                if (index >= 0 && index < PieceHave.Count)
+                // A shallow copy, not a mutate-in-place - reassigning
+                // through the normal generated setter (rather than
+                // mutating PieceHave/PieceOwners' existing arrays and
+                // trying to force a redraw some other way) is what
+                // reliably triggers PieceMapControl's own bound-property
+                // change notification; a same-reference "change" risks
+                // being treated as a no-op by Avalonia's own property
+                // system. One array copy per genuinely-verified piece is
+                // a real, bounded event, nothing like the periodic-poll
+                // reallocation PieceHave being a plain array (instead of
+                // an ObservableCollection) exists to eliminate.
+                if (index >= 0 && index < PieceHave.Length)
                 {
-                    PieceHave[index] = true;
+                    var have = (bool[])PieceHave.Clone();
+                    have[index] = true;
+                    PieceHave = have;
                 }
-                if (index >= 0 && index < PieceOwners.Count && !string.IsNullOrEmpty(ev.PeerAddr))
+                if (index >= 0 && index < PieceOwners.Length && !string.IsNullOrEmpty(ev.PeerAddr))
                 {
-                    PieceOwners[index] = ev.PeerAddr;
+                    var owners = (string?[])PieceOwners.Clone();
+                    owners[index] = ev.PeerAddr;
+                    PieceOwners = owners;
                 }
                 break;
             case "torrentStateChanged" when ev.State == "Seeding" && ev.InfoHash is { } hash:

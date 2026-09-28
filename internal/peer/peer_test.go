@@ -12,6 +12,7 @@ import (
 	"github.com/Oblutack/GoTorrent/internal/bencode"
 	"github.com/Oblutack/GoTorrent/internal/logger"
 	"github.com/Oblutack/GoTorrent/internal/tracker"
+	"github.com/Oblutack/GoTorrent/internal/version"
 )
 
 func mustMarshal(t *testing.T, v any) []byte {
@@ -562,6 +563,9 @@ func TestExtendedHandshakeAdvertisesOurMetadata(t *testing.T) {
 	}
 	if hs.MetadataSize != len(content) {
 		t.Fatalf("metadata_size = %d, want %d", hs.MetadataSize, len(content))
+	}
+	if hs.V != version.UserAgent {
+		t.Fatalf("v = %q, want %q (the same identity string already sent as the tracker User-Agent)", hs.V, version.UserAgent)
 	}
 }
 

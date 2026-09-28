@@ -170,23 +170,46 @@ public sealed class FakeEngineClient : IEngineClient
         return Detail ?? throw new InvalidOperationException("Detail was not set on the fake.");
     }
 
-    public Task<IReadOnlyList<FileEntry>> GetFilesAsync(string infoHash, CancellationToken cancellationToken) =>
-        Failure is not null
+    /// <summary>
+    /// How many times each of Files/Trackers/Pieces has actually been
+    /// fetched - MainViewModel.LoadSelectedDetailAsync only fetches
+    /// whichever of these its currently-visible detail tab needs (plus
+    /// Trackers for the General tab's Diagnosis row), so these counters
+    /// are what a test can check to prove a poll while looking at a
+    /// different tab genuinely skipped the ones it didn't need, not just
+    /// that the (possibly still-correct-by-coincidence) end state looks
+    /// right.
+    /// </summary>
+    public int FilesCallCount { get; private set; }
+    public int TrackersCallCount { get; private set; }
+    public int PiecesCallCount { get; private set; }
+
+    public Task<IReadOnlyList<FileEntry>> GetFilesAsync(string infoHash, CancellationToken cancellationToken)
+    {
+        FilesCallCount++;
+        return Failure is not null
             ? Task.FromException<IReadOnlyList<FileEntry>>(Failure)
             : Task.FromResult<IReadOnlyList<FileEntry>>(Files);
+    }
 
     public Task<IReadOnlyList<PeerEntry>> GetPeersAsync(string infoHash, CancellationToken cancellationToken) =>
         Failure is not null
             ? Task.FromException<IReadOnlyList<PeerEntry>>(Failure)
             : Task.FromResult<IReadOnlyList<PeerEntry>>(Peers);
 
-    public Task<IReadOnlyList<TrackerEntry>> GetTrackersAsync(string infoHash, CancellationToken cancellationToken) =>
-        Failure is not null
+    public Task<IReadOnlyList<TrackerEntry>> GetTrackersAsync(string infoHash, CancellationToken cancellationToken)
+    {
+        TrackersCallCount++;
+        return Failure is not null
             ? Task.FromException<IReadOnlyList<TrackerEntry>>(Failure)
             : Task.FromResult<IReadOnlyList<TrackerEntry>>(Trackers);
+    }
 
-    public Task<PiecesInfo> GetPiecesAsync(string infoHash, CancellationToken cancellationToken) =>
-        Failure is not null ? Task.FromException<PiecesInfo>(Failure) : Task.FromResult(Pieces);
+    public Task<PiecesInfo> GetPiecesAsync(string infoHash, CancellationToken cancellationToken)
+    {
+        PiecesCallCount++;
+        return Failure is not null ? Task.FromException<PiecesInfo>(Failure) : Task.FromResult(Pieces);
+    }
 
     public Task<SessionLimits> GetSessionLimitsAsync(CancellationToken cancellationToken) =>
         Failure is not null ? Task.FromException<SessionLimits>(Failure) : Task.FromResult(SessionLimits);

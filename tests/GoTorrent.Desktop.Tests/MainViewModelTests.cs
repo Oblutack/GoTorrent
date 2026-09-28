@@ -824,6 +824,55 @@ public sealed class MainViewModelTests
     }
 
     [Fact]
+    public async Task LoadSelectedDetailAsync_OnlyFetchesFilesAndPiecesWhenTheirOwnTabIsSelected()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        var torrent = MakeTorrent("ubuntu.iso");
+        client.Torrents.Add(torrent);
+        await viewModel.RefreshAsync();
+        viewModel.SelectedTorrent = viewModel.Torrents[0];
+        client.Detail = MakeDetail("ubuntu.iso");
+
+        // The first load of a freshly-selected torrent always fetches
+        // everything, regardless of which tab happens to be selected -
+        // matching the old always-fetch-everything behavior for a genuine
+        // selection change.
+        await viewModel.LoadSelectedDetailAsync();
+        Assert.Equal(1, client.FilesCallCount);
+        Assert.Equal(1, client.TrackersCallCount);
+        Assert.Equal(1, client.PiecesCallCount);
+
+        // A later poll of the SAME torrent, still on the General tab
+        // (index 0), must not re-fetch Files or Pieces - nothing on the
+        // General tab needs either. Trackers IS still fetched every poll
+        // regardless, since the Diagnosis row (General tab) depends on it.
+        await viewModel.LoadSelectedDetailAsync();
+        Assert.Equal(1, client.FilesCallCount);
+        Assert.Equal(2, client.TrackersCallCount);
+        Assert.Equal(1, client.PiecesCallCount);
+
+        // Switching SelectedDetailTabIndex to Files (1) triggers its own
+        // immediate reload (see OnSelectedDetailTabIndexChanged, which the
+        // fake client's synchronously-completing tasks mean has already
+        // run by the time this setter returns) - no separate explicit
+        // call needed, matching how the real TabControl.SelectedIndex
+        // binding drives this. Fetches Files, but still not Pieces - the
+        // Pieces tab isn't the one showing.
+        viewModel.SelectedDetailTabIndex = 1;
+        Assert.Equal(2, client.FilesCallCount);
+        Assert.Equal(1, client.PiecesCallCount);
+
+        // Switching to the Pieces tab (index 4) fetches Pieces, but not
+        // Files this time.
+        viewModel.SelectedDetailTabIndex = 4;
+        Assert.Equal(2, client.FilesCallCount);
+        Assert.Equal(2, client.PiecesCallCount);
+    }
+
+    [Fact]
     public async Task LoadSelectedDetailAsync_WithASelectionPopulatesGeneralFilesAndTrackers()
     {
         var (viewModel, client, _) = MakeViewModel();
@@ -1112,7 +1161,7 @@ public sealed class MainViewModelTests
 
         await viewModel.LoadSelectedDetailAsync();
 
-        Assert.Equal(10, viewModel.PieceHave.Count);
+        Assert.Equal(10, viewModel.PieceHave.Length);
         Assert.True(viewModel.PieceHave[0]);
         Assert.False(viewModel.PieceHave[1]);
         Assert.True(viewModel.PieceHave[2]);

@@ -1,5 +1,3 @@
-using System.Collections.ObjectModel;
-using System.Collections.Specialized;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Media;
@@ -32,10 +30,10 @@ namespace GoTorrent.Desktop.Controls;
 /// </summary>
 public sealed class PieceMapControl : Control
 {
-    public static readonly StyledProperty<ObservableCollection<bool>?> PiecesProperty =
-        AvaloniaProperty.Register<PieceMapControl, ObservableCollection<bool>?>(nameof(Pieces));
+    public static readonly StyledProperty<bool[]?> PiecesProperty =
+        AvaloniaProperty.Register<PieceMapControl, bool[]?>(nameof(Pieces));
 
-    public ObservableCollection<bool>? Pieces
+    public bool[]? Pieces
     {
         get => GetValue(PiecesProperty);
         set => SetValue(PiecesProperty, value);
@@ -48,10 +46,10 @@ public sealed class PieceMapControl : Control
     /// every have piece uses the plain default colour, unchanged from
     /// before this property existed.
     /// </summary>
-    public static readonly StyledProperty<ObservableCollection<string?>?> PieceOwnersProperty =
-        AvaloniaProperty.Register<PieceMapControl, ObservableCollection<string?>?>(nameof(PieceOwners));
+    public static readonly StyledProperty<string?[]?> PieceOwnersProperty =
+        AvaloniaProperty.Register<PieceMapControl, string?[]?>(nameof(PieceOwners));
 
-    public ObservableCollection<string?>? PieceOwners
+    public string?[]? PieceOwners
     {
         get => GetValue(PieceOwnersProperty);
         set => SetValue(PieceOwnersProperty, value);
@@ -73,42 +71,32 @@ public sealed class PieceMapControl : Control
     /// </summary>
     private const int ShadeBuckets = 10;
 
+    /// <summary>
+    /// Both <see cref="Pieces"/> and <see cref="PieceOwners"/> are plain
+    /// arrays, not <see cref="System.Collections.ObjectModel.ObservableCollection{T}"/>s
+    /// - there is no <c>CollectionChanged</c> to subscribe to, and none is
+    /// needed: <c>MainViewModel</c> always hands this control a genuinely
+    /// new array reference, whether from a real poll (the whole bitfield
+    /// replaced wholesale - gottrentd's API has no partial-delta concept)
+    /// or a single live-verified piece (a small shallow copy with just
+    /// that one element changed), so the ordinary
+    /// <see cref="AvaloniaProperty"/> change notification this override
+    /// already reacts to is exactly the one redraw either case needs.
+    /// </summary>
     protected override void OnPropertyChanged(AvaloniaPropertyChangedEventArgs change)
     {
         base.OnPropertyChanged(change);
-        if (change.Property == PiecesProperty)
+        if (change.Property == PiecesProperty || change.Property == PieceOwnersProperty)
         {
-            if (change.OldValue is ObservableCollection<bool> oldPieces)
-            {
-                oldPieces.CollectionChanged -= OnPiecesCollectionChanged;
-            }
-            if (change.NewValue is ObservableCollection<bool> newPieces)
-            {
-                newPieces.CollectionChanged += OnPiecesCollectionChanged;
-            }
-            InvalidateVisual();
-        }
-        else if (change.Property == PieceOwnersProperty)
-        {
-            if (change.OldValue is ObservableCollection<string?> oldOwners)
-            {
-                oldOwners.CollectionChanged -= OnPiecesCollectionChanged;
-            }
-            if (change.NewValue is ObservableCollection<string?> newOwners)
-            {
-                newOwners.CollectionChanged += OnPiecesCollectionChanged;
-            }
             InvalidateVisual();
         }
     }
-
-    private void OnPiecesCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e) => InvalidateVisual();
 
     public override void Render(DrawingContext context)
     {
         base.Render(context);
         var pieces = Pieces;
-        var totalPieces = pieces?.Count ?? 0;
+        var totalPieces = pieces?.Length ?? 0;
         if (pieces is null || totalPieces == 0 || Bounds.Width <= 0 || Bounds.Height <= 0)
         {
             return;
@@ -154,7 +142,7 @@ public sealed class PieceMapControl : Control
                     continue;
                 }
                 have++;
-                var owner = (owners is not null && p < owners.Count ? owners[p] : null) ?? UnknownOwner;
+                var owner = (owners is not null && p < owners.Length ? owners[p] : null) ?? UnknownOwner;
                 ownerTally[owner] = ownerTally.GetValueOrDefault(owner) + 1;
             }
             var fraction = end == start ? 0.0 : have / (double)(end - start);

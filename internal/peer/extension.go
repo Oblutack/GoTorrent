@@ -8,6 +8,7 @@ import (
 	"github.com/Oblutack/GoTorrent/internal/bencode"
 	"github.com/Oblutack/GoTorrent/internal/logger"
 	"github.com/Oblutack/GoTorrent/internal/tracker"
+	"github.com/Oblutack/GoTorrent/internal/version"
 )
 
 // extensionReservedByte / extensionReservedBit mark support for the BEP 10
@@ -92,12 +93,20 @@ type MetadataPiece struct {
 // reserved bit is a protocol violation most peers would simply ignore, but
 // there's no reason to find out.
 func (c *Client) sendExtendedHandshake() error {
-	hs := extHandshakeWire{M: map[string]int{
-		"ut_metadata":  localUtMetadataID,
-		"ut_pex":       localUtPexID,
-		"upload_only":  localUploadOnlyID,
-		"ut_holepunch": localUtHolepunchID,
-	}}
+	hs := extHandshakeWire{
+		M: map[string]int{
+			"ut_metadata":  localUtMetadataID,
+			"ut_pex":       localUtPexID,
+			"upload_only":  localUploadOnlyID,
+			"ut_holepunch": localUtHolepunchID,
+		},
+		// V is the same identity string already sent as the HTTP
+		// User-Agent on tracker announces (internal/version's whole point
+		// is one client identity everywhere, not two independently-
+		// hardcoded strings) — cosmetic only, nothing on either side of
+		// this connection branches on it.
+		V: version.UserAgent,
+	}
 	if c.metadataBytes != nil {
 		if b := c.metadataBytes(); b != nil {
 			hs.MetadataSize = len(b)
