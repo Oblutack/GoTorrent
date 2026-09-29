@@ -43,6 +43,12 @@ type Conn struct {
 	conn       net.Conn
 	r          *bufio.Reader
 	remoteAddr string
+	// isClient is this Conn's own RFC 6455 section 5.1 role: true for a
+	// connection DialClient created (mask outgoing frames, require
+	// unmasked incoming ones), false for one Upgrade created (the
+	// opposite, both ways) — see frame.go's readFrame/writeFrame for what
+	// each direction actually does with it.
+	isClient bool
 
 	outbound  chan []byte
 	done      chan struct{}
@@ -50,17 +56,22 @@ type Conn struct {
 	closed    atomic.Bool
 }
 
-// newConn takes ownership of c and r. r must be the *bufio.Reader Hijack
-// itself returned (wrapped in a *bufio.ReadWriter), never a fresh one
-// built from c directly — Hijack's ReadWriter may already have buffered
-// bytes the client sent right after the handshake request, in the same
-// TCP segment; a fresh bufio.Reader over the raw net.Conn would silently
-// skip past them, corrupting the very first frame read.
-func newConn(c net.Conn, r *bufio.Reader) *Conn {
+// newConn takes ownership of c and r. For a server connection (isClient
+// false), r must be the *bufio.Reader Hijack itself returned (wrapped in a
+// *bufio.ReadWriter), never a fresh one built from c directly — Hijack's
+// ReadWriter may already have buffered bytes the client sent right after
+// the handshake request, in the same TCP segment; a fresh bufio.Reader
+// over the raw net.Conn would silently skip past them, corrupting the
+// very first frame read. For a client connection (isClient true),
+// DialClient's own bufio.Reader already carries this same requirement
+// relative to whatever the server sent immediately after its handshake
+// response.
+func newConn(c net.Conn, r *bufio.Reader, isClient bool) *Conn {
 	conn := &Conn{
 		conn:       c,
 		r:          r,
 		remoteAddr: remoteAddrString(c),
+		isClient:   isClient,
 		outbound:   make(chan []byte, outboundQueueSize),
 		done:       make(chan struct{}),
 	}
@@ -119,7 +130,7 @@ func (c *Conn) send(data []byte) error {
 
 func (c *Conn) sendFrame(fin bool, opcode Opcode, payload []byte) error {
 	var buf bytes.Buffer
-	if err := writeFrame(&buf, fin, opcode, payload); err != nil {
+	if err := writeFrame(&buf, fin, opcode, payload, c.isClient); err != nil {
 		return err
 	}
 	return c.send(buf.Bytes())
@@ -166,7 +177,7 @@ func (c *Conn) ReadMessage() (Opcode, []byte, error) {
 		if c.closed.Load() {
 			return 0, nil, ErrClosed
 		}
-		f, err := readFrame(c.r)
+		f, err := readFrame(c.r, !c.isClient)
 		if err != nil {
 			c.Close()
 			return 0, nil, err

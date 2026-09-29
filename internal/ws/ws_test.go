@@ -3,6 +3,7 @@ package ws
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
@@ -261,5 +262,96 @@ func TestUpgradeRejectsNonWebSocketRequest(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+// TestDialClientRoundTripsAgainstARealServer is DialClient's own real
+// fixture: a real Upgrade-backed httptest.Server on one side, a real
+// DialClient connection on the other - the two halves of this package
+// finally talking to each other, rather than each only ever being tested
+// against a hand-rolled stand-in for the other side (newTestServer's own
+// handlers so far, dialTestClient's own hand-rolled client). Proves both
+// directions of the masking asymmetry actually round-trip correctly on
+// real sockets, not just in the unit-level frame.go tests: the server
+// receives and correctly unmasks what the client sent, and the client
+// receives and correctly accepts what the (unmasked) server sent back.
+func TestDialClientRoundTripsAgainstARealServer(t *testing.T) {
+	addr := newTestServer(t, func(conn *Conn) {
+		defer conn.Close()
+		op, payload, err := conn.ReadMessage()
+		if err != nil {
+			t.Errorf("server ReadMessage: %v", err)
+			return
+		}
+		if op != OpText {
+			t.Errorf("server got opcode %#x, want OpText", op)
+		}
+		conn.WriteMessage(OpText, append([]byte("echo: "), payload...))
+	})
+
+	conn, err := DialClient(context.Background(), "ws://"+addr+"/events", nil)
+	if err != nil {
+		t.Fatalf("DialClient: %v", err)
+	}
+	defer conn.Close()
+
+	if err := conn.WriteMessage(OpText, []byte("hello")); err != nil {
+		t.Fatalf("client WriteMessage: %v", err)
+	}
+	op, payload, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("client ReadMessage: %v", err)
+	}
+	if op != OpText {
+		t.Fatalf("client got opcode %#x, want OpText", op)
+	}
+	if string(payload) != "echo: hello" {
+		t.Fatalf("payload = %q, want %q", payload, "echo: hello")
+	}
+}
+
+// TestDialClientSendsCallerHeaders proves header actually reaches the
+// handshake request - internal/tuiclient's whole reason for needing this
+// parameter is to carry a real Authorization: Bearer token, which the
+// control API's own RequireBearerToken middleware would otherwise reject
+// the upgrade for.
+func TestDialClientSendsCallerHeaders(t *testing.T) {
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		conn, err := Upgrade(w, r)
+		if err != nil {
+			t.Errorf("Upgrade: %v", err)
+			return
+		}
+		conn.Close()
+	}))
+	defer srv.Close()
+	addr := srv.Listener.Addr().String()
+
+	header := http.Header{"Authorization": {"Bearer test-token"}}
+	conn, err := DialClient(context.Background(), "ws://"+addr+"/events", header)
+	if err != nil {
+		t.Fatalf("DialClient: %v", err)
+	}
+	conn.Close()
+
+	if gotAuth != "Bearer test-token" {
+		t.Fatalf("server saw Authorization = %q, want %q", gotAuth, "Bearer test-token")
+	}
+}
+
+// TestDialClientRejectsNonUpgradeResponse proves a real non-WS HTTP
+// response (a plain 200, no handshake) fails cleanly rather than DialClient
+// misinterpreting it as a successful upgrade.
+func TestDialClientRejectsNonUpgradeResponse(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	addr := srv.Listener.Addr().String()
+
+	if _, err := DialClient(context.Background(), "ws://"+addr+"/events", nil); err == nil {
+		t.Fatal("DialClient succeeded against a plain 200 response, want an error")
 	}
 }

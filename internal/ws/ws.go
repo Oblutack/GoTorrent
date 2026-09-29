@@ -18,12 +18,18 @@
 package ws
 
 import (
+	"bufio"
+	"bytes"
+	"context"
+	"crypto/rand"
 	"crypto/sha1"
+	"crypto/tls"
 	"encoding/base64"
 	"errors"
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 )
 
@@ -99,7 +105,111 @@ func Upgrade(w http.ResponseWriter, r *http.Request) (*Conn, error) {
 		return nil, fmt.Errorf("ws: flushing handshake response: %w", err)
 	}
 
-	return newConn(netConn, buf.Reader), nil
+	return newConn(netConn, buf.Reader, false), nil
+}
+
+// DialClient opens a WebSocket connection to a ws:// or wss:// rawURL,
+// performing the RFC 6455 client-side handshake by hand — net/http's own
+// client has no more support for a protocol upgrade than its server side
+// does, the same gap Upgrade already fills for the server. header carries
+// any extra request headers the caller wants on the handshake (this
+// project's own use, internal/tuiclient, sets Authorization: Bearer
+// there, the same as every other authenticated request it makes). ctx
+// bounds only the dial, TLS handshake, and WS handshake — the returned
+// Conn's own lifetime is independent of it afterward, matching Upgrade's
+// "caller owns it from here" contract.
+func DialClient(ctx context.Context, rawURL string, header http.Header) (*Conn, error) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return nil, fmt.Errorf("ws: parsing %q: %w", rawURL, err)
+	}
+
+	var tlsConfig *tls.Config
+	port := u.Port()
+	switch u.Scheme {
+	case "ws":
+		if port == "" {
+			port = "80"
+		}
+	case "wss":
+		if port == "" {
+			port = "443"
+		}
+		tlsConfig = &tls.Config{ServerName: u.Hostname()}
+	default:
+		return nil, fmt.Errorf("ws: unsupported scheme %q, want ws or wss", u.Scheme)
+	}
+	addr := net.JoinHostPort(u.Hostname(), port)
+
+	var d net.Dialer
+	netConn, err := d.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return nil, fmt.Errorf("ws: dialing %s: %w", addr, err)
+	}
+	if tlsConfig != nil {
+		tlsConn := tls.Client(netConn, tlsConfig)
+		if err := tlsConn.HandshakeContext(ctx); err != nil {
+			netConn.Close()
+			return nil, fmt.Errorf("ws: TLS handshake: %w", err)
+		}
+		netConn = tlsConn
+	}
+
+	keyBytes := make([]byte, 16)
+	if _, err := rand.Read(keyBytes); err != nil {
+		netConn.Close()
+		return nil, fmt.Errorf("ws: generating Sec-WebSocket-Key: %w", err)
+	}
+	key := base64.StdEncoding.EncodeToString(keyBytes)
+
+	requestPath := u.RequestURI()
+	if requestPath == "" {
+		requestPath = "/"
+	}
+	var req bytes.Buffer
+	fmt.Fprintf(&req, "GET %s HTTP/1.1\r\n", requestPath)
+	fmt.Fprintf(&req, "Host: %s\r\n", u.Host)
+	req.WriteString("Upgrade: websocket\r\n")
+	req.WriteString("Connection: Upgrade\r\n")
+	fmt.Fprintf(&req, "Sec-WebSocket-Key: %s\r\n", key)
+	req.WriteString("Sec-WebSocket-Version: 13\r\n")
+	for name, values := range header {
+		for _, v := range values {
+			fmt.Fprintf(&req, "%s: %s\r\n", name, v)
+		}
+	}
+	req.WriteString("\r\n")
+
+	if _, err := netConn.Write(req.Bytes()); err != nil {
+		netConn.Close()
+		return nil, fmt.Errorf("ws: writing handshake request: %w", err)
+	}
+
+	br := bufio.NewReader(netConn)
+	resp, err := http.ReadResponse(br, &http.Request{Method: http.MethodGet})
+	if err != nil {
+		netConn.Close()
+		return nil, fmt.Errorf("ws: reading handshake response: %w", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		netConn.Close()
+		return nil, fmt.Errorf("ws: handshake failed: server returned %s", resp.Status)
+	}
+	if !headerContainsToken(resp.Header, "Upgrade", "websocket") {
+		netConn.Close()
+		return nil, errors.New("ws: response missing Upgrade: websocket header")
+	}
+	if !headerContainsToken(resp.Header, "Connection", "upgrade") {
+		netConn.Close()
+		return nil, errors.New("ws: response missing Connection: Upgrade header")
+	}
+	if got, want := resp.Header.Get("Sec-WebSocket-Accept"), acceptKey(key); got != want {
+		netConn.Close()
+		return nil, fmt.Errorf("ws: Sec-WebSocket-Accept mismatch (got %q, want %q)", got, want)
+	}
+
+	return newConn(netConn, br, true), nil
 }
 
 // acceptKey computes Sec-WebSocket-Accept per RFC 6455 section 1.3:

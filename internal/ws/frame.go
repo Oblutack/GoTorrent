@@ -1,6 +1,7 @@
 package ws
 
 import (
+	"crypto/rand"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -21,11 +22,16 @@ type frame struct {
 	payload []byte
 }
 
-// readFrame parses exactly one frame from r. Per RFC 6455 section 5.1, a
-// frame from a client to a server MUST be masked; readFrame enforces that
-// and unmasks the payload before returning it, so every other piece of
-// this package only ever deals in plain bytes.
-func readFrame(r io.Reader) (frame, error) {
+// readFrame parses exactly one frame from r. requireMask is the reader's
+// own RFC 6455 section 5.1 role: a server reading from a client requires
+// true (a client frame MUST be masked), while a client reading from a
+// server requires false (a server MUST NOT mask what it sends, and RFC
+// 6455 section 5.1 says a client MUST close the connection upon receiving
+// a masked frame from the server — readFrame enforces that strictly in
+// both directions rather than leniently accepting either). A masked frame
+// is unmasked before returning, so every other piece of this package only
+// ever deals in plain bytes regardless of which role read it.
+func readFrame(r io.Reader, requireMask bool) (frame, error) {
 	var head [2]byte
 	if _, err := io.ReadFull(r, head[:]); err != nil {
 		return frame{}, err
@@ -39,8 +45,11 @@ func readFrame(r io.Reader) (frame, error) {
 	}
 
 	masked := head[1]&0x80 != 0
-	if !masked {
-		return frame{}, fmt.Errorf("ws: client frame is not masked")
+	if masked != requireMask {
+		if requireMask {
+			return frame{}, fmt.Errorf("ws: client frame is not masked")
+		}
+		return frame{}, fmt.Errorf("ws: server frame is masked")
 	}
 	length := uint64(head[1] & 0x7F)
 
@@ -66,26 +75,38 @@ func readFrame(r io.Reader) (frame, error) {
 	}
 
 	var maskKey [4]byte
-	if _, err := io.ReadFull(r, maskKey[:]); err != nil {
-		return frame{}, err
+	if masked {
+		if _, err := io.ReadFull(r, maskKey[:]); err != nil {
+			return frame{}, err
+		}
 	}
 
 	payload := make([]byte, length)
 	if _, err := io.ReadFull(r, payload); err != nil {
 		return frame{}, err
 	}
-	for i := range payload {
-		payload[i] ^= maskKey[i%4]
+	if masked {
+		for i := range payload {
+			payload[i] ^= maskKey[i%4]
+		}
 	}
 
 	return frame{fin: fin, opcode: opcode, payload: payload}, nil
 }
 
-// writeFrame serializes and writes one frame to w. A server MUST NOT mask
-// frames it sends (RFC 6455 section 5.1), so this never sets the mask bit
-// — the entire reason readFrame and writeFrame are not the same function
-// despite the format otherwise being symmetric.
-func writeFrame(w io.Writer, fin bool, opcode Opcode, payload []byte) error {
+// writeFrame serializes and writes one frame to w. mask is the writer's
+// own RFC 6455 section 5.1 role: a server MUST NOT mask frames it sends
+// (mask=false, the only case this package needed before it could dial as
+// a client too), while a client MUST mask every frame it sends (mask=true)
+// — this is the entire reason readFrame and writeFrame are not the same
+// function despite the format otherwise being symmetric. Masking is not a
+// security mechanism (RFC 6455 itself only requires it to keep
+// naively-caching intermediary proxies from misinterpreting client traffic
+// as cacheable HTTP), so the mask key is unpredictable but doesn't need to
+// be cryptographically unguessable — crypto/rand is used anyway since it's
+// a cheap 4-byte read and avoids adding a second, harder-to-justify
+// math/rand use site to this codebase's own gosec G404 exclusion list.
+func writeFrame(w io.Writer, fin bool, opcode Opcode, payload []byte, mask bool) error {
 	if len(payload) > maxFramePayload {
 		return fmt.Errorf("ws: payload %d exceeds the %d byte limit", len(payload), maxFramePayload)
 	}
@@ -110,12 +131,32 @@ func writeFrame(w io.Writer, fin bool, opcode Opcode, payload []byte) error {
 		n = 10
 	}
 
+	if mask {
+		head[1] |= 0x80
+	}
 	if _, err := w.Write(head[:n]); err != nil {
 		return err
 	}
 	if len(payload) == 0 {
 		return nil
 	}
-	_, err := w.Write(payload)
+
+	if !mask {
+		_, err := w.Write(payload)
+		return err
+	}
+
+	var maskKey [4]byte
+	if _, err := rand.Read(maskKey[:]); err != nil {
+		return fmt.Errorf("ws: generating mask key: %w", err)
+	}
+	if _, err := w.Write(maskKey[:]); err != nil {
+		return err
+	}
+	masked := make([]byte, len(payload))
+	for i, b := range payload {
+		masked[i] = b ^ maskKey[i%4]
+	}
+	_, err := w.Write(masked)
 	return err
 }

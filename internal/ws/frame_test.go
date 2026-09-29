@@ -52,7 +52,7 @@ func TestReadFrameUnmasksPayload(t *testing.T) {
 	var buf bytes.Buffer
 	writeMaskedFrame(t, &buf, true, OpText, []byte("hello"))
 
-	f, err := readFrame(&buf)
+	f, err := readFrame(&buf, true)
 	if err != nil {
 		t.Fatalf("readFrame: %v", err)
 	}
@@ -66,13 +66,21 @@ func TestReadFrameUnmasksPayload(t *testing.T) {
 
 func TestReadFrameRejectsUnmaskedClientFrame(t *testing.T) {
 	var buf bytes.Buffer
-	// A plain writeFrame call never sets the mask bit - exactly what an
-	// RFC-6455-compliant server must reject from a client.
-	if err := writeFrame(&buf, true, OpText, []byte("hi")); err != nil {
+	// A plain writeFrame(mask=false) call never sets the mask bit - exactly
+	// what an RFC-6455-compliant server must reject from a client.
+	if err := writeFrame(&buf, true, OpText, []byte("hi"), false); err != nil {
 		t.Fatalf("writeFrame: %v", err)
 	}
-	if _, err := readFrame(&buf); err == nil {
-		t.Fatal("readFrame accepted an unmasked frame, want an error")
+	if _, err := readFrame(&buf, true); err == nil {
+		t.Fatal("readFrame(requireMask=true) accepted an unmasked frame, want an error")
+	}
+}
+
+func TestReadFrameRejectsMaskedServerFrame(t *testing.T) {
+	var buf bytes.Buffer
+	writeMaskedFrame(t, &buf, true, OpText, []byte("hi"))
+	if _, err := readFrame(&buf, false); err == nil {
+		t.Fatal("readFrame(requireMask=false) accepted a masked frame, want an error")
 	}
 }
 
@@ -83,7 +91,7 @@ func TestReadFrameHandlesExtendedLengths(t *testing.T) {
 			var buf bytes.Buffer
 			writeMaskedFrame(t, &buf, true, OpBinary, payload)
 
-			f, err := readFrame(&buf)
+			f, err := readFrame(&buf, true)
 			if err != nil {
 				t.Fatalf("readFrame(size=%d): %v", size, err)
 			}
@@ -100,7 +108,7 @@ func TestReadFrameHandlesExtendedLengths(t *testing.T) {
 func TestReadFrameRejectsOversizedPayload(t *testing.T) {
 	var buf bytes.Buffer
 	writeMaskedFrame(t, &buf, true, OpBinary, bytes.Repeat([]byte{0}, maxFramePayload+1))
-	if _, err := readFrame(&buf); err == nil {
+	if _, err := readFrame(&buf, true); err == nil {
 		t.Fatal("readFrame accepted a payload over maxFramePayload, want an error")
 	}
 }
@@ -108,7 +116,7 @@ func TestReadFrameRejectsOversizedPayload(t *testing.T) {
 func TestReadFrameRejectsFragmentedControlFrame(t *testing.T) {
 	var buf bytes.Buffer
 	writeMaskedFrame(t, &buf, false /* fin */, OpPing, []byte("x"))
-	if _, err := readFrame(&buf); err == nil {
+	if _, err := readFrame(&buf, true); err == nil {
 		t.Fatal("readFrame accepted a fragmented control frame, want an error")
 	}
 }
@@ -116,7 +124,7 @@ func TestReadFrameRejectsFragmentedControlFrame(t *testing.T) {
 func TestReadFrameRejectsOversizedControlFrame(t *testing.T) {
 	var buf bytes.Buffer
 	writeMaskedFrame(t, &buf, true, OpPing, bytes.Repeat([]byte{0}, 126))
-	if _, err := readFrame(&buf); err == nil {
+	if _, err := readFrame(&buf, true); err == nil {
 		t.Fatal("readFrame accepted a control frame over 125 bytes, want an error")
 	}
 }
@@ -126,24 +134,45 @@ func TestReadFrameRejectsReservedBits(t *testing.T) {
 	writeMaskedFrame(t, &buf, true, OpText, []byte("x"))
 	raw := buf.Bytes()
 	raw[0] |= 0x40 // set RSV1
-	if _, err := readFrame(bytes.NewReader(raw)); err == nil {
+	if _, err := readFrame(bytes.NewReader(raw), true); err == nil {
 		t.Fatal("readFrame accepted a frame with a reserved bit set, want an error")
 	}
 }
 
-func TestWriteFrameNeverMasks(t *testing.T) {
+func TestWriteFrameNeverMasksWhenNotAClient(t *testing.T) {
 	var buf bytes.Buffer
-	if err := writeFrame(&buf, true, OpText, []byte("hello")); err != nil {
+	if err := writeFrame(&buf, true, OpText, []byte("hello"), false); err != nil {
 		t.Fatalf("writeFrame: %v", err)
 	}
 	if buf.Bytes()[1]&0x80 != 0 {
-		t.Fatal("writeFrame set the mask bit - a server must never mask outgoing frames")
+		t.Fatal("writeFrame(mask=false) set the mask bit - a server must never mask outgoing frames")
+	}
+}
+
+func TestWriteFrameAlwaysMasksWhenAClient(t *testing.T) {
+	var buf bytes.Buffer
+	if err := writeFrame(&buf, true, OpText, []byte("hello"), true); err != nil {
+		t.Fatalf("writeFrame: %v", err)
+	}
+	if buf.Bytes()[1]&0x80 == 0 {
+		t.Fatal("writeFrame(mask=true) did not set the mask bit - a client must always mask outgoing frames")
+	}
+	// Round-trip it back through readFrame(requireMask=true) - a real
+	// server reading what this claims a real client sent - to prove the
+	// masked bytes on the wire actually unmask back to the original
+	// payload, not just that the mask bit was set.
+	f, err := readFrame(&buf, true)
+	if err != nil {
+		t.Fatalf("readFrame: %v", err)
+	}
+	if string(f.payload) != "hello" {
+		t.Fatalf("payload = %q, want %q", f.payload, "hello")
 	}
 }
 
 func TestWriteFrameRoundTripsThroughAManualUnmaskedParse(t *testing.T) {
 	var buf bytes.Buffer
-	if err := writeFrame(&buf, true, OpBinary, []byte("payload data")); err != nil {
+	if err := writeFrame(&buf, true, OpBinary, []byte("payload data"), false); err != nil {
 		t.Fatalf("writeFrame: %v", err)
 	}
 	raw := buf.Bytes()
