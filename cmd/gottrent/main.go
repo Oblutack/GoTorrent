@@ -242,7 +242,7 @@ func runFleet() {
 	}
 
 	if *streamAddr != "" {
-		streamServer := &http.Server{Addr: *streamAddr, Handler: stream.NewServer(e).Handler()}
+		streamServer := &http.Server{Addr: *streamAddr, Handler: stream.NewServer(e).Handler(), ReadHeaderTimeout: 10 * time.Second}
 		go func() {
 			if err := streamServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 				logger.Error.Printf("stream server: %v\n", err)

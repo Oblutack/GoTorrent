@@ -222,3 +222,15 @@ func removeResume(dir string, hash metainfo.Hash) error {
 	}
 	return nil
 }
+
+// RemoveResumeData deletes this torrent's on-disk resume data — safe to
+// call from any goroutine, since it only touches t.cfg.ResumeDir (immutable
+// after construction) and t.infoHash. Callers that remove a torrent from a
+// fleet entirely (as opposed to pausing it) should call this after Stop, or
+// the checkpoint Stop's own Pause path just wrote is left behind forever.
+// Resume data deliberately lives outside DownloadDir so deleting downloaded
+// files never erases it — the flip side is that nothing else ever cleans it
+// up on its own, which is exactly the gap this method closes.
+func (t *Torrent) RemoveResumeData() error {
+	return removeResume(t.cfg.ResumeDir, t.infoHash)
+}

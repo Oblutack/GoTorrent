@@ -54,7 +54,9 @@ func Start(ctx context.Context, protocol string, internalPort uint16) (*Client, 
 	}
 	c.externalPort.Store(uint32(mapping.ExternalPort))
 
-	go c.renewLoop(loopCtx)
+	// renewLoop derives a fresh context.Background() for its own shutdown
+	// withdrawal rather than loopCtx — see its own comment for why.
+	go c.renewLoop(loopCtx) // #nosec G118 -- see renewLoop's own comment
 	return c, mapping, nil
 }
 
@@ -85,6 +87,10 @@ func (c *Client) renewLoop(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			// ctx is already Done() at this point — deriving delCtx from it
+			// would make the withdrawal below immediately cancelled too,
+			// defeating the whole point of giving it its own grace period to
+			// actually run during shutdown.
 			delCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			if err := c.m.deleteMapping(delCtx, c.protocol, c.internalPort, c.ExternalPort()); err != nil {
 				logger.Logf("portmap: %s: withdrawing mapping on shutdown: %v\n", c.m.name(), err)

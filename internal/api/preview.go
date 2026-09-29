@@ -52,7 +52,14 @@ func PreviewTorrentHandler() http.HandlerFunc {
 		var mi *metainfo.MetaInfo
 
 		if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
-			if err := r.ParseMultipartForm(metainfo.MaxTorrentFileSize); err != nil {
+			// ParseMultipartForm's own maxMemory argument only bounds how much
+			// of the body it keeps in memory vs. spills to temp files on disk —
+			// it does not cap the request body itself, so a caller could still
+			// send an arbitrarily large upload. MaxBytesReader caps the whole
+			// body up front, matching the same limit Load() enforces on the
+			// resulting bytes anyway.
+			r.Body = http.MaxBytesReader(w, r.Body, metainfo.MaxTorrentFileSize)
+			if err := r.ParseMultipartForm(metainfo.MaxTorrentFileSize); err != nil { // #nosec G120 -- MaxBytesReader above already bounds the body
 				writeError(w, http.StatusBadRequest, "parsing multipart form: "+err.Error())
 				return
 			}

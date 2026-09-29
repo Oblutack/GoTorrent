@@ -294,7 +294,7 @@ func (mi *MetaInfo) setFiles(wire *infoDictWire) error {
 			if err := ValidatePath(f.Path); err != nil {
 				return fmt.Errorf("metainfo: unsafe path in file %d: %w", i, err)
 			}
-			mi.Info.Files[i] = FileInfo{Length: f.Length, Path: f.Path, Md5sum: f.Md5sum, Attr: f.Attr}
+			mi.Info.Files[i] = FileInfo(f)
 			total += f.Length
 			if total < 0 {
 				return errors.New("metainfo: total length overflows")

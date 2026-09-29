@@ -117,7 +117,7 @@ func (h *Handshake) Serialize() []byte {
 	curr += copy(buf[curr:], h.Pstr[:])
 	curr += copy(buf[curr:], h.Reserved[:])
 	curr += copy(buf[curr:], h.InfoHash[:])
-	curr += copy(buf[curr:], h.PeerID[:])
+	copy(buf[curr:], h.PeerID[:])
 	return buf
 }
 

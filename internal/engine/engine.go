@@ -686,6 +686,15 @@ func (e *Engine) Remove(hash metainfo.Hash) error {
 	// holding e.mu; List/Get calls a Remove-in-progress torrent would
 	// otherwise deadlock behind still need to work.
 	mt.t.Stop()
+	// Resume data lives outside DownloadDir specifically so deleting
+	// downloaded files never erases it (see internal/torrent/resume.go) -
+	// the flip side is that nothing else ever cleans it up, so a torrent
+	// removed from the fleet would otherwise leave its resume file behind
+	// forever. Best-effort: a torrent already removed from the fleet's own
+	// manifest should not come back just because this cleanup step failed.
+	if err := mt.t.RemoveResumeData(); err != nil {
+		logger.Logf("engine: removing resume data for %s: %v\n", hash, err)
+	}
 	// A removed torrent may have been occupying a slot a queued one was
 	// waiting on; reconcile promptly rather than waiting for the periodic
 	// safety-net pass (see queue.go).

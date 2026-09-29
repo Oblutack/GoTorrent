@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"net/http/pprof"
 	"sync"
+	"time"
 )
 
 // Server is a bound, not-yet-serving debug HTTP server.
@@ -54,7 +55,7 @@ func New(addr string) (*Server, error) {
 	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
 	mux.HandleFunc("/debug/vars", s.serveVars)
 
-	s.srv = &http.Server{Handler: mux}
+	s.srv = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	return s, nil
 }
 

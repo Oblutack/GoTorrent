@@ -110,12 +110,12 @@ func (d *decodeState) scanInt() (int64, error) {
 }
 
 func checkIntegerText(text string) error {
-	switch {
-	case text == "":
+	switch text {
+	case "":
 		return errors.New("empty integer")
-	case text == "-0":
+	case "-0":
 		return errors.New("negative zero")
-	case text == "0":
+	case "0":
 		return nil
 	}
 	body := text

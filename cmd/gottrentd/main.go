@@ -232,7 +232,7 @@ func run() error {
 		apiConn = tls.NewListener(apiListener, tlsConfig)
 	}
 
-	server := &http.Server{Handler: handler}
+	server := &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second}
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- server.Serve(apiConn) }()
 

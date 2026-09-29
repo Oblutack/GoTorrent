@@ -97,7 +97,10 @@ func AddTorrentHandler(e *engine.Engine, uploadDir string) http.HandlerFunc {
 // writing the appropriate error response and returning ok=false itself on
 // any failure.
 func parseMultipartAdd(w http.ResponseWriter, r *http.Request, uploadDir string) (source string, opts engine.AddOptions, downloadDir string, ok bool) {
-	if err := r.ParseMultipartForm(metainfo.MaxTorrentFileSize); err != nil {
+	// See PreviewTorrentHandler's identical call for why this is needed in
+	// addition to ParseMultipartForm's own maxMemory argument.
+	r.Body = http.MaxBytesReader(w, r.Body, metainfo.MaxTorrentFileSize)
+	if err := r.ParseMultipartForm(metainfo.MaxTorrentFileSize); err != nil { // #nosec G120 -- MaxBytesReader above already bounds the body
 		writeError(w, http.StatusBadRequest, "parsing multipart form: "+err.Error())
 		return "", opts, "", false
 	}

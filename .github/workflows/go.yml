@@ -14,9 +14,9 @@ jobs:
       uses: actions/checkout@v4
 
     - name: Set up Go
-      uses: actions/setup-go@v4
+      uses: actions/setup-go@v5
       with:
-        go-version: '1.24'
+        go-version-file: 'go.mod'
 
     - name: Check formatting
       run: |
@@ -29,6 +29,44 @@ jobs:
 
     - name: Vet
       run: go vet ./...
+
+    - name: golangci-lint
+      uses: golangci/golangci-lint-action@v9
+      with:
+        version: latest
+
+    - name: gosec
+      run: |
+        go install github.com/securego/gosec/v2/cmd/gosec@latest
+        # See .golangci.yml's own comment for why errcheck's exclude list is
+        # the real gate on unhandled errors - gosec's own G104 duplicates it
+        # with much less precision. The rest of this list is every rule
+        # confirmed, one by one, to be pure noise for this codebase: G505/
+        # G401 flag crypto/sha1, which BEP 3 (info/piece hashes) and RFC 6455
+        # (the WebSocket handshake) mandate, not a choice; G103 is the two
+        # Windows-syscall files' already-audited unsafe.Pointer use (see
+        # CLAUDE.md); G304 is every os.Open/ReadFile whose path either comes
+        # from trusted local input (a CLI flag, a computed state-dir path) or
+        # already passed through metainfo.ValidatePath/storage.Layout.Resolve,
+        # which gosec's static analysis can't see through; G301/G306 flag
+        # normal 0644/0755 permissions on non-secret files (downloaded
+        # content, this project's own manifest/resume data) - the one file
+        # that actually holds a credential, the API bearer token, is already
+        # 0600 and gosec correctly does not flag it; G404 flags math/rand
+        # used for non-cryptographic purposes (tie-breaks, jitter, the
+        # deterministic swarm simulator, which needs a *seedable* generator -
+        # crypto/rand would break its entire reason for existing); G115
+        # flags essentially every fixed-width cast a binary wire protocol
+        # implementation makes (ports, piece indices, lengths) - sampled
+        # across every file it fires in, including the one place a cast
+        # this precise actually protects against overflow (validateBlock's
+        # uint64 arithmetic), and found no real gap.
+        gosec -exclude=G104,G505,G401,G103,G304,G301,G306,G404,G115 ./...
+
+    - name: govulncheck
+      run: |
+        go install golang.org/x/vuln/cmd/govulncheck@latest
+        govulncheck ./...
 
     - name: Build
       run: go build -v ./cmd/gottrent/
