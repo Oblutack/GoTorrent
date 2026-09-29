@@ -3,9 +3,12 @@
 // filter before the listener (so nothing can slip in during a startup
 // window with the filter not loaded yet), the listener before port
 // mapping/DHT/LSD (they need the actual bound port, including whatever the
-// OS assigned for -random-port), and all of that before Load (so a
-// manifest-reloaded torrent gets a working DHT/PEX/LSD peer source from
-// its very first tick, not just a freshly Add'd one).
+// OS assigned for -random-port), StartUTP before StartDHT (so DHT can
+// share the one UDP socket StartUTP binds when inbound µTP is enabled,
+// rather than both trying to bind the same port independently), and all of
+// that before Load (so a manifest-reloaded torrent gets a working
+// DHT/PEX/LSD/µTP peer source from its very first tick, not just a
+// freshly Add'd one).
 //
 // This exists because cmd/gottrent and cmd/gottrentd both need to run this
 // exact sequence — duplicating it invites the two binaries' startup
@@ -97,6 +100,15 @@ func Engine(ctx context.Context, opts Options) (e *engine.Engine, actualPort uin
 		if perr := e.StartPortMapping(ctx, actualPort); perr != nil {
 			logger.Logf("bootstrap: not mapping a port automatically (%v) - inbound connections need the port forwarded by hand unless this machine is already reachable\n", perr)
 		}
+	}
+	// Before StartDHT: when Defaults.UTPPolicy enables inbound µTP, this
+	// binds the one real UDP socket DHT and µTP will share — StartDHT
+	// checks for it and hands DHT a udpmux facade instead of letting it
+	// bind its own socket on the same port, which would otherwise fail.
+	// A no-op (Defaults.UTPPolicy == utp.PolicyDisabled, the default)
+	// leaves StartDHT's own behavior byte-for-byte unchanged.
+	if uerr := e.StartUTP(ctx, actualPort); uerr != nil {
+		logger.Warning.Printf("bootstrap: not starting inbound uTP: %v\n", uerr)
 	}
 	if derr := e.StartDHT(ctx, actualPort); derr != nil {
 		logger.Warning.Printf("bootstrap: not starting DHT: %v\n", derr)

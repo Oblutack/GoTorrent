@@ -85,7 +85,7 @@ func TestUnmarshalSkipsAnUnknownExtension(t *testing.T) {
 	var buf bytes.Buffer
 	// Fixed header: type=ST_STATE, version=1, extension=99 (unknown, first
 	// in the chain).
-	buf.WriteByte(byte(STState)<<4 | protocolVersion)
+	buf.WriteByte(byte(STState)<<4 | ProtocolVersion)
 	buf.WriteByte(99)
 	buf.Write([]byte{0, 0})       // conn_id
 	buf.Write([]byte{0, 0, 0, 0}) // timestamp
@@ -128,7 +128,7 @@ func TestUnmarshalRejectsWrongVersion(t *testing.T) {
 
 func TestUnmarshalRejectsUnknownType(t *testing.T) {
 	buf := make([]byte, headerLen)
-	buf[0] = byte(15)<<4 | protocolVersion // type 15 doesn't exist (max real type is 4)
+	buf[0] = byte(15)<<4 | ProtocolVersion // type 15 doesn't exist (max real type is 4)
 	if _, err := Unmarshal(buf); err != ErrUnknownType {
 		t.Fatalf("err = %v, want ErrUnknownType", err)
 	}
@@ -136,7 +136,7 @@ func TestUnmarshalRejectsUnknownType(t *testing.T) {
 
 func TestUnmarshalRejectsTruncatedExtension(t *testing.T) {
 	buf := make([]byte, headerLen+1) // claims an extension follows but there's only 1 byte left, not the required 2+
-	buf[0] = byte(STState)<<4 | protocolVersion
+	buf[0] = byte(STState)<<4 | ProtocolVersion
 	buf[1] = extSelectiveAck
 	if _, err := Unmarshal(buf); err != ErrMalformedExtension {
 		t.Fatalf("err = %v, want ErrMalformedExtension", err)
@@ -145,7 +145,7 @@ func TestUnmarshalRejectsTruncatedExtension(t *testing.T) {
 
 func TestUnmarshalRejectsUndersizedSACK(t *testing.T) {
 	var buf bytes.Buffer
-	buf.WriteByte(byte(STState)<<4 | protocolVersion)
+	buf.WriteByte(byte(STState)<<4 | ProtocolVersion)
 	buf.WriteByte(extSelectiveAck)
 	buf.Write(make([]byte, 18)) // rest of the fixed header
 	buf.WriteByte(0)            // no further extension

@@ -36,6 +36,8 @@ import (
 	"github.com/Oblutack/GoTorrent/internal/torrent"
 	"github.com/Oblutack/GoTorrent/internal/trace"
 	"github.com/Oblutack/GoTorrent/internal/tracker"
+	"github.com/Oblutack/GoTorrent/internal/udpmux"
+	"github.com/Oblutack/GoTorrent/internal/utp"
 )
 
 // ErrAlreadyAdded is wrapped into the error AddWithOptions/Add return when
@@ -199,6 +201,18 @@ type Defaults struct {
 	// ProxyType/AnonymousMode above already established; no per-torrent
 	// override and no control-API surface.
 	EncryptionPolicy mse.Policy
+	// UTPPolicy controls µTP (BEP 29, see utp.Policy's own doc comment)
+	// fleet-wide — the outbound policy every torrent this Engine starts
+	// gets copied into its own torrent.Config.UTPPolicy (composing
+	// independently with EncryptionPolicy: a connection can be both
+	// µTP-transported and MSE-encrypted, exactly like a real client's
+	// would). utp.PolicyDisabled (the zero value, and the default) is a
+	// complete no-op: StartUTP never binds a socket or starts a goroutine,
+	// and torrentConfig hands out a nil UTPSocket, so a fleet that never
+	// touches this setting pays nothing for the feature existing.
+	// Engine-level-only in v1, same scope EncryptionPolicy already
+	// established — no per-torrent override, no control-API surface.
+	UTPPolicy utp.Policy
 	// Trace (Phase 8), if set, is handed to every torrent this Engine
 	// starts, unchanged — one *trace.Writer shared across the whole fleet,
 	// same "one instance, several owners" shape as DownLimit/UpLimit,
@@ -352,6 +366,19 @@ type Engine struct {
 	// torrentConfig — the same reasoning as one shared TCP listener in
 	// Listen: a DHT node is a property of the process, not of one torrent.
 	dhtNode *dht.DHT
+
+	// udpMux is non-nil once StartUTP has bound the shared UDP socket
+	// (Defaults.UTPPolicy != utp.PolicyDisabled) — the real net.PacketConn
+	// DHT and inbound µTP both demux datagrams from via their own udpmux
+	// facades. Guarded by mu like dhtNode; StartDHT reads it (under mu) to
+	// decide whether to share it or bind its own socket — see StartUTP and
+	// StartDHT's own doc comments for the ordering this relies on.
+	udpMux *udpmux.Mux
+	// utpSocket is non-nil once StartUTP has started — one *utp.Socket
+	// shared by every torrent this engine manages for outbound dialing
+	// (see torrentConfig) and by utpAcceptLoop for inbound connections,
+	// same "one instance, several owners" shape as dhtNode/listener.
+	utpSocket *utp.Socket
 
 	// portmapClient is non-nil once StartPortMapping has successfully
 	// mapped a port through the local NAT (UPnP or NAT-PMP — see
@@ -1048,7 +1075,18 @@ func (e *Engine) StartDHT(ctx context.Context, port uint16) error {
 	if e.stateDir != "" {
 		statePath = filepath.Join(e.stateDir, "dht.nodes")
 	}
-	node, err := dht.New(dht.Config{Port: port, StatePath: statePath, ExternalIP: e.externalIP})
+	dhtCfg := dht.Config{Port: port, StatePath: statePath, ExternalIP: e.externalIP}
+	// If StartUTP already bound the shared UDP socket (Defaults.UTPPolicy
+	// != PolicyDisabled), DHT must share it rather than trying to bind its
+	// own on the same port — see StartUTP's own doc comment for the
+	// ordering requirement this relies on.
+	e.mu.Lock()
+	mux := e.udpMux
+	e.mu.Unlock()
+	if mux != nil {
+		dhtCfg.Conn = mux.For(isDHTPacket)
+	}
+	node, err := dht.New(dhtCfg)
 	if err != nil {
 		return fmt.Errorf("engine: starting DHT: %w", err)
 	}
@@ -1215,6 +1253,10 @@ func (e *Engine) Shutdown() {
 	}
 	dhtNode := e.dhtNode
 	e.dhtNode = nil
+	utpSocket := e.utpSocket
+	e.utpSocket = nil
+	udpMux := e.udpMux
+	e.udpMux = nil
 	portmapClient := e.portmapClient
 	e.portmapClient = nil
 	lsdNode := e.lsdNode
@@ -1238,6 +1280,18 @@ func (e *Engine) Shutdown() {
 			dhtNode.Close()
 		}()
 	}
+	if utpSocket != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			// Closes only utpSocket's own udpmux facade — the real shared
+			// socket (udpMux, closed separately below) stays open until
+			// dhtNode's own facade has been closed too, so neither
+			// subsystem's Close races the other's still-in-flight teardown
+			// against a socket that's already gone out from under it.
+			utpSocket.Close()
+		}()
+	}
 	if portmapClient != nil {
 		wg.Add(1)
 		go func() {
@@ -1250,6 +1304,20 @@ func (e *Engine) Shutdown() {
 		go func() {
 			defer wg.Done()
 			lsdNode.Close()
+		}()
+	}
+	if udpMux != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			// Closes the real shared UDP socket StartUTP bound. Safe to
+			// run concurrently with (or even before) dhtNode/utpSocket
+			// above: closing a udpmux facade never touches the real
+			// underlying conn, so there is no ordering dependency between
+			// this and either of them — only the real conn itself needs
+			// this explicit close, since neither dhtNode.Close() nor
+			// utpSocket.Close() closes anything beyond their own facade.
+			udpMux.Close()
 		}()
 	}
 	wg.Add(len(torrents))
@@ -1286,6 +1354,8 @@ func (e *Engine) torrentConfig(downloadDir string) torrent.Config {
 		ProxyDialer:          e.proxyDialer,
 		AnonymousMode:        e.defaults.AnonymousMode,
 		EncryptionPolicy:     e.defaults.EncryptionPolicy,
+		UTPPolicy:            e.defaults.UTPPolicy,
+		UTPSocket:            e.utpSocket,
 		Trace:                e.defaults.Trace,
 		LocalIP:              e.externalIP,
 	}

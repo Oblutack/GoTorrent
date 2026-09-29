@@ -41,7 +41,12 @@ func (t PacketType) String() string {
 }
 
 const (
-	protocolVersion = 1
+	// ProtocolVersion is BEP 29's fixed protocol version nibble — exported
+	// so internal/engine's inbound demux classifier (which has to tell a
+	// µTP datagram apart from a DHT/KRPC one on a shared UDP port, without
+	// importing this package's other, unexported wire-format internals)
+	// can check it directly rather than duplicating the magic number 1.
+	ProtocolVersion = 1
 	headerLen       = 20
 	// extSelectiveAck is BEP 29's one defined extension type today.
 	extSelectiveAck = 1
@@ -87,7 +92,7 @@ func (p *Packet) Marshal() []byte {
 	}
 
 	buf := make([]byte, headerLen+len(extBlock)+len(p.Payload))
-	buf[0] = byte(p.Type)<<4 | protocolVersion
+	buf[0] = byte(p.Type)<<4 | ProtocolVersion
 	buf[1] = extByte
 	binary.BigEndian.PutUint16(buf[2:4], p.ConnID)
 	binary.BigEndian.PutUint32(buf[4:8], p.Timestamp)
@@ -113,7 +118,7 @@ func Unmarshal(buf []byte) (*Packet, error) {
 		return nil, ErrShortHeader
 	}
 	typeVer := buf[0]
-	if typeVer&0x0f != protocolVersion {
+	if typeVer&0x0f != ProtocolVersion {
 		return nil, ErrUnsupportedVersion
 	}
 	p := &Packet{Type: PacketType(typeVer >> 4)}
