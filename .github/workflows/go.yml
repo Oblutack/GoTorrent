@@ -70,8 +70,13 @@ jobs:
         # implementation makes (ports, piece indices, lengths) - sampled
         # across every file it fires in, including the one place a cast
         # this precise actually protects against overflow (validateBlock's
-        # uint64 arithmetic), and found no real gap.
-        gosec -exclude=G104,G505,G401,G103,G304,G301,G306,G404,G115 ./...
+        # uint64 arithmetic), and found no real gap; G405/G503 flag RC4
+        # (crypto/rc4, and importing it at all) in internal/mse - the exact
+        # same "protocol-mandated, not a choice" reasoning as G505/G401 for
+        # SHA-1 above, since MSE/PE (the de facto BitTorrent wire-obfuscation
+        # scheme that package implements) is defined in terms of RC4, not
+        # something this codebase picked.
+        gosec -exclude=G104,G505,G401,G103,G304,G301,G306,G404,G115,G405,G503 ./...
 
     - name: govulncheck
       run: |
