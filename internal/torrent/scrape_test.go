@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -70,13 +71,16 @@ func TestTorrentScrapeAsksEveryTrackerAndReportsFailuresIndependently(t *testing
 		Files         map[string]scrapeFileWire `bencode:"files"`
 	}
 
+	var gotHashMu sync.Mutex
 	var gotHash string
 	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hashes := r.URL.Query()["info_hash"]
 		if len(hashes) != 1 {
 			t.Fatalf("scrape request to the good tracker carried %d info_hash params, want 1", len(hashes))
 		}
+		gotHashMu.Lock()
 		gotHash = hashes[0]
+		gotHashMu.Unlock()
 		data, err := bencode.Marshal(scrapeResponseWire{
 			Files: map[string]scrapeFileWire{hashes[0]: {Complete: 4, Downloaded: 10, Incomplete: 1}},
 		})
@@ -125,8 +129,11 @@ func TestTorrentScrapeAsksEveryTrackerAndReportsFailuresIndependently(t *testing
 	if goodResult.Result == nil || goodResult.Result.Complete != 4 || goodResult.Result.Downloaded != 10 || goodResult.Result.Incomplete != 1 {
 		t.Fatalf("good tracker result = %+v, want Complete=4 Downloaded=10 Incomplete=1", goodResult.Result)
 	}
-	if gotHash != string(tr.infoHash[:]) {
-		t.Fatalf("good tracker received info_hash %x, want this torrent's own %x", gotHash, tr.infoHash)
+	gotHashMu.Lock()
+	gotHashSnapshot := gotHash
+	gotHashMu.Unlock()
+	if gotHashSnapshot != string(tr.infoHash[:]) {
+		t.Fatalf("good tracker received info_hash %x, want this torrent's own %x", gotHashSnapshot, tr.infoHash)
 	}
 
 	badResult, ok := byURL[bad.URL+"/announce"]
