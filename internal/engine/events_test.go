@@ -47,6 +47,19 @@ func TestSubscribeReceivesTorrentAddedAndRemoved(t *testing.T) {
 		t.Fatalf("EventTorrentAdded.InfoHash = %s, want %s", added.InfoHash, hash)
 	}
 
+	// Wait for the torrent to settle into Downloading before removing it —
+	// Remove's own Stop() can otherwise race storage.Allocate/Verify still
+	// running on the actor goroutine, which on Windows means TempDir's
+	// cleanup fails outright ("used by another process") rather than
+	// silently racing, since Windows won't unlink a still-open file the
+	// way POSIX does. Same fix shape as every other Add-then-immediately-
+	// tear-down test in this package.
+	tr, ok := e.Get(hash)
+	if !ok {
+		t.Fatal("Get did not find the added torrent")
+	}
+	waitForState(t, tr, torrent.StateDownloading, 5*time.Second)
+
 	if err := e.Remove(hash); err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
