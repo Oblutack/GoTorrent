@@ -155,9 +155,9 @@ func TestLargeTransferSpanningManyPackets(t *testing.T) {
 }
 
 func TestDialContextFailsAgainstAPeerThatNeverReplies(t *testing.T) {
-	orig := synRetries
-	synRetries = 2
-	t.Cleanup(func() { synRetries = orig })
+	orig := SynRetries
+	SynRetries = 2
+	t.Cleanup(func() { SynRetries = orig })
 
 	dialer := newLoopbackSocket(t)
 	// A real UDP socket nothing is listening on - packets sent there are

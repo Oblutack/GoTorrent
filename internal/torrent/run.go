@@ -599,9 +599,14 @@ func (t *Torrent) acceptIncoming(conn net.Conn, hs *peer.Handshake) {
 func (t *Torrent) connectAndPump(ctx context.Context, pi tracker.PeerInfo, ssPiece int, ssOK bool) {
 	defer t.wg.Done()
 
+	var utpDial peer.DialFunc
+	if t.cfg.UTPSocket != nil {
+		utpDial = t.cfg.UTPSocket.DialContext
+	}
 	client, err := peer.NewClient(pi, t.peerTorrentInfo(), t.cfg.OurID,
 		t.buildCallbacks(ssPiece, ssOK),
-		t.peerLimits(pi.Addr()), t.cfg.ProxyDialer.DialContext, t.cfg.EncryptionPolicy)
+		t.peerLimits(pi.Addr()), t.cfg.ProxyDialer.DialContext, t.cfg.EncryptionPolicy,
+		t.cfg.UTPPolicy, utpDial)
 	if err != nil {
 		t.sendEvent(ctx, eventDialFailed{addr: pi.Addr()})
 		return

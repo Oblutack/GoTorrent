@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Oblutack/GoTorrent/internal/mse"
+	"github.com/Oblutack/GoTorrent/internal/utp"
 )
 
 // plaintextOnlyListener stands up a loopback listener that only ever
@@ -100,7 +101,7 @@ func TestNewClientPreferFallsBackToPlaintextAgainstALegacyPeer(t *testing.T) {
 	t.Cleanup(func() { mse.HandshakeTimeout = orig })
 
 	addr := plaintextOnlyListener(t)
-	client, err := NewClient(mustPeerInfo(addr.(*net.TCPAddr)), testTorrent, [20]byte{}, Callbacks{}, Limits{}, nil, mse.PolicyPrefer)
+	client, err := NewClient(mustPeerInfo(addr.(*net.TCPAddr)), testTorrent, [20]byte{}, Callbacks{}, Limits{}, nil, mse.PolicyPrefer, utp.PolicyDisabled, nil)
 	if err != nil {
 		t.Fatalf("NewClient with PolicyPrefer against a legacy peer: %v", err)
 	}
@@ -109,7 +110,7 @@ func TestNewClientPreferFallsBackToPlaintextAgainstALegacyPeer(t *testing.T) {
 
 func TestNewClientPreferUsesEncryptionAgainstAnMSECapablePeer(t *testing.T) {
 	addr := mseCapableListener(t)
-	client, err := NewClient(mustPeerInfo(addr.(*net.TCPAddr)), testTorrent, [20]byte{}, Callbacks{}, Limits{}, nil, mse.PolicyPrefer)
+	client, err := NewClient(mustPeerInfo(addr.(*net.TCPAddr)), testTorrent, [20]byte{}, Callbacks{}, Limits{}, nil, mse.PolicyPrefer, utp.PolicyDisabled, nil)
 	if err != nil {
 		t.Fatalf("NewClient with PolicyPrefer against an MSE-capable peer: %v", err)
 	}
@@ -118,7 +119,7 @@ func TestNewClientPreferUsesEncryptionAgainstAnMSECapablePeer(t *testing.T) {
 
 func TestNewClientRequiredRefusesToFallBackToALegacyPeer(t *testing.T) {
 	addr := plaintextOnlyListener(t)
-	_, err := NewClient(mustPeerInfo(addr.(*net.TCPAddr)), testTorrent, [20]byte{}, Callbacks{}, Limits{}, nil, mse.PolicyRequired)
+	_, err := NewClient(mustPeerInfo(addr.(*net.TCPAddr)), testTorrent, [20]byte{}, Callbacks{}, Limits{}, nil, mse.PolicyRequired, utp.PolicyDisabled, nil)
 	if err == nil {
 		t.Fatal("NewClient with PolicyRequired succeeded against a legacy-only peer, want a failure")
 	}
@@ -126,7 +127,7 @@ func TestNewClientRequiredRefusesToFallBackToALegacyPeer(t *testing.T) {
 
 func TestNewClientRequiredSucceedsAgainstAnMSECapablePeer(t *testing.T) {
 	addr := mseCapableListener(t)
-	client, err := NewClient(mustPeerInfo(addr.(*net.TCPAddr)), testTorrent, [20]byte{}, Callbacks{}, Limits{}, nil, mse.PolicyRequired)
+	client, err := NewClient(mustPeerInfo(addr.(*net.TCPAddr)), testTorrent, [20]byte{}, Callbacks{}, Limits{}, nil, mse.PolicyRequired, utp.PolicyDisabled, nil)
 	if err != nil {
 		t.Fatalf("NewClient with PolicyRequired against an MSE-capable peer: %v", err)
 	}
@@ -145,7 +146,7 @@ func TestNewClientDisabledNeverAttemptsEncryption(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		client, err := NewClient(mustPeerInfo(addr.(*net.TCPAddr)), testTorrent, [20]byte{}, Callbacks{}, Limits{}, nil, mse.PolicyDisabled)
+		client, err := NewClient(mustPeerInfo(addr.(*net.TCPAddr)), testTorrent, [20]byte{}, Callbacks{}, Limits{}, nil, mse.PolicyDisabled, utp.PolicyDisabled, nil)
 		if err != nil {
 			t.Errorf("NewClient with PolicyDisabled: %v", err)
 			return

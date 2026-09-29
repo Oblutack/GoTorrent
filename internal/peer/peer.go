@@ -18,6 +18,7 @@ import (
 	"github.com/Oblutack/GoTorrent/internal/mse"
 	"github.com/Oblutack/GoTorrent/internal/ratelimit"
 	"github.com/Oblutack/GoTorrent/internal/tracker"
+	"github.com/Oblutack/GoTorrent/internal/utp"
 )
 
 const (
@@ -409,6 +410,10 @@ type DialFunc func(ctx context.Context, network, addr string) (net.Conn, error)
 // classic one — see negotiateOutboundEncryption's own doc comment for what
 // each policy does; mse.PolicyDisabled (the default) makes this parameter a
 // complete no-op, identical to this function's behavior before it existed.
+// utpPolicy/utpDial control which transport the initial connection uses —
+// see dialTransport's own doc comment; utp.PolicyDisabled (the default)
+// or a nil utpDial makes this pair a complete no-op too, the plain TCP
+// dial this function has always done.
 func NewClient(
 	peerInfo tracker.PeerInfo,
 	torrent TorrentInfo,
@@ -417,13 +422,15 @@ func NewClient(
 	limits Limits,
 	dial DialFunc,
 	encPolicy mse.Policy,
+	utpPolicy utp.Policy,
+	utpDial DialFunc,
 ) (*Client, error) {
 	if dial == nil {
 		dial = (&net.Dialer{}).DialContext
 	}
 	address := net.JoinHostPort(peerInfo.IP.String(), strconv.Itoa(int(peerInfo.Port)))
 	logger.Logf("peer: attempting to connect to %s\n", address)
-	conn, err := dialOnce(dial, address)
+	conn, err := dialTransport(dial, utpDial, utpPolicy, address)
 	if err != nil {
 		return nil, fmt.Errorf("peer: failed to dial %s: %w", address, err)
 	}
@@ -468,6 +475,37 @@ func dialOnce(dial DialFunc, address string) (net.Conn, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), handshakeTimeout)
 	defer cancel()
 	return dial(ctx, "tcp", address)
+}
+
+// dialTransport chooses the initial connection's transport per utpPolicy
+// — PolicyDisabled (or no utpDial available at all, e.g. this torrent's
+// engine never started a *utp.Socket) is byte-for-byte the plain TCP dial
+// above, unchanged. PolicyPrefer tries µTP first and, on failure, falls
+// back to a fresh TCP dial — the identical "try the preferred thing,
+// fall back to plain TCP" shape negotiateOutboundEncryption below already
+// established for MSE, reused here rather than invented a second time.
+// PolicyRequired gives up outright instead, no TCP fallback.
+//
+// A deliberate simplification worth stating plainly: if µTP succeeds as
+// the transport but a subsequent MSE negotiation over it then fails and
+// falls back (see negotiateOutboundEncryption), that fallback always
+// redials over plain TCP, never retries µTP — combining both features'
+// own fallback logic into one worst-case path would be real added
+// complexity for a rare edge case neither feature needs on its own.
+func dialTransport(dial, utpDial DialFunc, policy utp.Policy, address string) (net.Conn, error) {
+	if policy == utp.PolicyDisabled || utpDial == nil {
+		return dialOnce(dial, address)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), handshakeTimeout)
+	defer cancel()
+	conn, err := utpDial(ctx, "utp", address)
+	if err == nil {
+		return conn, nil
+	}
+	if policy == utp.PolicyRequired {
+		return nil, fmt.Errorf("uTP required but dialing %s failed: %w", address, err)
+	}
+	return dialOnce(dial, address)
 }
 
 // negotiateOutboundEncryption attempts an MSE/PE handshake on conn per

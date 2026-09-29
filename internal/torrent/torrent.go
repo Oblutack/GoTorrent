@@ -23,6 +23,7 @@ import (
 	"github.com/Oblutack/GoTorrent/internal/storage"
 	"github.com/Oblutack/GoTorrent/internal/trace"
 	"github.com/Oblutack/GoTorrent/internal/tracker"
+	"github.com/Oblutack/GoTorrent/internal/utp"
 )
 
 const (
@@ -150,6 +151,18 @@ type Config struct {
 	// Engine manages actually gets, the same "configuration isn't meant to
 	// change at runtime" scope ProxyDialer above already established.
 	EncryptionPolicy mse.Policy
+	// UTPPolicy/UTPSocket control µTP (BEP 29) as an alternative transport
+	// — see utp.Policy's own doc comment for what each value does.
+	// UTPSocket is one shared *utp.Socket, the same "one instance, several
+	// owners" shape DownLimit/UpLimit/IPFilter already use (one per
+	// Engine, not per torrent) — connectAndPump extracts its DialContext
+	// method value to pass to peer.NewClient. utp.PolicyDisabled (the
+	// zero value, and the default) or a nil UTPSocket is a complete
+	// no-op, identical to this torrent's behavior before either field
+	// existed. Engine-level-only in practice, same scope EncryptionPolicy
+	// above already established.
+	UTPPolicy utp.Policy
+	UTPSocket *utp.Socket
 	// Trackers seeds the announce loop before metadata is known — a magnet
 	// link's tr= parameters. Ignored once mi is set: from then on
 	// announceURLs reads mi.AnnounceURLs() instead. Meaningless for a

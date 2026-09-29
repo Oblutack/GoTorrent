@@ -9,6 +9,7 @@ import (
 	"github.com/Oblutack/GoTorrent/internal/bitfield"
 	"github.com/Oblutack/GoTorrent/internal/mse"
 	"github.com/Oblutack/GoTorrent/internal/tracker"
+	"github.com/Oblutack/GoTorrent/internal/utp"
 )
 
 func mustPeerInfo(addr *net.TCPAddr) tracker.PeerInfo {
@@ -191,7 +192,7 @@ func TestHaveAllBeforeMetadataAppliesOnUpgrade(t *testing.T) {
 	}()
 
 	addr := ln.Addr().(*net.TCPAddr)
-	client, err := NewClient(mustPeerInfo(addr), magnetTorrent, [20]byte{}, Callbacks{}, Limits{}, nil, mse.PolicyDisabled)
+	client, err := NewClient(mustPeerInfo(addr), magnetTorrent, [20]byte{}, Callbacks{}, Limits{}, nil, mse.PolicyDisabled, utp.PolicyDisabled, nil)
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -332,7 +333,7 @@ func TestServeRequestStaysSilentForNonFastPeer(t *testing.T) {
 	}()
 
 	addr := ln.Addr().(*net.TCPAddr)
-	client, err := NewClient(mustPeerInfo(addr), testTorrent, [20]byte{}, Callbacks{HasPiece: func(uint32) bool { return false }}, Limits{}, nil, mse.PolicyDisabled)
+	client, err := NewClient(mustPeerInfo(addr), testTorrent, [20]byte{}, Callbacks{HasPiece: func(uint32) bool { return false }}, Limits{}, nil, mse.PolicyDisabled, utp.PolicyDisabled, nil)
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}

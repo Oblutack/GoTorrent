@@ -47,13 +47,15 @@ const (
 	closeLinger = 3 * time.Second
 )
 
-// synRetries is how many times performHandshake resends ST_SYN before
+// SynRetries is how many times performHandshake resends ST_SYN before
 // giving up — a var, not a const, so a test proving the "peer never
 // replies" failure path doesn't have to genuinely wait out several real
 // RTO-doubling rounds (the same "interval is a var so tests can shrink
 // it" convention internal/mse.HandshakeTimeout and internal/torrent's
-// pexInterval already use).
-var synRetries = 4
+// pexInterval already use). Exported, like HandshakeTimeout, so a test in
+// a different package (internal/peer's own µTP dial-fallback tests) can
+// shrink it too.
+var SynRetries = 4
 
 var (
 	ErrConnClosed  = errors.New("utp: connection closed")

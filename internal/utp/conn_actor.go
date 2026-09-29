@@ -106,7 +106,7 @@ func (c *Conn) closeReadSide() {
 // ST_SYN, wait for any real reply (or ST_RESET, or a bounded number of
 // timeouts), matching TCP's own SYN-retransmission shape.
 func (c *Conn) performHandshake() error {
-	for attempt := 0; attempt < synRetries; attempt++ {
+	for attempt := 0; attempt < SynRetries; attempt++ {
 		c.sendRaw(&Packet{
 			Type:          STSyn,
 			ConnID:        c.recvID,
