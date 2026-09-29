@@ -7,6 +7,8 @@
 package engine
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -24,6 +26,7 @@ import (
 	"github.com/Oblutack/GoTorrent/internal/logger"
 	"github.com/Oblutack/GoTorrent/internal/lsd"
 	"github.com/Oblutack/GoTorrent/internal/metainfo"
+	"github.com/Oblutack/GoTorrent/internal/mse"
 	"github.com/Oblutack/GoTorrent/internal/peer"
 	"github.com/Oblutack/GoTorrent/internal/picker"
 	"github.com/Oblutack/GoTorrent/internal/portmap"
@@ -182,6 +185,20 @@ type Defaults struct {
 	// inherit whatever this setting implies rather than needing their own
 	// special case here.
 	AnonymousMode bool
+	// EncryptionPolicy controls MSE/PE (see mse.Policy's own doc comment)
+	// fleet-wide — both the outbound policy every torrent this Engine
+	// starts gets copied into its own torrent.Config.EncryptionPolicy, and
+	// the inbound policy handleIncoming itself enforces before a
+	// connection is even routed to a torrent (an encrypted inbound
+	// connection's infohash isn't known until negotiation completes, so
+	// there is no per-torrent Config to consult yet at that point).
+	// mse.PolicyDisabled (the zero value, and the default) is a complete
+	// no-op — handleIncoming's own code path for it is byte-for-byte what
+	// it always was, no bufio.Reader even constructed. Engine-level-only
+	// in v1, same "configuration isn't meant to change at runtime" scope
+	// ProxyType/AnonymousMode above already established; no per-torrent
+	// override and no control-API surface.
+	EncryptionPolicy mse.Policy
 	// Trace (Phase 8), if set, is handed to every torrent this Engine
 	// starts, unchanged — one *trace.Writer shared across the whole fleet,
 	// same "one instance, several owners" shape as DownLimit/UpLimit,
@@ -858,12 +875,81 @@ func (e *Engine) handleIncoming(conn net.Conn) {
 	// free the slot.
 	conn = &countedConn{Conn: conn, release: func() { e.releaseInboundSlot(ip) }}
 
-	hs, err := peer.ReadHandshake(conn)
+	if e.defaults.EncryptionPolicy == mse.PolicyDisabled {
+		// Byte-for-byte what this function always did — no bufio.Reader
+		// even constructed, so a fleet that never touches
+		// Defaults.EncryptionPolicy pays nothing for this feature
+		// existing.
+		hs, err := peer.ReadHandshake(conn)
+		if err != nil {
+			conn.Close()
+			return
+		}
+		e.routeAcceptedPeer(conn, hs)
+		return
+	}
+
+	br := bufio.NewReader(conn)
+	legacy, err := mse.LooksLikeHandshake(br)
 	if err != nil {
 		conn.Close()
 		return
 	}
+	if legacy {
+		if e.defaults.EncryptionPolicy == mse.PolicyRequired {
+			logger.Logf("engine: refusing an unencrypted inbound connection from %s (encryption required)\n", conn.RemoteAddr())
+			conn.Close()
+			return
+		}
+		hs, err := peer.ReadHandshake(&bufferedConn{Conn: conn, r: br})
+		if err != nil {
+			conn.Close()
+			return
+		}
+		e.routeAcceptedPeer(conn, hs)
+		return
+	}
 
+	wrapped, _, matchedSKey, err := mse.ReceiveHandshake(conn, br, e.knownInfoHashes(), mse.DefaultSelector)
+	if err != nil {
+		conn.Close()
+		return
+	}
+	hs, err := peer.ReadHandshake(wrapped)
+	if err != nil {
+		wrapped.Close()
+		return
+	}
+	if !bytes.Equal(hs.InfoHash[:], matchedSKey) {
+		// Defense in depth: mse.ReceiveHandshake already identified which
+		// torrent this connection is for via the SKEY match, so a classic
+		// handshake underneath disagreeing about its own infohash is a
+		// real protocol violation, not something to silently route by
+		// whichever value happens to win.
+		logger.Warning.Printf("engine: MSE-negotiated connection from %s claims a different infohash in its classic handshake, closing\n", wrapped.RemoteAddr())
+		wrapped.Close()
+		return
+	}
+	e.routeAcceptedPeer(wrapped, hs)
+}
+
+// bufferedConn lets peer.ReadHandshake's own net.Conn-only deadline-
+// setting still apply when reading through a *bufio.Reader that may
+// already hold bytes buffered off the wire (from LooksLikeHandshake's own
+// peek) — embedding net.Conn directly and reading from it would silently
+// skip those already-buffered bytes.
+type bufferedConn struct {
+	net.Conn
+	r *bufio.Reader
+}
+
+func (b *bufferedConn) Read(p []byte) (int, error) { return b.r.Read(p) }
+
+// routeAcceptedPeer looks conn's already-parsed handshake up by infohash
+// and hands it to the matching torrent, or closes conn if this engine
+// manages no such torrent — the shared tail both the legacy and
+// MSE-negotiated paths through handleIncoming above funnel into.
+func (e *Engine) routeAcceptedPeer(conn net.Conn, hs *peer.Handshake) {
 	e.mu.Lock()
 	mt, ok := e.torrents[metainfo.Hash(hs.InfoHash)]
 	e.mu.Unlock()
@@ -874,6 +960,21 @@ func (e *Engine) handleIncoming(conn net.Conn) {
 		return
 	}
 	mt.t.AcceptPeer(conn, hs)
+}
+
+// knownInfoHashes snapshots the fleet's current infohashes under e.mu, for
+// mse.ReceiveHandshake to try as SKEY candidates outside the lock — the
+// same "snapshot under lock, work outside it" shape Engine.List already
+// uses.
+func (e *Engine) knownInfoHashes() [][]byte {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := make([][]byte, 0, len(e.torrents))
+	for h := range e.torrents {
+		hh := h
+		out = append(out, hh[:])
+	}
+	return out
 }
 
 // remoteIP returns just the host part of conn's remote address, so
@@ -1184,6 +1285,7 @@ func (e *Engine) torrentConfig(downloadDir string) torrent.Config {
 		IPFilter:             e.ipFilter,
 		ProxyDialer:          e.proxyDialer,
 		AnonymousMode:        e.defaults.AnonymousMode,
+		EncryptionPolicy:     e.defaults.EncryptionPolicy,
 		Trace:                e.defaults.Trace,
 		LocalIP:              e.externalIP,
 	}
