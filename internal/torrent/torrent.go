@@ -15,6 +15,7 @@ import (
 	"github.com/Oblutack/GoTorrent/internal/ipfilter"
 	"github.com/Oblutack/GoTorrent/internal/logger"
 	"github.com/Oblutack/GoTorrent/internal/metainfo"
+	"github.com/Oblutack/GoTorrent/internal/mse"
 	"github.com/Oblutack/GoTorrent/internal/peer"
 	"github.com/Oblutack/GoTorrent/internal/picker"
 	"github.com/Oblutack/GoTorrent/internal/proxy"
@@ -140,6 +141,15 @@ type Config struct {
 	// ASSOCIATE is a real protocol extension this client does not
 	// implement — a deliberate, documented gap).
 	ProxyDialer *proxy.Dialer
+	// EncryptionPolicy controls MSE/PE — see mse.Policy's own doc comment
+	// for what each value does. Passed straight through to peer.NewClient
+	// for every outbound dial this torrent makes. mse.PolicyDisabled (the
+	// zero value, and the default) is a complete no-op, identical to this
+	// torrent's behavior before the field existed. Engine-level-only in
+	// practice — engine.Defaults.EncryptionPolicy is what every torrent an
+	// Engine manages actually gets, the same "configuration isn't meant to
+	// change at runtime" scope ProxyDialer above already established.
+	EncryptionPolicy mse.Policy
 	// Trackers seeds the announce loop before metadata is known — a magnet
 	// link's tr= parameters. Ignored once mi is set: from then on
 	// announceURLs reads mi.AnnounceURLs() instead. Meaningless for a

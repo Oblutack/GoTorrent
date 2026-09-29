@@ -12,12 +12,17 @@ import (
 	"time"
 )
 
-// handshakeTimeout bounds the whole negotiation (both directions), set as
+// HandshakeTimeout bounds the whole negotiation (both directions), set as
 // a single net.Conn deadline at the start and cleared at the end — the
 // same shape internal/peer's own classic-handshake code already uses,
 // just under this package's own name since the two packages share no
-// constants.
-const handshakeTimeout = 10 * time.Second
+// constants. A var, not a const, so a test exercising a genuinely-slow
+// failure path (e.g. internal/peer's PolicyPrefer fallback against a
+// peer that never completes MSE) can shrink it rather than actually
+// waiting out 10 real seconds — the same "interval is a var so tests can
+// shrink it" convention internal/torrent's pexInterval/
+// internal/engine's watchFolderInterval already use.
+var HandshakeTimeout = 10 * time.Second
 
 // CryptoMethod is a crypto_provide/crypto_select bitmask value.
 type CryptoMethod uint32
@@ -71,7 +76,7 @@ func InitiateHandshake(conn net.Conn, skey []byte, provide CryptoMethod, ia []by
 	if len(ia) > maxIA {
 		return nil, 0, fmt.Errorf("mse: IA too large (%d bytes, max %d)", len(ia), maxIA)
 	}
-	if err := conn.SetDeadline(time.Now().Add(handshakeTimeout)); err != nil {
+	if err := conn.SetDeadline(time.Now().Add(HandshakeTimeout)); err != nil {
 		return nil, 0, err
 	}
 	defer conn.SetDeadline(time.Time{})
@@ -186,7 +191,7 @@ func ReceiveHandshake(conn net.Conn, r *bufio.Reader, skeys [][]byte, selector C
 	if selector == nil {
 		selector = DefaultSelector
 	}
-	if err := conn.SetDeadline(time.Now().Add(handshakeTimeout)); err != nil {
+	if err := conn.SetDeadline(time.Now().Add(HandshakeTimeout)); err != nil {
 		return nil, 0, nil, err
 	}
 	defer conn.SetDeadline(time.Time{})

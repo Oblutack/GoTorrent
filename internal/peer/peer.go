@@ -15,6 +15,7 @@ import (
 
 	"github.com/Oblutack/GoTorrent/internal/bitfield"
 	"github.com/Oblutack/GoTorrent/internal/logger"
+	"github.com/Oblutack/GoTorrent/internal/mse"
 	"github.com/Oblutack/GoTorrent/internal/ratelimit"
 	"github.com/Oblutack/GoTorrent/internal/tracker"
 )
@@ -404,6 +405,10 @@ type DialFunc func(ctx context.Context, network, addr string) (net.Conn, error)
 // ever downloads). dial is optional (nil dials directly with net.Dialer) —
 // 3.7's proxy support passes a *proxy.Dialer's DialContext method value so
 // outbound peer connections tunnel through a configured SOCKS5/HTTP proxy.
+// encPolicy controls whether an MSE/PE handshake is attempted before the
+// classic one — see negotiateOutboundEncryption's own doc comment for what
+// each policy does; mse.PolicyDisabled (the default) makes this parameter a
+// complete no-op, identical to this function's behavior before it existed.
 func NewClient(
 	peerInfo tracker.PeerInfo,
 	torrent TorrentInfo,
@@ -411,17 +416,23 @@ func NewClient(
 	callbacks Callbacks,
 	limits Limits,
 	dial DialFunc,
+	encPolicy mse.Policy,
 ) (*Client, error) {
 	if dial == nil {
 		dial = (&net.Dialer{}).DialContext
 	}
 	address := net.JoinHostPort(peerInfo.IP.String(), strconv.Itoa(int(peerInfo.Port)))
 	logger.Logf("peer: attempting to connect to %s\n", address)
-	ctx, cancel := context.WithTimeout(context.Background(), handshakeTimeout)
-	defer cancel()
-	conn, err := dial(ctx, "tcp", address)
+	conn, err := dialOnce(dial, address)
 	if err != nil {
 		return nil, fmt.Errorf("peer: failed to dial %s: %w", address, err)
+	}
+
+	if encPolicy != mse.PolicyDisabled {
+		conn, err = negotiateOutboundEncryption(conn, dial, address, torrent.InfoHash, encPolicy)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	ourHandshake := NewHandshake(torrent.InfoHash, ourID)
@@ -447,6 +458,50 @@ func NewClient(
 	logger.Logf("peer: handshake successful with %s (PeerID: %x)\n", address, peerHandshake.PeerID)
 
 	return newClient(conn, torrent, ourID, peerHandshake, callbacks, limits), nil
+}
+
+// dialOnce is one bounded dial attempt, its own fresh handshakeTimeout
+// budget — factored out so negotiateOutboundEncryption's fallback redial
+// (below) gets a full, independent window rather than whatever's left of
+// an already-mostly-consumed one.
+func dialOnce(dial DialFunc, address string) (net.Conn, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), handshakeTimeout)
+	defer cancel()
+	return dial(ctx, "tcp", address)
+}
+
+// negotiateOutboundEncryption attempts an MSE/PE handshake on conn per
+// encPolicy, called (only when encPolicy != mse.PolicyDisabled) right
+// after dialing and before the classic BitTorrent handshake.
+// mse.PolicyRequired offers only RC4 (crypto_provide) and, on any
+// failure, gives up outright — the same shape as any other dial failure,
+// no retry. mse.PolicyPrefer offers both RC4 and plaintext so whichever
+// the peer's own selector prefers wins; on failure it closes the failed
+// connection and dials a fresh one for the caller to proceed with a plain
+// classic handshake on instead — the real "try encrypted, fall back to
+// plaintext" behavior every MSE-capable client offers under a
+// non-forced "enabled" setting, since a peer that doesn't understand MSE
+// at all will otherwise just stall waiting for a classic handshake it's
+// never going to see on this connection.
+func negotiateOutboundEncryption(conn net.Conn, dial DialFunc, address string, infoHash [20]byte, encPolicy mse.Policy) (net.Conn, error) {
+	provide := mse.CryptoPlaintext | mse.CryptoRC4
+	if encPolicy == mse.PolicyRequired {
+		provide = mse.CryptoRC4
+	}
+	wrapped, _, err := mse.InitiateHandshake(conn, infoHash[:], provide, nil)
+	if err == nil {
+		return wrapped, nil
+	}
+	conn.Close()
+	if encPolicy == mse.PolicyRequired {
+		return nil, fmt.Errorf("peer: encryption required but MSE handshake with %s failed: %w", address, err)
+	}
+	logger.Logf("peer: MSE handshake with %s failed (%v), falling back to a plain connection\n", address, err)
+	fresh, dialErr := dialOnce(dial, address)
+	if dialErr != nil {
+		return nil, fmt.Errorf("peer: fallback dial to %s failed: %w", address, dialErr)
+	}
+	return fresh, nil
 }
 
 // AcceptClient completes a connection we accepted (as opposed to dialed): the

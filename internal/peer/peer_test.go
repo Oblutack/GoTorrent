@@ -11,6 +11,7 @@ import (
 
 	"github.com/Oblutack/GoTorrent/internal/bencode"
 	"github.com/Oblutack/GoTorrent/internal/logger"
+	"github.com/Oblutack/GoTorrent/internal/mse"
 	"github.com/Oblutack/GoTorrent/internal/tracker"
 	"github.com/Oblutack/GoTorrent/internal/version"
 )
@@ -84,6 +85,7 @@ func dialTestPeer(t *testing.T, callbacks Callbacks) (*Client, net.Conn) {
 		callbacks,
 		Limits{},
 		nil,
+		mse.PolicyDisabled,
 	)
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
