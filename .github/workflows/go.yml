@@ -8,7 +8,17 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    # bash everywhere (Git Bash on windows-latest, native elsewhere) - several
+    # steps below (formatting check, coverage summary) use bash syntax that
+    # isn't portable to the platform default shell (pwsh on Windows).
+    defaults:
+      run:
+        shell: bash
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
@@ -88,5 +98,7 @@ jobs:
     - name: Upload coverage report
       uses: actions/upload-artifact@v4
       with:
-        name: go-coverage
+        # v4 refuses two matrix jobs uploading the same artifact name in one
+        # run - each OS gets its own.
+        name: go-coverage-${{ matrix.os }}
         path: coverage.out
