@@ -51,6 +51,15 @@ type Config struct {
 	// actually queried - see Engine.StartPortMapping) falls back to
 	// RandomNodeID, identical to this field never having existed.
 	ExternalIP net.IP
+	// Conn, if set, is used instead of binding a fresh UDP socket on Port —
+	// the seam internal/engine's inbound µTP wiring needs, so DHT and µTP
+	// (internal/utp) can share one real UDP socket on the exact same port
+	// number a client already advertises for TCP (an internal/udpmux
+	// facade, routing only the datagrams that look like KRPC to this
+	// DHT). Nil (the default, and every existing caller/test) preserves
+	// New's exact original behavior — bind its own socket on Port —
+	// unchanged.
+	Conn net.PacketConn
 }
 
 // DHT is one BitTorrent mainline DHT node (BEP 5): a UDP socket, a Kademlia
@@ -59,7 +68,7 @@ type Config struct {
 // node's own outgoing queries (used by the iterative lookups in lookup.go).
 type DHT struct {
 	id     NodeID
-	conn   *net.UDPConn
+	conn   net.PacketConn
 	table  *Table
 	tokens *tokenIssuer
 
@@ -114,9 +123,12 @@ func New(cfg Config) (*DHT, error) {
 		return nil, err
 	}
 
-	conn, err := net.ListenUDP("udp", &net.UDPAddr{Port: int(cfg.Port)})
-	if err != nil {
-		return nil, fmt.Errorf("dht: listening on UDP port %d: %w", cfg.Port, err)
+	conn := cfg.Conn
+	if conn == nil {
+		conn, err = net.ListenUDP("udp", &net.UDPAddr{Port: int(cfg.Port)})
+		if err != nil {
+			return nil, fmt.Errorf("dht: listening on UDP port %d: %w", cfg.Port, err)
+		}
 	}
 
 	d := &DHT{
@@ -178,7 +190,7 @@ func (d *DHT) readLoop() {
 	buf := make([]byte, maxPacketSize)
 	for {
 		d.conn.SetReadDeadline(time.Now().Add(1 * time.Second))
-		n, addr, err := d.conn.ReadFromUDP(buf)
+		n, rawAddr, err := d.conn.ReadFrom(buf)
 		if err != nil {
 			select {
 			case <-d.done:
@@ -186,6 +198,10 @@ func (d *DHT) readLoop() {
 			default:
 			}
 			continue // a read timeout (the common case) or transient error
+		}
+		addr, ok := rawAddr.(*net.UDPAddr)
+		if !ok {
+			continue // not a real UDP source address - can't happen against a genuine UDP socket or the udpmux facade, which both always hand back *net.UDPAddr, but a malformed net.PacketConn implementation could in principle violate that
 		}
 		msg, err := parseMessage(buf[:n])
 		if err != nil {
@@ -238,7 +254,7 @@ func (d *DHT) sendQuery(ctx context.Context, addr *net.UDPAddr, q string, args a
 		d.txMu.Unlock()
 	}()
 
-	if _, err := d.conn.WriteToUDP(payload, addr); err != nil {
+	if _, err := d.conn.WriteTo(payload, addr); err != nil {
 		return nil, fmt.Errorf("dht: writing %s to %s: %w", q, addr, err)
 	}
 
@@ -394,7 +410,7 @@ func (d *DHT) reply(t string, addr *net.UDPAddr, r any) {
 		logger.Warning.Printf("dht: encoding reply to %s: %v\n", addr, err)
 		return
 	}
-	if _, err := d.conn.WriteToUDP(payload, addr); err != nil {
+	if _, err := d.conn.WriteTo(payload, addr); err != nil {
 		logger.Logf("dht: replying to %s: %v\n", addr, err)
 	}
 }
@@ -404,7 +420,7 @@ func (d *DHT) replyError(t string, addr *net.UDPAddr, code int, msg string) {
 	if err != nil {
 		return
 	}
-	d.conn.WriteToUDP(payload, addr)
+	d.conn.WriteTo(payload, addr)
 }
 
 func (d *DHT) storedPeers(infoHash NodeID) []peerEntry {
