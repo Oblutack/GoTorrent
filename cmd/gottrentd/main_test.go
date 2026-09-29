@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Oblutack/GoTorrent/internal/mse"
 	"github.com/Oblutack/GoTorrent/internal/picker"
 	"github.com/Oblutack/GoTorrent/internal/storage"
 )
@@ -55,13 +56,16 @@ func TestMergeFlagsAppliesEveryExplicitFlag(t *testing.T) {
 	ratioLimit := 1.5
 	seedTimeLimit := 90 * time.Minute
 	catPaths := categoryPaths{"tv": "/tv"}
+	encryptionPolicy := "prefer"
 
 	explicit := map[string]bool{
 		"dir": true, "port": true, "random-port": true, "ratio-limit": true, "seed-time-limit": true,
+		"encryption": true,
 	}
 	mergeFlags(&cfg, explicit, flagValues{
 		downloadDir: &downloadDir, listenPort: &listenPort, randomPort: &randomPort,
 		ratioLimit: &ratioLimit, seedTimeLimit: &seedTimeLimit, catPaths: catPaths,
+		encryptionPolicy: &encryptionPolicy,
 	})
 
 	if cfg.DownloadDir != "/explicit" {
@@ -82,6 +86,9 @@ func TestMergeFlagsAppliesEveryExplicitFlag(t *testing.T) {
 	if cfg.CategoryPaths["tv"] != "/tv" {
 		t.Fatalf("CategoryPaths[tv] = %q, want /tv", cfg.CategoryPaths["tv"])
 	}
+	if cfg.EncryptionPolicy != "prefer" {
+		t.Fatalf("EncryptionPolicy = %q, want prefer", cfg.EncryptionPolicy)
+	}
 }
 
 func TestBuildDefaultsTranslatesConfig(t *testing.T) {
@@ -94,6 +101,7 @@ func TestBuildDefaultsTranslatesConfig(t *testing.T) {
 	cfg.DownLimitKB = 100
 	cfg.UpLimitKB = 50
 	cfg.Sequential = true
+	cfg.EncryptionPolicy = "required"
 
 	defaults, err := buildDefaults(cfg)
 	if err != nil {
@@ -119,6 +127,9 @@ func TestBuildDefaultsTranslatesConfig(t *testing.T) {
 	}
 	if defaults.PickerStrategy != picker.Sequential {
 		t.Fatalf("PickerStrategy = %v, want picker.Sequential", defaults.PickerStrategy)
+	}
+	if defaults.EncryptionPolicy != mse.PolicyRequired {
+		t.Fatalf("EncryptionPolicy = %v, want PolicyRequired", defaults.EncryptionPolicy)
 	}
 }
 
@@ -151,5 +162,13 @@ func TestBuildDefaultsRejectsInvalidAltSchedule(t *testing.T) {
 	cfg.AltSchedule = "not a real schedule"
 	if _, err := buildDefaults(cfg); err == nil {
 		t.Fatal("buildDefaults succeeded with an invalid altSchedule, want an error")
+	}
+}
+
+func TestBuildDefaultsRejectsInvalidEncryptionPolicy(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.EncryptionPolicy = "bogus"
+	if _, err := buildDefaults(cfg); err == nil {
+		t.Fatal("buildDefaults succeeded with an invalid encryptionPolicy, want an error")
 	}
 }

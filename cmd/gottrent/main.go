@@ -20,6 +20,7 @@ import (
 	"github.com/Oblutack/GoTorrent/internal/engine"
 	"github.com/Oblutack/GoTorrent/internal/logger"
 	"github.com/Oblutack/GoTorrent/internal/metainfo"
+	"github.com/Oblutack/GoTorrent/internal/mse"
 	"github.com/Oblutack/GoTorrent/internal/picker"
 	"github.com/Oblutack/GoTorrent/internal/ratelimit"
 	"github.com/Oblutack/GoTorrent/internal/storage"
@@ -142,6 +143,7 @@ func runFleet() {
 	proxyPassword := flag.String("proxy-password", "", "Proxy password, if it requires authentication")
 	proxyDNS := flag.Bool("proxy-dns", false, "Resolve hostnames through the SOCKS5 proxy itself instead of locally (meaningless for -proxy-type=http)")
 	anonymousMode := flag.Bool("anonymous-mode", false, "Strip the client fingerprint from the peer ID and disable LSD; requires -proxy-type to also be set")
+	encryptionPolicy := flag.String("encryption", "disabled", `Message Stream Encryption (MSE/PE) for peer connections: "disabled", "prefer" (try encrypted, fall back to plaintext), or "required" (refuse plaintext, both directions)`)
 	tracePath := flag.String("trace", "", "Write a Phase 8 explain/trace JSONL event log (peer connects, choke decisions, requests, blocks, hash results, and the picker's own reasoning) to this path (empty = disabled)")
 	pprofAddr := flag.String("pprof-addr", "", "Serve pprof CPU/heap/goroutine profiles and a JSON stats endpoint at this address, e.g. 127.0.0.1:6062 (empty = disabled). Never the control API's own address — this exposes raw profiling data, bind it to loopback only.")
 	streamAddr := flag.String("stream", "", `Serve every managed torrent's files over HTTP with byte-range support at this address, e.g. ":8080" (empty = disabled) - point a media player at it and watch while downloading`)
@@ -155,6 +157,10 @@ func runFleet() {
 	seedLimitActionValue, err := parseSeedLimitAction(*seedLimitAction)
 	if err != nil {
 		logger.Error.Fatalf("Error parsing -seed-limit-action: %v\n", err)
+	}
+	encryptionPolicyValue, err := mse.ParsePolicy(*encryptionPolicy)
+	if err != nil {
+		logger.Error.Fatalf("Error parsing -encryption: %v\n", err)
 	}
 
 	logger.Init(*verbose)
@@ -191,6 +197,7 @@ func runFleet() {
 		ProxyPassword:          *proxyPassword,
 		ProxyDNS:               *proxyDNS,
 		AnonymousMode:          *anonymousMode,
+		EncryptionPolicy:       encryptionPolicyValue,
 	}
 	if *sequential {
 		defaults.PickerStrategy = picker.Sequential
