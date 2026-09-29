@@ -42,6 +42,8 @@ linters:
         - (*github.com/Oblutack/GoTorrent/internal/torrent.Torrent).Run
         - (*github.com/Oblutack/GoTorrent/internal/torrent.Torrent).doPause
         - (*github.com/Oblutack/GoTorrent/internal/trace.Writer).Close
+        - (*github.com/Oblutack/GoTorrent/internal/utp.Conn).Close
+        - (*github.com/Oblutack/GoTorrent/internal/utp.Socket).Close
         - (*github.com/Oblutack/GoTorrent/internal/ws.Conn).Close
         - (*github.com/Oblutack/GoTorrent/internal/ws.Conn).ReadMessage
         - (*github.com/Oblutack/GoTorrent/internal/ws.Conn).WriteMessage
