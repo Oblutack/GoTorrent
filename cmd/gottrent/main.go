@@ -26,6 +26,7 @@ import (
 	"github.com/Oblutack/GoTorrent/internal/storage"
 	"github.com/Oblutack/GoTorrent/internal/stream"
 	"github.com/Oblutack/GoTorrent/internal/trace"
+	"github.com/Oblutack/GoTorrent/internal/utp"
 )
 
 // torrentSources collects a flag that may be repeated, one -torrent per
@@ -144,6 +145,7 @@ func runFleet() {
 	proxyDNS := flag.Bool("proxy-dns", false, "Resolve hostnames through the SOCKS5 proxy itself instead of locally (meaningless for -proxy-type=http)")
 	anonymousMode := flag.Bool("anonymous-mode", false, "Strip the client fingerprint from the peer ID and disable LSD; requires -proxy-type to also be set")
 	encryptionPolicy := flag.String("encryption", "disabled", `Message Stream Encryption (MSE/PE) for peer connections: "disabled", "prefer" (try encrypted, fall back to plaintext), or "required" (refuse plaintext, both directions)`)
+	utpPolicy := flag.String("utp", "disabled", `µTP (BEP 29, LEDBAT congestion control) for peer connections: "disabled", "prefer" (try uTP, fall back to TCP), or "required" (refuse TCP, both directions); inbound uTP shares the same UDP port as DHT`)
 	tracePath := flag.String("trace", "", "Write a Phase 8 explain/trace JSONL event log (peer connects, choke decisions, requests, blocks, hash results, and the picker's own reasoning) to this path (empty = disabled)")
 	pprofAddr := flag.String("pprof-addr", "", "Serve pprof CPU/heap/goroutine profiles and a JSON stats endpoint at this address, e.g. 127.0.0.1:6062 (empty = disabled). Never the control API's own address — this exposes raw profiling data, bind it to loopback only.")
 	streamAddr := flag.String("stream", "", `Serve every managed torrent's files over HTTP with byte-range support at this address, e.g. ":8080" (empty = disabled) - point a media player at it and watch while downloading`)
@@ -161,6 +163,10 @@ func runFleet() {
 	encryptionPolicyValue, err := mse.ParsePolicy(*encryptionPolicy)
 	if err != nil {
 		logger.Error.Fatalf("Error parsing -encryption: %v\n", err)
+	}
+	utpPolicyValue, err := utp.ParsePolicy(*utpPolicy)
+	if err != nil {
+		logger.Error.Fatalf("Error parsing -utp: %v\n", err)
 	}
 
 	logger.Init(*verbose)
@@ -198,6 +204,7 @@ func runFleet() {
 		ProxyDNS:               *proxyDNS,
 		AnonymousMode:          *anonymousMode,
 		EncryptionPolicy:       encryptionPolicyValue,
+		UTPPolicy:              utpPolicyValue,
 	}
 	if *sequential {
 		defaults.PickerStrategy = picker.Sequential

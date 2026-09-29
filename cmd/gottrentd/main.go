@@ -33,6 +33,7 @@ import (
 	"github.com/Oblutack/GoTorrent/internal/ratelimit"
 	"github.com/Oblutack/GoTorrent/internal/storage"
 	"github.com/Oblutack/GoTorrent/internal/trace"
+	"github.com/Oblutack/GoTorrent/internal/utp"
 	"github.com/Oblutack/GoTorrent/internal/version"
 )
 
@@ -105,6 +106,7 @@ func run() error {
 	proxyDNS := flag.Bool("proxy-dns", false, "Resolve hostnames through the SOCKS5 proxy itself instead of locally (meaningless for -proxy-type=http)")
 	anonymousMode := flag.Bool("anonymous-mode", false, "Strip the client fingerprint from the peer ID and disable LSD; requires -proxy-type to also be set")
 	encryptionPolicy := flag.String("encryption", "", `Message Stream Encryption (MSE/PE) for peer connections: "disabled", "prefer" (try encrypted, fall back to plaintext), or "required" (refuse plaintext, both directions); empty = disabled`)
+	utpPolicy := flag.String("utp", "", `µTP (BEP 29, LEDBAT congestion control) for peer connections: "disabled", "prefer" (try uTP, fall back to TCP), or "required" (refuse TCP, both directions); empty = disabled; inbound uTP shares the same UDP port as DHT`)
 	apiAddress := flag.String("api-address", "", `Address the control API listens on, as "host:port" (default 127.0.0.1:6880); also this process's single-instance lock`)
 	tlsCertFile := flag.String("tls-cert", "", "TLS certificate file for the API listener (requires -tls-key too; empty = plain HTTP)")
 	tlsKeyFile := flag.String("tls-key", "", "TLS private key file for the API listener (requires -tls-cert too)")
@@ -141,7 +143,7 @@ func run() error {
 		ipFilterPath: ipFilterPath, ipFilterURL: ipFilterURL, ipFilterFormat: ipFilterFormat,
 		ipFilterUpdateInterval: ipFilterUpdateInterval,
 		proxyType:              proxyType, proxyAddress: proxyAddress, proxyUsername: proxyUsername, proxyPassword: proxyPassword,
-		proxyDNS: proxyDNS, anonymousMode: anonymousMode, encryptionPolicy: encryptionPolicy, apiAddress: apiAddress, verbose: verbose,
+		proxyDNS: proxyDNS, anonymousMode: anonymousMode, encryptionPolicy: encryptionPolicy, utpPolicy: utpPolicy, apiAddress: apiAddress, verbose: verbose,
 		tlsCertFile: tlsCertFile, tlsKeyFile: tlsKeyFile, tracePath: tracePath,
 		pprofAddr: pprofAddr,
 		catPaths:  catPaths,
@@ -276,7 +278,7 @@ type flagValues struct {
 	ipFilterPath, ipFilterURL, ipFilterFormat                                        *string
 	proxyType, proxyAddress, proxyUsername, proxyPassword                            *string
 	proxyDNS, anonymousMode, verbose, useMmap                                        *bool
-	encryptionPolicy                                                                 *string
+	encryptionPolicy, utpPolicy                                                      *string
 	maxActiveDownloads, maxActiveSeeds, maxActiveTotal, uploadSlots                  *int
 	writeCacheMB                                                                     *int
 	apiAddress, tlsCertFile, tlsKeyFile, tracePath                                   *string
@@ -417,6 +419,9 @@ func mergeFlags(cfg *Config, explicit map[string]bool, f flagValues) {
 	if explicit["encryption"] {
 		cfg.EncryptionPolicy = *f.encryptionPolicy
 	}
+	if explicit["utp"] {
+		cfg.UTPPolicy = *f.utpPolicy
+	}
 	if explicit["api-address"] {
 		cfg.APIAddress = *f.apiAddress
 	}
@@ -486,6 +491,10 @@ func buildDefaults(cfg Config) (engine.Defaults, error) {
 	if err != nil {
 		return engine.Defaults{}, fmt.Errorf("encryptionPolicy: %w", err)
 	}
+	utpPolicy, err := utp.ParsePolicy(cfg.UTPPolicy)
+	if err != nil {
+		return engine.Defaults{}, fmt.Errorf("utpPolicy: %w", err)
+	}
 
 	defaults := engine.Defaults{
 		DownloadDir:            cfg.DownloadDir,
@@ -520,6 +529,7 @@ func buildDefaults(cfg Config) (engine.Defaults, error) {
 		ProxyDNS:               cfg.ProxyDNS,
 		AnonymousMode:          cfg.AnonymousMode,
 		EncryptionPolicy:       encryptionPolicy,
+		UTPPolicy:              utpPolicy,
 	}
 	if cfg.Sequential {
 		defaults.PickerStrategy = picker.Sequential

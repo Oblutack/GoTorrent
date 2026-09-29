@@ -7,6 +7,7 @@ import (
 	"github.com/Oblutack/GoTorrent/internal/mse"
 	"github.com/Oblutack/GoTorrent/internal/picker"
 	"github.com/Oblutack/GoTorrent/internal/storage"
+	"github.com/Oblutack/GoTorrent/internal/utp"
 )
 
 // TestMergeFlagsOnlyAppliesExplicitFlags proves the core precedence rule:
@@ -57,15 +58,16 @@ func TestMergeFlagsAppliesEveryExplicitFlag(t *testing.T) {
 	seedTimeLimit := 90 * time.Minute
 	catPaths := categoryPaths{"tv": "/tv"}
 	encryptionPolicy := "prefer"
+	utpPolicy := "required"
 
 	explicit := map[string]bool{
 		"dir": true, "port": true, "random-port": true, "ratio-limit": true, "seed-time-limit": true,
-		"encryption": true,
+		"encryption": true, "utp": true,
 	}
 	mergeFlags(&cfg, explicit, flagValues{
 		downloadDir: &downloadDir, listenPort: &listenPort, randomPort: &randomPort,
 		ratioLimit: &ratioLimit, seedTimeLimit: &seedTimeLimit, catPaths: catPaths,
-		encryptionPolicy: &encryptionPolicy,
+		encryptionPolicy: &encryptionPolicy, utpPolicy: &utpPolicy,
 	})
 
 	if cfg.DownloadDir != "/explicit" {
@@ -89,6 +91,9 @@ func TestMergeFlagsAppliesEveryExplicitFlag(t *testing.T) {
 	if cfg.EncryptionPolicy != "prefer" {
 		t.Fatalf("EncryptionPolicy = %q, want prefer", cfg.EncryptionPolicy)
 	}
+	if cfg.UTPPolicy != "required" {
+		t.Fatalf("UTPPolicy = %q, want required", cfg.UTPPolicy)
+	}
 }
 
 func TestBuildDefaultsTranslatesConfig(t *testing.T) {
@@ -102,6 +107,7 @@ func TestBuildDefaultsTranslatesConfig(t *testing.T) {
 	cfg.UpLimitKB = 50
 	cfg.Sequential = true
 	cfg.EncryptionPolicy = "required"
+	cfg.UTPPolicy = "prefer"
 
 	defaults, err := buildDefaults(cfg)
 	if err != nil {
@@ -130,6 +136,9 @@ func TestBuildDefaultsTranslatesConfig(t *testing.T) {
 	}
 	if defaults.EncryptionPolicy != mse.PolicyRequired {
 		t.Fatalf("EncryptionPolicy = %v, want PolicyRequired", defaults.EncryptionPolicy)
+	}
+	if defaults.UTPPolicy != utp.PolicyPrefer {
+		t.Fatalf("UTPPolicy = %v, want PolicyPrefer", defaults.UTPPolicy)
 	}
 }
 
@@ -170,5 +179,13 @@ func TestBuildDefaultsRejectsInvalidEncryptionPolicy(t *testing.T) {
 	cfg.EncryptionPolicy = "bogus"
 	if _, err := buildDefaults(cfg); err == nil {
 		t.Fatal("buildDefaults succeeded with an invalid encryptionPolicy, want an error")
+	}
+}
+
+func TestBuildDefaultsRejectsInvalidUTPPolicy(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.UTPPolicy = "bogus"
+	if _, err := buildDefaults(cfg); err == nil {
+		t.Fatal("buildDefaults succeeded with an invalid utpPolicy, want an error")
 	}
 }

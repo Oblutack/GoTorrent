@@ -60,6 +60,7 @@ type Config struct {
 	ProxyDNS               bool              `json:"proxyDNS"`
 	AnonymousMode          bool              `json:"anonymousMode"`
 	EncryptionPolicy       string            `json:"encryptionPolicy"`
+	UTPPolicy              string            `json:"utpPolicy"`
 	// APIAddress is where the control API (4.2/4.3) listens, and — already,
 	// as of 4.1 — what a bare bind attempt at startup uses as this daemon's
 	// single-instance lock: a second gottrentd pointed at the same address
