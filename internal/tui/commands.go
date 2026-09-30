@@ -15,6 +15,9 @@ import (
 // gottrentd should time out one refresh, not freeze the UI forever.
 const requestTimeout = 10 * time.Second
 
+// toastLifetime is how long a toast stays on screen.
+const toastLifetime = 4 * time.Second
+
 func connectCmd(ctx context.Context, addr, token string) tea.Cmd {
 	return func() tea.Msg {
 		addr = strings.TrimSpace(addr)
@@ -37,7 +40,7 @@ func fetchTorrentsCmd(ctx context.Context, c *tuiclient.Client) tea.Cmd {
 		reqCtx, cancel := context.WithTimeout(ctx, requestTimeout)
 		defer cancel()
 		list, err := c.ListTorrents(reqCtx)
-		return torrentsMsg{list: list, err: err}
+		return torrentsMsg{list: list, at: time.Now(), err: err}
 	}
 }
 
@@ -46,7 +49,7 @@ func fetchSessionCmd(ctx context.Context, c *tuiclient.Client) tea.Cmd {
 		reqCtx, cancel := context.WithTimeout(ctx, requestTimeout)
 		defer cancel()
 		stats, err := c.GetSession(reqCtx)
-		return sessionMsg{stats: stats, err: err}
+		return sessionMsg{stats: stats, at: time.Now(), err: err}
 	}
 }
 
@@ -55,23 +58,28 @@ func fetchDetailCmd(ctx context.Context, c *tuiclient.Client, hash string) tea.C
 		reqCtx, cancel := context.WithTimeout(ctx, requestTimeout)
 		defer cancel()
 
+		fail := func(err error) tea.Msg { return detailMsg{hash: hash, err: err} }
 		detail, err := c.GetDetail(reqCtx, hash)
 		if err != nil {
-			return detailMsg{err: err}
+			return fail(err)
 		}
 		files, err := c.GetFiles(reqCtx, hash)
 		if err != nil {
-			return detailMsg{err: err}
+			return fail(err)
 		}
 		peers, err := c.GetPeers(reqCtx, hash)
 		if err != nil {
-			return detailMsg{err: err}
+			return fail(err)
 		}
 		trackers, err := c.GetTrackers(reqCtx, hash)
 		if err != nil {
-			return detailMsg{err: err}
+			return fail(err)
 		}
-		return detailMsg{detail: detail, files: files, peers: peers, trackers: trackers}
+		pieces, err := c.GetPieces(reqCtx, hash)
+		if err != nil {
+			return fail(err)
+		}
+		return detailMsg{hash: hash, detail: detail, files: files, peers: peers, trackers: trackers, pieces: pieces, at: time.Now()}
 	}
 }
 
@@ -103,24 +111,42 @@ func tickCmd() tea.Cmd {
 	return tea.Tick(pollInterval, func(time.Time) tea.Msg { return tickMsg{} })
 }
 
-func actionCmd(ctx context.Context, c *tuiclient.Client, action, hash string) tea.Cmd {
+func toastExpireCmd(id int) tea.Cmd {
+	return tea.Tick(toastLifetime, func(time.Time) tea.Msg { return toastExpiredMsg{id: id} })
+}
+
+// actionsCmd applies one action to every hash in turn and reports a single
+// combined result, so acting on a multi-selection raises one toast rather
+// than one per torrent.
+func actionsCmd(ctx context.Context, c *tuiclient.Client, action string, hashes []string) tea.Cmd {
 	return func() tea.Msg {
-		reqCtx, cancel := context.WithTimeout(ctx, requestTimeout)
-		defer cancel()
-		var err error
-		switch action {
-		case "pause":
-			err = c.Pause(reqCtx, hash)
-		case "resume":
-			err = c.Resume(reqCtx, hash)
-		case "verify":
-			err = c.Verify(reqCtx, hash)
-		case "reannounce":
-			err = c.Reannounce(reqCtx, hash)
-		case "delete":
-			err = c.Delete(reqCtx, hash, false)
+		res := actionResultMsg{action: action, count: len(hashes)}
+		for _, hash := range hashes {
+			reqCtx, cancel := context.WithTimeout(ctx, requestTimeout)
+			var err error
+			switch action {
+			case "pause":
+				err = c.Pause(reqCtx, hash)
+			case "resume":
+				err = c.Resume(reqCtx, hash)
+			case "verify":
+				err = c.Verify(reqCtx, hash)
+			case "reannounce":
+				err = c.Reannounce(reqCtx, hash)
+			case "remove":
+				err = c.Delete(reqCtx, hash, false)
+			case "remove+data":
+				err = c.Delete(reqCtx, hash, true)
+			}
+			cancel()
+			if err != nil {
+				res.failed++
+				if res.err == nil {
+					res.err = err
+				}
+			}
 		}
-		return actionResultMsg{action: action, err: err}
+		return res
 	}
 }
 
