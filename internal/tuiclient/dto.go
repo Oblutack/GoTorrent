@@ -21,25 +21,26 @@ import "time"
 // embedded base of TorrentDetail) — see internal/api/torrents.go's own
 // TorrentSummary for the authoritative field list this mirrors.
 type TorrentSummary struct {
-	InfoHash        string   `json:"infoHash"`
-	Name            string   `json:"name"`
-	State           string   `json:"state"`
-	Downloaded      int64    `json:"downloaded"`
-	Uploaded        int64    `json:"uploaded"`
-	Left            int64    `json:"left"`
-	TotalLength     int64    `json:"totalLength"`
-	NumPieces       int      `json:"numPieces"`
-	HavePieces      int      `json:"havePieces"`
-	PeerCount       int      `json:"peerCount"`
-	SeedCount       int      `json:"seedCount"`
-	LeechCount      int      `json:"leechCount"`
-	MinAvailability int      `json:"minAvailability"`
-	SeedRatio       float64  `json:"seedRatio"`
-	Private         bool     `json:"private"`
-	Category        string   `json:"category,omitempty"`
-	Tags            []string `json:"tags,omitempty"`
-	QueuePosition   int      `json:"queuePosition"`
-	ForceStart      bool     `json:"forceStart"`
+	InfoHash        string    `json:"infoHash"`
+	Name            string    `json:"name"`
+	State           string    `json:"state"`
+	Downloaded      int64     `json:"downloaded"`
+	Uploaded        int64     `json:"uploaded"`
+	Left            int64     `json:"left"`
+	TotalLength     int64     `json:"totalLength"`
+	NumPieces       int       `json:"numPieces"`
+	HavePieces      int       `json:"havePieces"`
+	PeerCount       int       `json:"peerCount"`
+	SeedCount       int       `json:"seedCount"`
+	LeechCount      int       `json:"leechCount"`
+	MinAvailability int       `json:"minAvailability"`
+	SeedRatio       float64   `json:"seedRatio"`
+	Private         bool      `json:"private"`
+	Category        string    `json:"category,omitempty"`
+	Tags            []string  `json:"tags,omitempty"`
+	QueuePosition   int       `json:"queuePosition"`
+	ForceStart      bool      `json:"forceStart"`
+	AddedOn         time.Time `json:"addedOn"`
 }
 
 // Progress is downloaded/total as a 0-1 fraction, 0 when nothing is known
@@ -95,6 +96,23 @@ type TrackerEntry struct {
 	LastError    string    `json:"lastError,omitempty"`
 	Seeders      int       `json:"seeders"`
 	Leechers     int       `json:"leechers"`
+}
+
+// PiecesResponse is GET /api/v1/torrents/{hash}/pieces' response. Bitfield is
+// BEP 3's packed layout (one bit per piece, most-significant bit first);
+// encoding/json decodes the API's base64 string into the []byte directly.
+type PiecesResponse struct {
+	NumPieces int    `json:"numPieces"`
+	HaveCount int    `json:"haveCount"`
+	Bitfield  []byte `json:"bitfield"`
+}
+
+// Has reports whether piece i is marked have in the bitfield.
+func (p PiecesResponse) Has(i int) bool {
+	if i < 0 || i >= p.NumPieces || i/8 >= len(p.Bitfield) {
+		return false
+	}
+	return p.Bitfield[i/8]&(0x80>>(uint(i)%8)) != 0
 }
 
 // SessionStats is GET /api/v1/session's response.

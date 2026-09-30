@@ -145,6 +145,13 @@ func (c *Client) GetTrackers(ctx context.Context, hash string) ([]TrackerEntry, 
 	return out, err
 }
 
+// GetPieces calls GET /api/v1/torrents/{hash}/pieces.
+func (c *Client) GetPieces(ctx context.Context, hash string) (PiecesResponse, error) {
+	var out PiecesResponse
+	err := c.do(ctx, http.MethodGet, "/api/v1/torrents/"+hash+"/pieces", nil, "", &out)
+	return out, err
+}
+
 // GetSession calls GET /api/v1/session.
 func (c *Client) GetSession(ctx context.Context) (SessionStats, error) {
 	var out SessionStats

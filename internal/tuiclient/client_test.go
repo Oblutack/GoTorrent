@@ -55,6 +55,30 @@ func TestListTorrentsDecodesRealJSON(t *testing.T) {
 	}
 }
 
+func TestGetPiecesDecodesABase64BitfieldAndHasReadsItMSBFirst(t *testing.T) {
+	c, _ := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/torrents/abc/pieces" {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		// 0b10100000, 0b01000000 -> pieces 0, 2 and 9 are have. base64 of {0xA0, 0x40}.
+		w.Write([]byte(`{"numPieces":10,"haveCount":3,"bitfield":"oEA="}`))
+	})
+
+	got, err := c.GetPieces(context.Background(), "abc")
+	if err != nil {
+		t.Fatalf("GetPieces: %v", err)
+	}
+	if got.NumPieces != 10 || got.HaveCount != 3 {
+		t.Fatalf("got %+v", got)
+	}
+	for i, want := range map[int]bool{0: true, 1: false, 2: true, 8: false, 9: true, 10: false, -1: false} {
+		if got.Has(i) != want {
+			t.Errorf("Has(%d) = %v, want %v", i, got.Has(i), want)
+		}
+	}
+}
+
 func TestRequestErrorCarriesTheRealServerMessage(t *testing.T) {
 	c, _ := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusConflict)
