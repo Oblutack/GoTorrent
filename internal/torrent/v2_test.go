@@ -256,3 +256,92 @@ func TestFullDownloadHybridMultiFileWithPadding(t *testing.T) {
 
 	readBackAndCompare(t, leecherCfg, mi, files)
 }
+
+// TestNewUsesTheV2IdentityForAPureV2Torrent pins down a real bug found
+// while writing TestMagnetV2FullDownloadWithHashExchange below: New used
+// to unconditionally use mi.InfoHash (v1 SHA-1, computed unconditionally
+// over InfoBytes regardless of MetaVersion — see metainfo.go's own setInfo)
+// as the wire/tracker/DHT identity, even for a pure-v2 torrent with no v1
+// 'pieces' at all. That silently diverged from BEP 52's own truncation
+// rule and — the way it was actually caught — made a New()-constructed
+// seeder and a NewFromInfoHashV2-constructed leecher (the real magnet
+// shape) advertise two different infohashes in their handshakes, so the
+// leecher's dial was rejected outright and the whole transfer hung at
+// FetchingMetadata forever.
+func TestNewUsesTheV2IdentityForAPureV2Torrent(t *testing.T) {
+	files := map[string][]byte{"fileA.bin": genBytesV2(102400)}
+	mi := buildV2TestTorrent(t, 32768, false, files)
+	if mi.InfoHashV2.IsZero() {
+		t.Fatal("test setup: expected a real v2 infohash")
+	}
+
+	tr, err := New(mi, newTestConfig(t))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if want := mi.InfoHashV2.Truncated20(); tr.InfoHash() != want {
+		t.Fatalf("InfoHash() = %s, want %s (the truncated v2 identity)", tr.InfoHash(), want)
+	}
+	if tr.InfoHash() == mi.InfoHash {
+		t.Fatal("InfoHash() equals the meaningless v1 SHA-1 over a pure-v2 torrent's info bytes")
+	}
+}
+
+// TestMagnetV2FullDownloadWithHashExchange is the real end-to-end proof the
+// "full v2, including magnet support" scope choice was worth taking on: a
+// leecher constructed via NewFromInfoHashV2 with zero prior metadata at
+// all — the genuine v2-only magnet shape, xt=urn:btmh: with no
+// xt=urn:btih: — fetches the info dict from a real seeder over BEP 9
+// (metadata.go's onMetadataPiece, its SHA-256 verification branch), finds
+// its freshly-parsed metadata missing a piece_layers entry (BEP 9's own
+// ut_metadata never carries it — see v2hash.go's own package doc comment),
+// reconstructs it for real over the new BEP 52 hash-request/hashes wire
+// exchange (registerPeer's proactive requestMissingPieceLayersFrom, since
+// the peer connects only after metadata already exists here), and then
+// downloads and verifies every piece, reaching StateSeeding byte-exact —
+// commit 7's serving/requesting halves and commit 8's magnet/identity
+// plumbing, proven together against real sockets rather than in isolation.
+func TestMagnetV2FullDownloadWithHashExchange(t *testing.T) {
+	const pieceLength = 32768
+	files := map[string][]byte{
+		"fileA.bin": genBytesV2(102400), // 4 real pieces -> needs a real piece_layers entry
+		"fileB.bin": genBytesV2(4096),   // sole-piece file
+	}
+	mi := buildV2TestTorrent(t, pieceLength, false, files)
+	if mi.InfoHashV2.IsZero() {
+		t.Fatal("test setup: expected a real v2 infohash")
+	}
+
+	seederCfg := newTestConfig(t)
+	preSeedV2Torrent(t, seederCfg, mi, files)
+	seeder, err := New(mi, seederCfg)
+	if err != nil {
+		t.Fatalf("New (seeder): %v", err)
+	}
+	_, stopSeeder := runInBackground(t, seeder)
+	defer stopSeeder()
+	waitForState(t, seeder, StateSeeding, 5*time.Second)
+
+	seederPeer := listenAndRoute(t, seeder)
+
+	leecherCfg := newTestConfig(t)
+	leecher, err := NewFromInfoHashV2(mi.InfoHashV2, leecherCfg)
+	if err != nil {
+		t.Fatalf("NewFromInfoHashV2: %v", err)
+	}
+	_, stopLeecher := runInBackground(t, leecher)
+	defer stopLeecher()
+	waitForState(t, leecher, StateFetchingMetadata, 2*time.Second)
+
+	leecher.DialPeer(seederPeer)
+	waitForState(t, leecher, StateSeeding, 30*time.Second)
+
+	got := leecher.Metadata()
+	if got == nil || got.InfoHashV2 != mi.InfoHashV2 {
+		t.Fatal("leecher's metadata is missing or does not match the real v2 infohash it was constructed for")
+	}
+	if got, want := leecher.Stats().Downloaded, totalBytes(files); got != want {
+		t.Fatalf("Downloaded = %d, want %d", got, want)
+	}
+	readBackAndCompare(t, leecherCfg, mi, files)
+}
