@@ -34,6 +34,7 @@ const (
 	ctrlSetStreamPosition
 	ctrlApplyExternalPiece
 	ctrlRequestHolepunch
+	ctrlRequestPieceLayer
 )
 
 type controlMsg struct {
@@ -69,11 +70,14 @@ type controlMsg struct {
 	holepunchRelayAddr  string
 	holepunchTargetIP   net.IP
 	holepunchTargetPort uint16
+	// pieceLayerPeerAddr is set for ctrlRequestPieceLayer, alongside the
+	// already-existing fileIndex field it shares with ctrlSetFilePriority.
+	pieceLayerPeerAddr string
 
 	// errReply receives the result of Pause/Resume/Recheck/SetMetadata/
 	// SetFilePriority/AddTracker/Reannounce/SetSequential/SetSuperSeeding/
 	// SetFirstLastPieceFirst/SetSeedLimits/SetStreamPosition/
-	// ApplyExternalPiece/RequestHolepunch.
+	// ApplyExternalPiece/RequestHolepunch/RequestPieceLayer.
 	errReply chan error
 	// statsReply receives the actor-owned half of a Stats snapshot.
 	statsReply chan Stats
@@ -143,6 +147,12 @@ type eventPEXUpdate struct {
 type eventHolepunchMessage struct {
 	pc  *peerConn
 	msg peer.HolepunchMessage
+}
+
+// eventHashMessage is one arrived BEP 52 'hashes'/'hash reject' message.
+type eventHashMessage struct {
+	pc  *peerConn
+	msg peer.HashMessage
 }
 
 // eventPeerGone reports that a peer's connection ended, for any reason.

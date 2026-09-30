@@ -398,6 +398,12 @@ type Torrent struct {
 	// answers at all.
 	pendingHolepunches map[string]time.Time
 
+	// pendingPieceLayerRequests tracks BEP 52 'hash request's this torrent
+	// has sent and is still waiting on a 'hashes'/'hash reject' reply for
+	// — see v2hash.go's own doc comment. Keyed by the file's own
+	// PiecesRoot, since that's what a reply correlates back to.
+	pendingPieceLayerRequests map[metainfo.Hash256]time.Time
+
 	piecesVerifiedSinceCheckpoint int
 	lastCheckpoint                time.Time
 
@@ -535,17 +541,18 @@ func newTorrent(hash metainfo.Hash, cfg Config) (*Torrent, error) {
 	}
 
 	t := &Torrent{
-		infoHash:           hash,
-		cfg:                cfg,
-		trackerClient:      tracker.NewClient(httpClient),
-		peers:              make(map[string]*peerConn),
-		dialing:            make(map[string]bool),
-		pexKnownPeers:      make(map[string]tracker.PeerInfo),
-		pendingHolepunches: make(map[string]time.Time),
-		choke:              choker.New(chokerOpts...),
-		events:             make(chan any, 256),
-		control:            make(chan controlMsg),
-		done:               make(chan struct{}),
+		infoHash:                  hash,
+		cfg:                       cfg,
+		trackerClient:             tracker.NewClient(httpClient),
+		peers:                     make(map[string]*peerConn),
+		dialing:                   make(map[string]bool),
+		pexKnownPeers:             make(map[string]tracker.PeerInfo),
+		pendingHolepunches:        make(map[string]time.Time),
+		pendingPieceLayerRequests: make(map[metainfo.Hash256]time.Time),
+		choke:                     choker.New(chokerOpts...),
+		events:                    make(chan any, 256),
+		control:                   make(chan controlMsg),
+		done:                      make(chan struct{}),
 	}
 	t.ctx, t.cancel = context.WithCancel(context.Background())
 	t.haveSnapshot.Store(bitfield.New(0))

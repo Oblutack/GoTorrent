@@ -395,6 +395,9 @@ type Client struct {
 	peerSupportsExt bool
 	// peerSupportsFast mirrors peerSupportsExt for BEP 6 (Fast extension).
 	peerSupportsFast bool
+	// peerSupportsV2Hashes mirrors peerSupportsFast for BEP 52's hash-
+	// request/hashes/hash-reject messages.
+	peerSupportsV2Hashes bool
 	// peerUtMetadataID is the id (BEP 10, from the peer's own "m" dict) to
 	// address them by when we want to send a ut_metadata message; 0 means
 	// they haven't told us, or don't support it.
@@ -601,28 +604,29 @@ func AcceptClient(
 // direction, shared by NewClient and AcceptClient.
 func newClient(conn net.Conn, torrent TorrentInfo, ourID [20]byte, peerHandshake *Handshake, callbacks Callbacks, limits Limits) *Client {
 	c := &Client{
-		Conn:              conn,
-		OurID:             ourID,
-		RemoteID:          peerHandshake.PeerID,
-		bitfield:          bitfield.New(torrent.NumPieces),
-		WorkQueue:         make(chan *BlockRequest, MaxPipelineSize),
-		Results:           make(chan *PieceBlock),
-		Events:            make(chan Event, eventQueueSize),
-		MetadataPieces:    make(chan MetadataPiece),
-		PEXUpdates:        make(chan PEXUpdate),
-		HolepunchMessages: make(chan HolepunchMessage),
-		HashMessages:      make(chan HashMessage),
-		outbound:          make(chan []byte, outboundQueueSize),
-		done:              make(chan struct{}),
-		limits:            limits,
-		peerSupportsExt:   peerHandshake.SupportsExtensions(),
-		peerSupportsFast:  peerHandshake.SupportsFast(),
-		hasPiece:          callbacks.HasPiece,
-		readBlockFromDisk: callbacks.ReadBlock,
-		metadataBytes:     callbacks.MetadataBytes,
-		uploadOnly:        callbacks.UploadOnly,
-		initialHaves:      callbacks.InitialHaves,
-		serveHashes:       callbacks.ServeHashes,
+		Conn:                 conn,
+		OurID:                ourID,
+		RemoteID:             peerHandshake.PeerID,
+		bitfield:             bitfield.New(torrent.NumPieces),
+		WorkQueue:            make(chan *BlockRequest, MaxPipelineSize),
+		Results:              make(chan *PieceBlock),
+		Events:               make(chan Event, eventQueueSize),
+		MetadataPieces:       make(chan MetadataPiece),
+		PEXUpdates:           make(chan PEXUpdate),
+		HolepunchMessages:    make(chan HolepunchMessage),
+		HashMessages:         make(chan HashMessage),
+		outbound:             make(chan []byte, outboundQueueSize),
+		done:                 make(chan struct{}),
+		limits:               limits,
+		peerSupportsExt:      peerHandshake.SupportsExtensions(),
+		peerSupportsFast:     peerHandshake.SupportsFast(),
+		peerSupportsV2Hashes: peerHandshake.SupportsV2Hashes(),
+		hasPiece:             callbacks.HasPiece,
+		readBlockFromDisk:    callbacks.ReadBlock,
+		metadataBytes:        callbacks.MetadataBytes,
+		uploadOnly:           callbacks.UploadOnly,
+		initialHaves:         callbacks.InitialHaves,
+		serveHashes:          callbacks.ServeHashes,
 	}
 	c.torrentInfo.Store(&torrent)
 	c.amChoking.Store(true)   // we start by choking the peer

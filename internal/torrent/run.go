@@ -43,6 +43,7 @@ func (t *Torrent) run(ctx context.Context) {
 		case now := <-pickTicker.C:
 			t.tick(now)
 			t.expireHolepunches(now)
+			t.expirePieceLayerRequests(now)
 
 		case now := <-chokeTicker.C:
 			t.runChoker(now)
@@ -126,6 +127,9 @@ func (t *Torrent) handleControl(msg controlMsg) {
 
 	case ctrlRequestHolepunch:
 		msg.errReply <- t.doRequestHolepunch(msg.holepunchRelayAddr, msg.holepunchTargetIP, msg.holepunchTargetPort)
+
+	case ctrlRequestPieceLayer:
+		msg.errReply <- t.doRequestPieceLayer(msg.pieceLayerPeerAddr, msg.fileIndex)
 
 	case ctrlPeers:
 		msg.peersReply <- t.peersSnapshot()
@@ -534,6 +538,8 @@ func (t *Torrent) handleEvent(ev any) {
 		t.onPEXUpdate(e.pc, e.update)
 	case eventHolepunchMessage:
 		t.onHolepunchMessage(e.pc, e.msg)
+	case eventHashMessage:
+		t.onHashMessage(e.pc, e.msg)
 	case eventPeerGone:
 		t.removePeer(e.pc)
 	case eventPieceVerified:
@@ -623,7 +629,7 @@ func (t *Torrent) connectAndPump(ctx context.Context, pi tracker.PeerInfo, ssPie
 // assigned this peer at dial/acceptIncoming time — see superSeedAssign for
 // why that decision can't be made any later than this.
 func (t *Torrent) buildCallbacks(ssPiece int, ssOK bool) peer.Callbacks {
-	cb := peer.Callbacks{HasPiece: t.hasPieceSafe, ReadBlock: t.readBlockSafe, MetadataBytes: t.metadataBytesSafe, UploadOnly: t.uploadOnlySafe}
+	cb := peer.Callbacks{HasPiece: t.hasPieceSafe, ReadBlock: t.readBlockSafe, MetadataBytes: t.metadataBytesSafe, UploadOnly: t.uploadOnlySafe, ServeHashes: t.serveHashesSafe}
 	if ssOK {
 		cb.InitialHaves = func() (int, bool) { return ssPiece, true }
 	}
@@ -665,8 +671,8 @@ func (t *Torrent) registerAndPump(ctx context.Context, pc *peerConn) {
 	go pc.client.Run()
 
 	client := pc.client
-	resultsOpen, eventsOpen, metadataOpen, pexOpen, holepunchOpen := true, true, true, true, true
-	for resultsOpen || eventsOpen || metadataOpen || pexOpen || holepunchOpen {
+	resultsOpen, eventsOpen, metadataOpen, pexOpen, holepunchOpen, hashOpen := true, true, true, true, true, true
+	for resultsOpen || eventsOpen || metadataOpen || pexOpen || holepunchOpen || hashOpen {
 		select {
 		case <-ctx.Done():
 			client.Close()
@@ -695,6 +701,11 @@ func (t *Torrent) registerAndPump(ctx context.Context, pc *peerConn) {
 			for holepunchOpen {
 				if _, ok := <-client.HolepunchMessages; !ok {
 					holepunchOpen = false
+				}
+			}
+			for hashOpen {
+				if _, ok := <-client.HashMessages; !ok {
+					hashOpen = false
 				}
 			}
 		case block, ok := <-client.Results:
@@ -727,6 +738,12 @@ func (t *Torrent) registerAndPump(ctx context.Context, pc *peerConn) {
 				continue
 			}
 			t.sendEvent(ctx, eventHolepunchMessage{pc: pc, msg: hp})
+		case hm, ok := <-client.HashMessages:
+			if !ok {
+				hashOpen = false
+				continue
+			}
+			t.sendEvent(ctx, eventHashMessage{pc: pc, msg: hm})
 		}
 	}
 

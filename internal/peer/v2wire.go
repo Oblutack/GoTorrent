@@ -129,3 +129,8 @@ func (p *MsgHashesPayload) Serialize() []byte {
 func (h *Handshake) SupportsV2Hashes() bool {
 	return h.Reserved[v2ReservedByte]&v2ReservedBit != 0
 }
+
+// SupportsV2Hashes reports whether this connection's remote peer
+// advertised BEP 52 hash-exchange support in its own handshake — mirrors
+// SupportsUtHolepunch's own shape (holepunch.go).
+func (c *Client) SupportsV2Hashes() bool { return c.peerSupportsV2Hashes }
