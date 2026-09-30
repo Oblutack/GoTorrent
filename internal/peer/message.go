@@ -85,6 +85,12 @@ func (id MessageID) String() string {
 		return "AllowedFast"
 	case MsgExtended:
 		return "Extended"
+	case MsgHashRequest:
+		return "HashRequest"
+	case MsgHashes:
+		return "Hashes"
+	case MsgHashReject:
+		return "HashReject"
 	default:
 		return fmt.Sprintf("UnknownMsg(%d)", id)
 	}

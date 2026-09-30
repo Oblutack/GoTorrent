@@ -113,6 +113,12 @@ func NewHandshake(infoHash, peerID [20]byte) *Handshake {
 	// Advertise BEP 6 (Fast extension) support unconditionally too — see
 	// fast.go.
 	hs.Reserved[fastReservedByte] |= fastReservedBit
+	// Advertise BEP 52 hash-request/hashes/hash-reject support
+	// unconditionally too — see v2wire.go. Like Fast and the extension
+	// protocol, this is a real capability of this client itself,
+	// independent of whether the specific torrent a connection is for
+	// happens to be v1, v2, or hybrid.
+	hs.Reserved[v2ReservedByte] |= v2ReservedBit
 	return hs
 }
 
@@ -288,6 +294,13 @@ type Callbacks struct {
 	// else; when nil, or set but returning ok=false, behaves exactly as if
 	// it were nil (the normal HaveAll/HaveNone/Bitfield logic).
 	InitialHaves func() (piece int, ok bool)
+	// ServeHashes answers a BEP 52 'hash request' — the requested layer's
+	// hashes if we can vouch for them (already-verified local data or a
+	// torrent-file's own 'piece layers'), or ok=false to send a
+	// 'hash reject' instead. Nil means every request is rejected — the
+	// same "no v2 data to serve" default a v1-only or not-yet-verified
+	// torrent has nothing else sensible to answer with.
+	ServeHashes func(req MsgHashRequestPayload) (hashes [][32]byte, ok bool)
 }
 
 // Client represents a connection to a single BitTorrent peer.
@@ -359,6 +372,11 @@ type Client struct {
 	// Closed alongside Results when Run returns.
 	HolepunchMessages chan HolepunchMessage
 
+	// HashMessages carries BEP 52 'hashes'/'hash reject' replies as they
+	// arrive — data-bearing like Results, not lightweight like Events.
+	// Closed alongside Results when Run returns.
+	HashMessages chan HashMessage
+
 	// outbound carries serialized frames to the single writer goroutine.
 	outbound  chan []byte
 	done      chan struct{}
@@ -403,6 +421,7 @@ type Client struct {
 	metadataBytes     func() []byte
 	uploadOnly        func() bool
 	initialHaves      func() (int, bool)
+	serveHashes       func(req MsgHashRequestPayload) (hashes [][32]byte, ok bool)
 }
 
 // DialFunc dials one outbound connection, matching net.Dialer.DialContext's
@@ -592,6 +611,7 @@ func newClient(conn net.Conn, torrent TorrentInfo, ourID [20]byte, peerHandshake
 		MetadataPieces:    make(chan MetadataPiece),
 		PEXUpdates:        make(chan PEXUpdate),
 		HolepunchMessages: make(chan HolepunchMessage),
+		HashMessages:      make(chan HashMessage),
 		outbound:          make(chan []byte, outboundQueueSize),
 		done:              make(chan struct{}),
 		limits:            limits,
@@ -602,6 +622,7 @@ func newClient(conn net.Conn, torrent TorrentInfo, ourID [20]byte, peerHandshake
 		metadataBytes:     callbacks.MetadataBytes,
 		uploadOnly:        callbacks.UploadOnly,
 		initialHaves:      callbacks.InitialHaves,
+		serveHashes:       callbacks.ServeHashes,
 	}
 	c.torrentInfo.Store(&torrent)
 	c.amChoking.Store(true)   // we start by choking the peer
@@ -743,6 +764,7 @@ func (c *Client) Run() {
 	defer close(c.MetadataPieces)
 	defer close(c.PEXUpdates)
 	defer close(c.HolepunchMessages)
+	defer close(c.HashMessages)
 	defer c.Close()
 
 	logger.Logf("Starting communication loop for peer %s\n", c.Conn.RemoteAddr())
@@ -938,6 +960,31 @@ func (c *Client) handleMessage(msg *Message) bool {
 			return false
 		}
 		c.notify(Event{Kind: EventRejectRequest, PieceIndex: p.Index, Begin: p.Begin, Length: p.Length})
+
+	case MsgHashRequest:
+		var p MsgHashRequestPayload
+		if err := p.Parse(msg.Payload); err != nil {
+			logger.Warning.Printf("Peer %s: malformed HashRequest: %v\n", c.Conn.RemoteAddr(), err)
+			return false
+		}
+		c.serveHashRequest(p)
+
+	case MsgHashes:
+		var p MsgHashesPayload
+		if err := p.Parse(msg.Payload); err != nil {
+			logger.Warning.Printf("Peer %s: malformed Hashes: %v\n", c.Conn.RemoteAddr(), err)
+			return false
+		}
+		req := MsgHashRequestPayload{PiecesRoot: p.PiecesRoot, BaseLayer: p.BaseLayer, Index: p.Index, Length: p.Length, ProofLayers: p.ProofLayers}
+		c.handleHashesOrReject(HashMessageHashes, req, p.Hashes)
+
+	case MsgHashReject:
+		var p MsgHashRequestPayload
+		if err := p.Parse(msg.Payload); err != nil {
+			logger.Warning.Printf("Peer %s: malformed HashReject: %v\n", c.Conn.RemoteAddr(), err)
+			return false
+		}
+		c.handleHashesOrReject(HashMessageReject, p, nil)
 
 	case MsgExtended:
 		if len(msg.Payload) < 1 {
