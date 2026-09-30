@@ -1,8 +1,10 @@
 package engine
 
 import (
+	"context"
 	"crypto/sha1"
 	"math/rand"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -11,6 +13,7 @@ import (
 	"github.com/Oblutack/GoTorrent/internal/bencode"
 	"github.com/Oblutack/GoTorrent/internal/metainfo"
 	"github.com/Oblutack/GoTorrent/internal/torrent"
+	"github.com/Oblutack/GoTorrent/internal/tracker"
 )
 
 // writeTorrentFileWithContent builds a real, valid single-file .torrent
@@ -119,5 +122,115 @@ func TestDedupeCopiesPiecesAcrossTorrentsWithNoPeerInvolved(t *testing.T) {
 	}
 	if string(got) != string(content) {
 		t.Fatal("torrent B's on-disk content does not match the source bytes it should have deduped from A")
+	}
+}
+
+// TestListDuringPieceVerificationDoesNotDeadlock is the regression test for
+// a real deadlock found live: a genuinely downloading torrent, with
+// Desktop's own 2s poll / 1s WS sessionStats tick hammering List()/
+// GetSummary() concurrently, could (and reliably did) deadlock the whole
+// engine forever. The cycle: List/GetSummary hold e.mu while calling
+// summaryLocked -> tr.Stats(), a real control-channel round trip serviced
+// only by that torrent's own actor goroutine; meanwhile
+// recordDedupeSource — called synchronously from OnPieceVerified, which
+// fires ON that exact actor goroutine — used to re-derive its own *Torrent
+// via e.Get(owner), which needs that same e.mu. Whichever one landed first
+// froze both: the List()/GetSummary() caller waiting forever on a Stats()
+// reply from an actor that's itself waiting forever on the lock the caller
+// is holding. Fixed by having the OnPieceVerified hook pass its own
+// already-in-scope *torrent.Torrent straight to recordDedupeSource,
+// removing its need for e.Get (and therefore e.mu) entirely.
+//
+// This test drives a real seed/leech transfer over real TCP loopback — the
+// same real-world shape that surfaced the bug live, not a synthetic race —
+// while hammering List()/GetSummary() in a tight, unthrottled loop for the
+// whole transfer, the most aggressive real caller of either method this
+// codebase has (Desktop's own timers are 1-2s apart). waitForState's own
+// bounded timeout means a real deadlock fails this test cleanly rather
+// than hanging the suite - confirmed load-bearing by reverting the fix and
+// watching this exact test genuinely hang under `go test -timeout 25s`
+// (a real "test timed out" panic with every goroutine's stack, matching
+// the live debugger session that found this bug byte for byte) before
+// restoring it.
+func TestListDuringPieceVerificationDoesNotDeadlock(t *testing.T) {
+	const pieceLength = 16384
+	const numPieces = 40
+	content := make([]byte, pieceLength*numPieces)
+	rand.New(rand.NewSource(7)).Read(content)
+
+	torrentDir := t.TempDir()
+	path, hash := writeTorrentFileWithContent(t, torrentDir, "racey", pieceLength, content)
+
+	seederDownloadDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(seederDownloadDir, "racey"), content, 0o644); err != nil {
+		t.Fatalf("pre-seeding content: %v", err)
+	}
+	seeder, err := New(t.TempDir(), Defaults{DownloadDir: seederDownloadDir, ResumeDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("New (seeder): %v", err)
+	}
+	t.Cleanup(seeder.Shutdown)
+
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("probing for a free port: %v", err)
+	}
+	port := probe.Addr().(*net.TCPAddr).Port
+	probe.Close()
+	seeder.defaults.ListenPort = uint16(port)
+	if err := seeder.Listen(context.Background()); err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	if _, err := seeder.Add(path, ""); err != nil {
+		t.Fatalf("seeder Add: %v", err)
+	}
+	seederTr, ok := seeder.Get(hash)
+	if !ok {
+		t.Fatal("seeder torrent missing right after Add")
+	}
+	waitForState(t, seederTr, torrent.StateSeeding, 5*time.Second)
+
+	leecher := newTestEngine(t)
+	if _, err := leecher.Add(path, ""); err != nil {
+		t.Fatalf("leecher Add: %v", err)
+	}
+	leecherTr, ok := leecher.Get(hash)
+	if !ok {
+		t.Fatal("leecher torrent missing right after Add")
+	}
+
+	// Hammer List()/GetSummary() as fast as possible for the whole
+	// transfer — every call takes e.mu and, for this torrent, calls
+	// tr.Stats() while still holding it, exactly the shape that raced
+	// against a real piece verification in production.
+	stop := make(chan struct{})
+	var pollCount int
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				leecher.List()
+				leecher.GetSummary(hash)
+				pollCount++
+			}
+		}
+	}()
+
+	leecherTr.DialPeer(tracker.PeerInfo{IP: net.ParseIP("127.0.0.1"), Port: uint16(port)})
+	waitForState(t, leecherTr, torrent.StateSeeding, 30*time.Second)
+	close(stop)
+
+	if pollCount == 0 {
+		t.Fatal("test setup bug: the List()/GetSummary() hammer goroutine never ran")
+	}
+
+	got, err := os.ReadFile(filepath.Join(leecher.defaults.DownloadDir, "racey"))
+	if err != nil {
+		t.Fatalf("reading leecher's downloaded content: %v", err)
+	}
+	if string(got) != string(content) {
+		t.Fatal("leecher's downloaded content does not match the source bytes")
 	}
 }

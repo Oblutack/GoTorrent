@@ -76,7 +76,7 @@ func (e *Engine) wireTorrentHooks(hash metainfo.Hash, tr *torrent.Torrent) {
 	})
 	tr.OnPieceVerified(func(index int, peerAddr string) {
 		e.broadcast(Event{Kind: EventPieceVerified, InfoHash: hash, PieceIndex: index, PeerAddr: peerAddr})
-		e.recordDedupeSource(hash, index)
+		e.recordDedupeSource(hash, tr, index)
 	})
 }
 

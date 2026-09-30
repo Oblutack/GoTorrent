@@ -3,6 +3,7 @@ package engine
 import (
 	"github.com/Oblutack/GoTorrent/internal/logger"
 	"github.com/Oblutack/GoTorrent/internal/metainfo"
+	"github.com/Oblutack/GoTorrent/internal/torrent"
 )
 
 // dedupeLocation is where a piece with a given content hash was last known
@@ -25,11 +26,20 @@ type dedupeLocation struct {
 // this only ever touches dedupeMu and a plain map write, never calls back
 // into any Torrent, so (like broadcast) it needs no detached goroutine of
 // its own to stay safe there.
-func (e *Engine) recordDedupeSource(owner metainfo.Hash, index int) {
-	tr, ok := e.Get(owner)
-	if !ok {
-		return
-	}
+//
+// tr is passed in directly rather than re-derived via e.Get(owner) - a
+// real deadlock this fix replaces: Get takes e.mu, and List/GetSummary
+// hold that same e.mu while calling tr.Stats() on every managed torrent,
+// including this one - a real control-channel round trip serviced only by
+// this torrent's own actor goroutine, which is the exact goroutine this
+// function runs on. A List() call landing while a piece just verified
+// could (and, under a real download with the Desktop app polling every
+// 2s, reliably did) deadlock forever: List holds e.mu waiting on this
+// actor's Stats() reply, while this actor - mid-OnPieceVerified - waits on
+// Get's e.mu. The caller already has tr in scope (wireTorrentHooks' own
+// parameter), so there was never a real need to re-fetch it through the
+// engine's map at all.
+func (e *Engine) recordDedupeSource(owner metainfo.Hash, tr *torrent.Torrent, index int) {
 	mi := tr.Metadata()
 	if mi == nil || index < 0 || index >= len(mi.PieceHashes) {
 		return
