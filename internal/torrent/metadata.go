@@ -2,6 +2,7 @@ package torrent
 
 import (
 	"crypto/sha1"
+	"crypto/sha256"
 
 	"github.com/Oblutack/GoTorrent/internal/logger"
 	"github.com/Oblutack/GoTorrent/internal/metainfo"
@@ -96,7 +97,21 @@ func (t *Torrent) onMetadataPiece(pc *peerConn, mp peer.MetadataPiece) {
 	}
 	t.metadataFetch = nil
 
-	if sum := sha1.Sum(assembled); metainfo.Hash(sum) != t.infoHash {
+	// A v2-only torrent's real identity is the full 32-byte v2 hash, not
+	// its 20-byte wire/tracker/DHT truncation (t.infoHash) — truncation is
+	// one-way, so it can't itself be checked against a SHA-1 sum the way a
+	// v1 torrent's infoHash can. See Torrent's own isV2Identity/
+	// expectedInfoHashV2 doc comment. A hybrid magnet is constructed via
+	// NewFromInfoHash (v1 identity) instead, so it takes the ordinary SHA-1
+	// path here — metainfo.Parse's own validateHybridConsistency is what
+	// verifies the v2 half once the info dict is parsed below.
+	var verified bool
+	if t.isV2Identity {
+		verified = metainfo.Hash256(sha256.Sum256(assembled)) == t.expectedInfoHashV2
+	} else {
+		verified = metainfo.Hash(sha1.Sum(assembled)) == t.infoHash
+	}
+	if !verified {
 		logger.Warning.Printf("torrent %s: metadata from %s failed infohash verification, dropping peer\n", t.infoHash, pc.addr)
 		pc.client.Close()
 		t.maybeStartMetadataFetch()

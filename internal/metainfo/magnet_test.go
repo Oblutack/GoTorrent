@@ -104,11 +104,34 @@ func TestParseMagnetHybridV1AndV2(t *testing.T) {
 	}
 }
 
-func TestParseMagnetV2OnlyIsRejected(t *testing.T) {
-	uri := "magnet:?xt=urn:btmh:1220" + sampleHashHex + sampleHashHex[:24]
+func TestParseMagnetV2Only(t *testing.T) {
+	hashHex := sampleHashHex + sampleHashHex[:24] // 64 hex chars = 32 bytes
+	uri := "magnet:?xt=urn:btmh:1220" + hashHex
+	m, err := ParseMagnet(uri)
+	if err != nil {
+		t.Fatalf("ParseMagnet on a v2-only magnet: %v", err)
+	}
+	want, err := ParseHash256(hashHex)
+	if err != nil {
+		t.Fatalf("ParseHash256 fixture: %v", err)
+	}
+	if m.InfoHashV2 != want {
+		t.Fatalf("InfoHashV2 = %s, want %s", m.InfoHashV2, want)
+	}
+	if !m.HasV2 {
+		t.Fatal("HasV2 = false, want true for a v2-only magnet")
+	}
+	if !m.InfoHash.IsZero() {
+		t.Fatalf("InfoHash = %s, want zero for a v2-only magnet", m.InfoHash)
+	}
+}
+
+func TestParseMagnetRejectsWrongMultihashPrefix(t *testing.T) {
+	hashHex := sampleHashHex + sampleHashHex[:24]
+	uri := "magnet:?xt=urn:btmh:1114" + hashHex // 0x11=SHA-1, not the SHA-256 this client supports
 	_, err := ParseMagnet(uri)
 	if err == nil {
-		t.Fatal("ParseMagnet accepted a v2-only magnet, want an error")
+		t.Fatal("ParseMagnet accepted a btmh topic with an unsupported multihash prefix, want an error")
 	}
 }
 

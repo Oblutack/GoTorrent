@@ -569,10 +569,12 @@ func (e *Engine) Add(source, downloadDir string) (metainfo.Hash, error) {
 // it was or commits both the in-memory and on-disk state together.
 func (e *Engine) AddWithOptions(source, downloadDir string, opts AddOptions) (metainfo.Hash, error) {
 	var (
-		hash     metainfo.Hash
-		mi       *metainfo.MetaInfo
-		trackers []string
-		dn       string
+		hash          metainfo.Hash
+		mi            *metainfo.MetaInfo
+		trackers      []string
+		dn            string
+		useV2Identity bool
+		hashV2        metainfo.Hash256
 	)
 
 	if strings.HasPrefix(source, "magnet:") {
@@ -580,13 +582,38 @@ func (e *Engine) AddWithOptions(source, downloadDir string, opts AddOptions) (me
 		if err != nil {
 			return metainfo.Hash{}, fmt.Errorf("engine: parsing magnet: %w", err)
 		}
-		hash, trackers, dn = m.InfoHash, m.Trackers, m.DisplayName
+		trackers, dn = m.Trackers, m.DisplayName
+		if m.InfoHash.IsZero() && m.HasV2 {
+			// A pure v2-only magnet (xt=urn:btmh: with no xt=urn:btih: at
+			// all) — ParseMagnet guarantees at least one identity is
+			// present, so HasV2 with a zero v1 InfoHash means this is the
+			// only one. The engine's own hash map key, manifest, and API
+			// routes all still address it by a 20-byte Hash, per BEP 52's
+			// own truncation rule (metainfo.Hash256.Truncated20) — see
+			// torrent.NewFromInfoHashV2's own doc comment for why that's
+			// safe despite not being the torrent's full real identity.
+			useV2Identity = true
+			hashV2 = m.InfoHashV2
+			hash = hashV2.Truncated20()
+		} else {
+			hash = m.InfoHash
+		}
 	} else {
 		loaded, err := metainfo.Load(source)
 		if err != nil {
 			return metainfo.Hash{}, fmt.Errorf("engine: loading %s: %w", source, err)
 		}
-		mi, hash = loaded, loaded.InfoHash
+		mi = loaded
+		// A pure-v2 .torrent file has no meaningful v1 identity — this must
+		// match torrent.New's own identity-hash selection exactly (see its
+		// doc comment), or the engine's hash map key/manifest/API routes
+		// would address this torrent by a different 20 bytes than its own
+		// real wire/tracker/DHT identity.
+		if loaded.IsPureV2() {
+			hash = loaded.InfoHashV2.Truncated20()
+		} else {
+			hash = loaded.InfoHash
+		}
 	}
 
 	e.mu.Lock()
@@ -644,9 +671,12 @@ func (e *Engine) AddWithOptions(source, downloadDir string, opts AddOptions) (me
 
 	var tr *torrent.Torrent
 	var err error
-	if mi != nil {
+	switch {
+	case mi != nil:
 		tr, err = torrent.New(mi, cfg)
-	} else {
+	case useV2Identity:
+		tr, err = torrent.NewFromInfoHashV2(hashV2, cfg)
+	default:
 		tr, err = torrent.NewFromInfoHash(hash, cfg)
 	}
 	if err != nil {

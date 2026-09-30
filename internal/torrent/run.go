@@ -226,6 +226,7 @@ func (t *Torrent) doSetMetadata(mi *metainfo.MetaInfo) error {
 			continue
 		}
 		t.pick.Availability().AddPeer(pc.client.BitfieldSnapshot())
+		t.requestMissingPieceLayersFrom(pc, mi)
 	}
 
 	// A magnet URI has no web-seed-equivalent parameter (unlike tr=, BEP 9
@@ -772,6 +773,14 @@ func (t *Torrent) registerPeer(pc *peerConn) {
 	t.cfg.Trace.Emit(trace.Event{Torrent: t.infoHash.String(), Kind: trace.KindPeerConnected, Peer: pc.addr})
 	if t.onPeerConnected != nil {
 		t.onPeerConnected(pc.addr)
+	}
+	// Metadata may already be known (this isn't the magnet-still-fetching
+	// case) but still missing a piece_layers entry — the case doSetMetadata's
+	// own loop over already-connected peers can't cover, since this peer
+	// connected after that ran. See requestMissingPieceLayersFrom's own
+	// doc comment for why both call sites are needed.
+	if mi := t.mi.Load(); mi != nil {
+		t.requestMissingPieceLayersFrom(pc, mi)
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"math/bits"
 	"time"
 
+	"github.com/Oblutack/GoTorrent/internal/logger"
 	"github.com/Oblutack/GoTorrent/internal/merkle"
 	"github.com/Oblutack/GoTorrent/internal/metainfo"
 	"github.com/Oblutack/GoTorrent/internal/peer"
@@ -245,6 +246,53 @@ func (t *Torrent) onHashMessage(pc *peerConn, msg peer.HashMessage) {
 	}
 	next.PieceLayers[root] = layerBytes
 	t.mi.Store(&next)
+}
+
+// missingPieceLayers returns the V2Files index of every multi-piece file
+// whose piece_layers entry isn't known yet — real work only for a v2/
+// hybrid torrent (nil for a plain v1 one), and the common, expected case
+// for any magnet-sourced v2/hybrid torrent's metadata (BEP 9's own
+// ut_metadata exchange only ever delivers the info dict itself, never the
+// separate top-level piece_layers dict — see this file's own package doc
+// comment). A single-piece file needs no entry at all — its own
+// PiecesRoot already IS its one piece's root hash directly.
+func (t *Torrent) missingPieceLayers(mi *metainfo.MetaInfo) []int {
+	if mi.MetaVersion != 2 {
+		return nil
+	}
+	var out []int
+	for i, f := range mi.V2Files {
+		first, last, ok := mi.V2FilePieceRange(i)
+		if !ok || last <= first {
+			continue
+		}
+		if _, have := mi.PieceLayers[f.PiecesRoot]; !have {
+			out = append(out, i)
+		}
+	}
+	return out
+}
+
+// requestMissingPieceLayersFrom asks pc (if it supports the exchange, and
+// only then) for every currently-missing piece layer this torrent's
+// metadata needs — best-effort, errors logged rather than propagated,
+// mirroring maybeStartMetadataFetch's own "try, log, move on" shape for a
+// peer-dependent background fetch. Called both when metadata first arrives
+// (for every peer already connected at that moment — doSetMetadata) and
+// whenever a new peer connects to a torrent whose metadata is already
+// known but still missing layers (registerPeer), so neither ordering of
+// "metadata arrives" vs. "a v2-capable peer connects" leaves this
+// permanently unrequested.
+func (t *Torrent) requestMissingPieceLayersFrom(pc *peerConn, mi *metainfo.MetaInfo) {
+	if !pc.client.SupportsV2Hashes() {
+		return
+	}
+	for _, fileIndex := range t.missingPieceLayers(mi) {
+		if err := t.requestPieceLayer(pc, mi, fileIndex); err != nil {
+			logger.Logf("torrent %s: requesting piece layer for file %d from %s: %v\n",
+				t.infoHash, fileIndex, pc.addr, err)
+		}
+	}
 }
 
 // expirePieceLayerRequests drops any pendingPieceLayerRequests entry

@@ -36,17 +36,20 @@ type Magnet struct {
 	// selected, or the very concept of files, not yet known.
 	SelectedFiles []int
 	// HasV2 records whether a urn:btmh: topic was present alongside (or
-	// instead of) the v1 urn:btih: one. This client cannot act on it yet —
-	// no v2 (BitTorrent v2 / BEP 52) support exists — but a hybrid magnet
-	// still works fine via InfoHash, and rejecting it outright would be
-	// wrong.
+	// instead of) the v1 urn:btih: one. When true, InfoHashV2 is set.
 	HasV2 bool
+	// InfoHashV2 is the BEP 52 v2 infohash decoded from a urn:btmh:1220...
+	// topic, valid only when HasV2 is true. For a hybrid magnet (both
+	// topics present) this is the same torrent's v2 identity alongside
+	// InfoHash's v1 one; for a v2-only magnet (no urn:btih: at all),
+	// InfoHash is the zero value and InfoHashV2 alone identifies the
+	// torrent — torrent.NewFromInfoHashV2 is the constructor for that case.
+	InfoHashV2 Hash256
 }
 
-// ParseMagnet parses a magnet: URI. It requires a usable v1 (urn:btih:)
-// topic; a v2-only magnet (urn:btmh: with no urn:btih:) is rejected with a
-// clear error rather than silently producing a zero InfoHash, since nothing
-// in this client can act on a v2-only identity yet.
+// ParseMagnet parses a magnet: URI. It requires at least one usable
+// identity — a v1 (urn:btih:) topic, a v2 (urn:btmh:) topic, or both
+// (hybrid) — and rejects a magnet with neither.
 func ParseMagnet(uri string) (*Magnet, error) {
 	// url.Parse handles "magnet:?xt=..." as an opaque URI with the query
 	// string still split out correctly — RawQuery is scheme-agnostic in the
@@ -63,23 +66,21 @@ func ParseMagnet(uri string) (*Magnet, error) {
 	m := &Magnet{}
 	haveV1 := false
 	for _, xt := range q["xt"] {
-		hash, isV1, isV2, err := parseExactTopic(xt)
+		hashV1, hashV2, isV1, isV2, err := parseExactTopic(xt)
 		if err != nil {
 			return nil, err
 		}
 		if isV1 {
-			m.InfoHash = hash
+			m.InfoHash = hashV1
 			haveV1 = true
 		}
 		if isV2 {
+			m.InfoHashV2 = hashV2
 			m.HasV2 = true
 		}
 	}
-	if !haveV1 {
-		if m.HasV2 {
-			return nil, errors.New("metainfo: magnet URI is v2-only (urn:btmh:), which this client does not support")
-		}
-		return nil, errors.New("metainfo: magnet URI has no xt=urn:btih: parameter")
+	if !haveV1 && !m.HasV2 {
+		return nil, errors.New("metainfo: magnet URI has no xt=urn:btih: or xt=urn:btmh: parameter")
 	}
 
 	m.DisplayName = q.Get("dn")
@@ -98,34 +99,57 @@ func ParseMagnet(uri string) (*Magnet, error) {
 	return m, nil
 }
 
+// sha256MultihashPrefix is the multihash code+length prefix BEP 52's own
+// urn:btmh: topic uses: 0x12 (SHA-256) + 0x20 (32-byte length), hex-encoded.
+// This client only ever recognizes this one multihash shape — the only one
+// BEP 52 itself defines — and treats anything else as an error rather than
+// silently ignoring a hash it can't act on.
+const sha256MultihashPrefix = "1220"
+
 // parseExactTopic decodes one xt= value. An xt topic this client does not
 // recognise at all (neither btih nor btmh) is not an error by itself — it is
 // simply not counted toward haveV1/HasV2 — since a magnet may carry
 // namespaces meant for other clients.
-func parseExactTopic(raw string) (hash Hash, isV1, isV2 bool, err error) {
+func parseExactTopic(raw string) (hashV1 Hash, hashV2 Hash256, isV1, isV2 bool, err error) {
 	lower := strings.ToLower(raw)
 	switch {
 	case strings.HasPrefix(lower, "urn:btih:"):
 		h := raw[len("urn:btih:"):]
 		switch len(h) {
 		case 2 * HashSize: // 40 hex characters
-			hash, err = ParseHash(h)
+			hashV1, err = ParseHash(h)
 		case 32: // base32, no padding: 32 chars * 5 bits = 160 bits = 20 bytes
-			hash, err = parseBase32Hash(h)
+			hashV1, err = parseBase32Hash(h)
 		default:
 			err = fmt.Errorf("metainfo: xt btih value %q has %d characters, want %d (hex) or 32 (base32)",
 				h, len(h), 2*HashSize)
 		}
 		if err != nil {
-			return Hash{}, false, false, err
+			return Hash{}, Hash256{}, false, false, err
 		}
-		return hash, true, false, nil
+		return hashV1, Hash256{}, true, false, nil
 
 	case strings.HasPrefix(lower, "urn:btmh:"):
-		return Hash{}, false, true, nil
+		h := raw[len("urn:btmh:"):]
+		wantLen := len(sha256MultihashPrefix) + 2*Hash256Size
+		if len(h) != wantLen {
+			return Hash{}, Hash256{}, false, false, fmt.Errorf(
+				"metainfo: xt btmh value %q has %d characters, want %d (multihash prefix %s + %d hex)",
+				h, len(h), wantLen, sha256MultihashPrefix, 2*Hash256Size)
+		}
+		if !strings.HasPrefix(strings.ToLower(h), sha256MultihashPrefix) {
+			return Hash{}, Hash256{}, false, false, fmt.Errorf(
+				"metainfo: xt btmh value %q does not use the SHA-256 multihash prefix %q this client supports",
+				h, sha256MultihashPrefix)
+		}
+		hashV2, err = ParseHash256(h[len(sha256MultihashPrefix):])
+		if err != nil {
+			return Hash{}, Hash256{}, false, false, fmt.Errorf("metainfo: invalid btmh hash %q: %w", h, err)
+		}
+		return Hash{}, hashV2, false, true, nil
 
 	default:
-		return Hash{}, false, false, nil
+		return Hash{}, Hash256{}, false, false, nil
 	}
 }
 

@@ -318,6 +318,20 @@ type Torrent struct {
 	infoHash metainfo.Hash
 	cfg      Config
 
+	// isV2Identity and expectedInfoHashV2 are set only by
+	// NewFromInfoHashV2 (a v2-only magnet, with no v1 urn:btih: topic at
+	// all) - infoHash is then hashV2.Truncated20(), used for the wire
+	// handshake/tracker/DHT exactly like a v1 hash per BEP 52's own
+	// truncation rule, but BEP 9's own metadata verification
+	// (metadata.go's onMetadataPiece) needs the real, untruncated 32-byte
+	// hash to check the assembled info dict's real SHA-256 against, since
+	// truncation is one-way and infoHash alone can't be reversed back into
+	// it. A hybrid magnet (both urn:btih: and urn:btmh: present) instead
+	// uses the ordinary v1-identity NewFromInfoHash path - its own v1 SHA-1
+	// check already fully verifies the (single, shared) info dict.
+	isV2Identity       bool
+	expectedInfoHashV2 metainfo.Hash256
+
 	// mi is nil until metadata is known. It is written by the actor alone
 	// (openMetadata, or a SetMetadata control message) but read by peer
 	// goroutines serving upload requests, so it is an atomic pointer rather
@@ -479,7 +493,19 @@ func New(mi *metainfo.MetaInfo, cfg Config) (*Torrent, error) {
 	if len(cfg.WebSeeds) == 0 {
 		cfg.WebSeeds = mi.UrlList
 	}
-	t, err := newTorrent(mi.InfoHash, cfg)
+	// A pure-v2 torrent (no v1 'pieces' at all) has no meaningful v1 SHA-1
+	// identity — mi.InfoHash is still computed (it's just SHA-1 over
+	// whatever InfoBytes holds, unconditionally, at parse time), but BEP
+	// 52's own truncation rule is what a real v2-only peer/tracker/DHT
+	// actually uses for this torrent's 20-byte wire identity. A hybrid
+	// torrent (both v1 and v2 present) deliberately keeps using mi.InfoHash
+	// here instead — the spec-intended backward-compatibility path, so a
+	// v1-only peer can still find and connect to a hybrid swarm.
+	identity := mi.InfoHash
+	if mi.IsPureV2() {
+		identity = mi.InfoHashV2.Truncated20()
+	}
+	t, err := newTorrent(identity, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -498,6 +524,28 @@ func NewFromInfoHash(hash metainfo.Hash, cfg Config) (*Torrent, error) {
 	if err != nil {
 		return nil, err
 	}
+	t.state.Store(int32(StateAdded))
+	return t, nil
+}
+
+// NewFromInfoHashV2 is NewFromInfoHash's counterpart for a v2-only magnet
+// link (BEP 52, an xt=urn:btmh: topic with no xt=urn:btih: at all — see
+// metainfo.ParseMagnet's own InfoHashV2 field). The peer-wire handshake,
+// tracker announces, and DHT all still address this torrent by a 20-byte
+// identity exactly like a v1 torrent, per BEP 52's own "truncated to 20
+// bytes" rule (Hash256.Truncated20) — only BEP 9's own metadata
+// verification differs once it arrives, since this torrent's real identity
+// is the full 32-byte hash, not its truncation (see Torrent's own
+// isV2Identity/expectedInfoHashV2 fields and metadata.go's
+// onMetadataPiece). A hybrid magnet (both topics present) uses the
+// ordinary NewFromInfoHash instead — see ParseMagnet's own doc comment.
+func NewFromInfoHashV2(hashV2 metainfo.Hash256, cfg Config) (*Torrent, error) {
+	t, err := newTorrent(hashV2.Truncated20(), cfg)
+	if err != nil {
+		return nil, err
+	}
+	t.isV2Identity = true
+	t.expectedInfoHashV2 = hashV2
 	t.state.Store(int32(StateAdded))
 	return t, nil
 }
@@ -972,7 +1020,11 @@ func (t *Torrent) afterVerify() {
 // NewFromInfoHash, verifying it against the infohash before accepting it.
 // This is the seam Phase 2's BEP 9 exchange plugs into; nothing calls it yet.
 func (t *Torrent) SetMetadata(mi *metainfo.MetaInfo) error {
-	if mi.InfoHash != t.infoHash {
+	if t.isV2Identity {
+		if mi.InfoHashV2 != t.expectedInfoHashV2 {
+			return fmt.Errorf("torrent: metadata v2 hash %s does not match torrent %s", mi.InfoHashV2, t.expectedInfoHashV2)
+		}
+	} else if mi.InfoHash != t.infoHash {
 		return fmt.Errorf("torrent: metadata hash %s does not match torrent %s", mi.InfoHash, t.infoHash)
 	}
 	resp := make(chan error, 1)
