@@ -14,7 +14,7 @@
 ; certificate pretending to be a real one.
 
 #ifndef MyAppVersion
-  #define MyAppVersion "0.1.1"
+  #define MyAppVersion "0.1.2"
 #endif
 #define MyAppName "GoTorrent"
 #define MyAppPublisher "Oblutack"
