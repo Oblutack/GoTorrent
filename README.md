@@ -13,8 +13,8 @@
     <a href="https://github.com/Oblutack/GoTorrent/actions/workflows/dotnet.yml">
         <img src="https://github.com/Oblutack/GoTorrent/actions/workflows/dotnet.yml/badge.svg" alt=".NET Build Status">
     </a>
-    <a href="https://goreportcard.com/report/github.com/Oblutack/GoTorrent">
-        <img src="https://goreportcard.com/badge/github.com/Oblutack/GoTorrent" alt="Go Report Card">
+    <a href="https://golangci-lint.run/">
+        <img src="https://img.shields.io/badge/linted%20with-golangci--lint-00ADD8.svg" alt="Linted with golangci-lint">
     </a>
     <a href="https://github.com/Oblutack/GoTorrent/blob/main/LICENSE">
         <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT">
