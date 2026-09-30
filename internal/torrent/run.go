@@ -439,7 +439,10 @@ func (t *Torrent) doApplyExternalPiece(index int, data []byte) error {
 		return fmt.Errorf("torrent: external piece %d is %d bytes, want %d", index, len(data), want)
 	}
 
-	offset := int64(index) * mi.Info.PieceLength
+	offset, err := t.storage.PieceOffset(mi, index)
+	if err != nil {
+		return fmt.Errorf("torrent: resolving piece %d's offset: %w", index, err)
+	}
 	if _, err := t.storage.WriteAt(data, offset); err != nil {
 		return fmt.Errorf("torrent: writing deduped piece %d: %w", index, err)
 	}
@@ -873,8 +876,19 @@ func (t *Torrent) onBlock(pc *peerConn, block *peer.PieceBlock) {
 	}
 
 	index := int(block.Index)
-	offset := int64(block.Index)*mi.Info.PieceLength + int64(block.Begin)
-	buffered := t.pieceCache != nil && t.pieceCache.WriteBlock(index, int64(block.Index)*mi.Info.PieceLength, mi.PieceLen(index), int(block.Begin), block.Block)
+	pieceOffset, err := t.storage.PieceOffset(mi, index)
+	if err != nil {
+		logger.Error.Printf("torrent %s: resolving piece %d's offset: %v\n", t.infoHash, index, err)
+		return
+	}
+	offset := pieceOffset + int64(block.Begin)
+	// The write cache's own TryVerify only ever knows how to check a
+	// piece against its v1 SHA-1 (mi.PieceHashes) - never engaged for a
+	// pure-v2 torrent, which falls straight through to the ordinary
+	// WriteAt path below instead. A real, precisely-scoped gap: the
+	// cache still works normally for a hybrid torrent, which has a real
+	// v1 hash to check against either way.
+	buffered := !mi.IsPureV2() && t.pieceCache != nil && t.pieceCache.WriteBlock(index, pieceOffset, mi.PieceLen(index), int(block.Begin), block.Block)
 	if !buffered {
 		if _, err := t.storage.WriteAt(block.Block, offset); err != nil {
 			logger.Error.Printf("torrent %s: write failed for piece %d block %d: %v\n",
@@ -945,7 +959,10 @@ func (t *Torrent) verifyPiece(ctx context.Context, mi *metainfo.MetaInfo, index 
 
 	var ok bool
 	var err error
-	if t.pieceCache != nil {
+	// t.pieceCache is never consulted for a pure-v2 torrent (see onBlock's
+	// own doc comment) - mi.PieceHashes is empty for one, so indexing it
+	// here would panic rather than just miss the cache.
+	if t.pieceCache != nil && !mi.IsPureV2() {
 		var found bool
 		ok, found, err = t.pieceCache.TryVerify(index, mi.PieceHashes[index])
 		if !found {
@@ -1187,7 +1204,11 @@ func (t *Torrent) readBlockSafe(index, begin, length uint32) ([]byte, error) {
 	if mi == nil || t.storage == nil {
 		return nil, errors.New("torrent: no data available yet")
 	}
-	offset := int64(index)*mi.Info.PieceLength + int64(begin)
+	pieceOffset, err := t.storage.PieceOffset(mi, int(index))
+	if err != nil {
+		return nil, err
+	}
+	offset := pieceOffset + int64(begin)
 	buf := make([]byte, length)
 	if _, err := t.storage.ReadAt(buf, offset); err != nil {
 		return nil, err
@@ -1221,9 +1242,10 @@ func (t *Torrent) peerTorrentInfo() peer.TorrentInfo {
 		return peer.TorrentInfo{InfoHash: t.infoHash}
 	}
 	return peer.TorrentInfo{
-		InfoHash:    t.infoHash,
-		NumPieces:   mi.NumPieces(),
-		PieceLength: mi.Info.PieceLength,
-		TotalLength: mi.TotalLength,
+		InfoHash:        t.infoHash,
+		NumPieces:       mi.NumPieces(),
+		PieceLength:     mi.Info.PieceLength,
+		TotalLength:     mi.TotalLength,
+		PieceLengthFunc: mi.PieceLen,
 	}
 }

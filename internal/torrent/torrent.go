@@ -574,11 +574,11 @@ func (t *Torrent) ContentPath() string {
 	if mi == nil {
 		return ""
 	}
-	layout, err := storage.NewLayout(t.cfg.DownloadDir, mi.Info.Name, mi.Info.IsMultiFile(), t.cfg.ContentLayout)
+	layout, err := storage.NewLayout(t.cfg.DownloadDir, mi.Info.Name, mi.IsMultiFile(), t.cfg.ContentLayout)
 	if err != nil {
 		return ""
 	}
-	if mi.Info.IsMultiFile() {
+	if mi.IsMultiFile() {
 		return layout.Base()
 	}
 	path, err := layout.Resolve(nil)
@@ -841,7 +841,11 @@ func (t *Torrent) openMetadata(mi *metainfo.MetaInfo) error {
 		return fmt.Errorf("allocating files: %w", err)
 	}
 	t.storage = st
-	if t.cfg.WriteCacheBytes > 0 {
+	// Never constructed for a pure-v2 torrent: the cache's own TryVerify
+	// only knows how to check a piece against its v1 SHA-1 (mi.PieceHashes,
+	// empty for one) - see onBlock/verifyPiece's own guards, which this
+	// makes moot rather than merely unreachable.
+	if t.cfg.WriteCacheBytes > 0 && !mi.IsPureV2() {
 		t.pieceCache = storage.NewPieceCache(st, t.cfg.WriteCacheBytes)
 	}
 

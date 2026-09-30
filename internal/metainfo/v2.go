@@ -323,3 +323,20 @@ func (mi *MetaInfo) PieceFile(index int) (fileIndex int, offsetInFile int64, ok 
 	run := runs[i]
 	return run.fileIndex, int64(index-run.startPiece) * mi.Info.PieceLength, true
 }
+
+// V2FilePieceRange is PieceFile's reverse: the first and last global piece
+// index occupied by V2Files[fileIndex] (inclusive). ok is false for an
+// out-of-range fileIndex or an empty file (which occupies zero pieces).
+// Only meaningful when MetaVersion == 2 — used by internal/torrent's file-
+// priority machinery, which needs this direction (file -> piece range) to
+// boost/skip a specific file's own pieces; v1/hybrid's own equivalent
+// logic derives this from flat byte offsets instead, since v1 pieces can
+// straddle file boundaries and v2's never do.
+func (mi *MetaInfo) V2FilePieceRange(fileIndex int) (first, last int, ok bool) {
+	for _, run := range mi.v2Pieces {
+		if run.fileIndex == fileIndex {
+			return run.startPiece, run.startPiece + run.numPieces - 1, true
+		}
+	}
+	return 0, 0, false
+}

@@ -6,10 +6,15 @@ import (
 )
 
 // numFiles is how many entries a per-file priority (or skip) slice needs:
-// one per FileInfo for a multi-file torrent, exactly one for a single-file
-// one — mi.Info.Files is empty in that case, but there is still exactly one
-// file to have an opinion about.
+// one per V2FileInfo for a pure-v2 torrent (always populated, even for one
+// file — unlike Info.Files), one per FileInfo for a v1/hybrid multi-file
+// torrent, or exactly one for a v1/hybrid single-file one, which has no
+// file list at all but still has exactly one file to have an opinion
+// about.
 func numFiles(mi *metainfo.MetaInfo) int {
+	if mi.IsPureV2() {
+		return len(mi.V2Files)
+	}
 	if mi.Info.IsMultiFile() {
 		return len(mi.Info.Files)
 	}
@@ -17,7 +22,11 @@ func numFiles(mi *metainfo.MetaInfo) int {
 }
 
 // fileLengths returns each file's length, in the same order numFiles counts
-// them.
+// them. Meaningless (and unused) for a pure-v2 torrent — see
+// piecePriorities/filesNeedingAllocation/boostFirstAndLastPiece's own v2
+// branches, which use metainfo.MetaInfo.PieceFile/V2FilePieceRange
+// instead, since v2 pieces never straddle a file boundary the way v1's
+// flat offset-based spans have to account for.
 func fileLengths(mi *metainfo.MetaInfo) []int64 {
 	if mi.Info.IsMultiFile() {
 		out := make([]int64, len(mi.Info.Files))
@@ -31,7 +40,9 @@ func fileLengths(mi *metainfo.MetaInfo) []int64 {
 
 // paddingFlags reports, index-aligned with numFiles(mi), which files are
 // BEP 47 padding files (FileInfo.IsPadding) — always all-false for a
-// single-file torrent, which has no file list to carry the attr at all.
+// single-file torrent (no file list to carry the attr at all) and for a
+// pure-v2 torrent (which never uses padding files at all — v2 achieves
+// piece alignment structurally, not by inserting synthetic files).
 func paddingFlags(mi *metainfo.MetaInfo) []bool {
 	n := numFiles(mi)
 	flags := make([]bool, n)
@@ -73,8 +84,27 @@ func normalizedFilePriorities(mi *metainfo.MetaInfo, filePriorities []picker.Pri
 // file's priority, since BitTorrent pieces are atomic — there is no such
 // thing as downloading 60% of one — and "skip" only ever wins a piece when
 // every file touching it is also skip.
+//
+// A pure-v2 torrent takes a separate, simpler path: v2 pieces never
+// straddle a file boundary at all (every file starts at a piece boundary,
+// by BEP 52's own construction), so "the highest priority of any file this
+// piece overlaps" reduces to just "the priority of the one file this piece
+// belongs to" — mi.PieceFile directly, no span/offset bookkeeping needed.
 func piecePriorities(mi *metainfo.MetaInfo, filePriorities []picker.Priority) []picker.Priority {
 	priorities := normalizedFilePriorities(mi, filePriorities)
+
+	if mi.IsPureV2() {
+		out := make([]picker.Priority, mi.NumPieces())
+		for i := range out {
+			fileIndex, _, ok := mi.PieceFile(i)
+			if !ok {
+				continue
+			}
+			out[i] = priorities[fileIndex]
+		}
+		return out
+	}
+
 	lengths := fileLengths(mi)
 
 	type fileSpan struct {
@@ -127,7 +157,19 @@ func piecePriorities(mi *metainfo.MetaInfo, filePriorities []picker.Priority) []
 // normalizedFilePriorities) hit this on almost every multi-file torrent
 // that has one, since a pad file's whole reason for existing is sitting
 // right at a wanted file's own piece boundary.
+// A pure-v2 torrent needs no straddling-piece consideration at all — v2
+// pieces never straddle a file boundary, so a skipped file's own pieces
+// can never overlap a wanted file's, and this reduces to just "does the
+// file's own priority want it."
 func filesNeedingAllocation(mi *metainfo.MetaInfo, filePriorities []picker.Priority, pp []picker.Priority) []bool {
+	if mi.IsPureV2() {
+		need := make([]bool, len(mi.V2Files))
+		for i := range need {
+			need[i] = filePriorities[i] != picker.PrioritySkip
+		}
+		return need
+	}
+
 	lengths := fileLengths(mi)
 	need := make([]bool, len(lengths))
 	var offset int64
@@ -160,6 +202,25 @@ func filesNeedingAllocation(mi *metainfo.MetaInfo, filePriorities []picker.Prior
 // and a skipped file's pieces are left alone entirely, same as everywhere
 // else priority is derived: skip means skip.
 func boostFirstAndLastPiece(mi *metainfo.MetaInfo, filePriorities []picker.Priority, priorities []picker.Priority) {
+	if mi.IsPureV2() {
+		for i, f := range mi.V2Files {
+			if f.Length == 0 || filePriorities[i] == picker.PrioritySkip {
+				continue
+			}
+			first, last, ok := mi.V2FilePieceRange(i)
+			if !ok {
+				continue
+			}
+			if priorities[first] < picker.PriorityHigh {
+				priorities[first] = picker.PriorityHigh
+			}
+			if priorities[last] < picker.PriorityHigh {
+				priorities[last] = picker.PriorityHigh
+			}
+		}
+		return
+	}
+
 	lengths := fileLengths(mi)
 	var offset int64
 	for i, length := range lengths {

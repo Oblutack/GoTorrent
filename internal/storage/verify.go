@@ -155,7 +155,7 @@ func (s *Storage) verifyPiece(mi *metainfo.MetaInfo, index int, buf []byte) (boo
 	}
 	p := buf[:length]
 
-	offset, err := s.pieceOffset(mi, index)
+	offset, err := s.PieceOffset(mi, index)
 	if err != nil {
 		return false, nil
 	}
@@ -187,7 +187,7 @@ func (s *Storage) verifyPiece(mi *metainfo.MetaInfo, index int, buf []byte) (boo
 	return v1OK, nil
 }
 
-// pieceOffset resolves piece index to its byte offset in this Storage's
+// PieceOffset resolves piece index to its byte offset in this Storage's
 // own flat on-disk address space. For v1/hybrid this is the ordinary
 // index*PieceLength flat formula (correct for hybrid too, since its BEP
 // 47 padding files already make that address space gap-free — see
@@ -197,7 +197,7 @@ func (s *Storage) verifyPiece(mi *metainfo.MetaInfo, index int, buf []byte) (boo
 // MetaInfo.PieceFile plus this Storage's own FileRegion offset for that
 // file, since there is no padding to make a flat index*PieceLength
 // formula correct.
-func (s *Storage) pieceOffset(mi *metainfo.MetaInfo, index int) (int64, error) {
+func (s *Storage) PieceOffset(mi *metainfo.MetaInfo, index int) (int64, error) {
 	if !mi.IsPureV2() {
 		return int64(index) * mi.Info.PieceLength, nil
 	}

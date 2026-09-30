@@ -62,11 +62,21 @@ type TorrentInfo struct {
 	NumPieces   int
 	PieceLength int64
 	TotalLength int64
+	// PieceLengthFunc, given, returns a specific piece's real length —
+	// needed for a v2 or hybrid torrent (metainfo.MetaInfo.PieceLen is
+	// the real caller), where per-file piece alignment can leave a piece
+	// other than the very last one in the torrent short too, something
+	// the flat v1 formula below has no way to express. nil (every caller
+	// that predates BEP 52) falls back to that formula unchanged.
+	PieceLengthFunc func(index int) int64
 }
 
 // PieceLen returns the length of a specific piece, accounting for the short
 // final piece.
 func (t TorrentInfo) PieceLen(index uint32) int64 {
+	if t.PieceLengthFunc != nil {
+		return t.PieceLengthFunc(int(index))
+	}
 	if t.NumPieces <= 0 {
 		return 0
 	}
