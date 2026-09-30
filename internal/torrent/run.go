@@ -853,6 +853,16 @@ func (t *Torrent) onPeerControl(pc *peerConn, ev peer.Event) {
 	case peer.EventHave:
 		t.pick.Availability().Add(int(ev.PieceIndex))
 		t.maybeSuperSeedAdvance(pc, int(ev.PieceIndex))
+	case peer.EventChokeChanged:
+		// A peer that chokes us discards (or, with the Fast extension, will
+		// reject) whatever we had in flight to it, and our own writeLoop
+		// drops requests still queued while it chokes. Either way those
+		// slots are not coming back on their own; release them now rather
+		// than waiting out the timeout. The picker still gives the blocks
+		// back via Expire().
+		if pc.client.PeerChoking() {
+			clear(pc.inflight)
+		}
 	case peer.EventRejectRequest:
 		// BEP 6: the peer has explicitly told us this block is not coming,
 		// rather than us finding out only once the picker's own
@@ -861,9 +871,7 @@ func (t *Torrent) onPeerControl(pc *peerConn, ev peer.Event) {
 		// on the next tick — this just frees the pipeline slot immediately
 		// so tick doesn't keep this connection under-utilized in the
 		// meantime waiting on a block that will never arrive.
-		if pc.outstanding > 0 {
-			pc.outstanding--
-		}
+		pc.noteAnswered(blockRef{index: ev.PieceIndex, begin: ev.Begin})
 	}
 }
 
@@ -897,9 +905,7 @@ func (t *Torrent) onBlock(pc *peerConn, block *peer.PieceBlock) {
 	// whether or not the picker still wants the data (endgame can satisfy a
 	// block from another peer first, in which case this is a harmless
 	// no-op read of already-verified data below).
-	if pc.outstanding > 0 {
-		pc.outstanding--
-	}
+	pc.noteAnswered(blockRef{index: block.Index, begin: block.Begin})
 
 	index := int(block.Index)
 	pieceOffset, err := t.storage.PieceOffset(mi, index)
@@ -1068,8 +1074,15 @@ func (t *Torrent) tick(now time.Time) {
 	}
 
 	t.pick.Expire(now)
+	timeout := t.pick.CurrentTimeout()
 
 	for _, pc := range t.peers {
+		// Forget requests the peer never answered, on the same schedule the
+		// picker used to give those blocks back. Without this a request
+		// dropped silently (no Piece, no Reject) would hold its pipeline slot
+		// forever and, once enough of them piled up, starve the connection.
+		pc.expireInflight(now, timeout)
+
 		// Independent of whether the peer is choking us (that only affects
 		// what we can request from them): we may be uploading to them
 		// regardless, and this is where that count reaches t.uploaded.
@@ -1083,7 +1096,7 @@ func (t *Torrent) tick(now time.Time) {
 		choked := pc.client.PeerChoking()
 		adaptPipeline(pc, now)
 
-		room := pc.pipelineTarget - pc.outstanding
+		room := pc.pipelineTarget - pc.outstanding()
 		if queueRoom := cap(pc.client.WorkQueue) - len(pc.client.WorkQueue); queueRoom < room {
 			room = queueRoom
 		}
@@ -1100,7 +1113,7 @@ func (t *Torrent) tick(now time.Time) {
 		for _, r := range reqs {
 			select {
 			case pc.client.WorkQueue <- &peer.BlockRequest{Index: uint32(r.Index), Begin: uint32(r.Begin), Length: uint32(r.Length)}:
-				pc.outstanding++
+				pc.noteRequested(blockRef{index: uint32(r.Index), begin: uint32(r.Begin)}, now)
 				t.cfg.Trace.Emit(trace.Event{Torrent: t.infoHash.String(), Kind: trace.KindPieceRequest, Peer: pc.addr, Piece: trace.Int(r.Index), Begin: trace.Int(r.Begin), Length: r.Length})
 			default:
 				// The queue filled between the room check and now (another

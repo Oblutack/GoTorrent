@@ -323,13 +323,21 @@ func blockIndexOf(pp *pieceProgress, begin, length int) (int, bool) {
 	return i, true
 }
 
+// CurrentTimeout is how long a block request may stay unanswered before
+// Expire gives up on it: the shorter endgame timeout once endgame has begun,
+// RequestTimeout otherwise. Exposed so a caller tracking its own per-peer
+// in-flight requests can expire them on exactly the same schedule.
+func (p *Picker) CurrentTimeout() time.Duration {
+	if p.InEndgame() {
+		return p.cfg.EndgameTimeout
+	}
+	return p.cfg.RequestTimeout
+}
+
 // Expire returns outstanding blocks whose requests have timed out to the
 // needed state, and reports how many were reset.
 func (p *Picker) Expire(now time.Time) int {
-	timeout := p.cfg.RequestTimeout
-	if p.InEndgame() {
-		timeout = p.cfg.EndgameTimeout
-	}
+	timeout := p.CurrentTimeout()
 
 	reset := 0
 	for _, pp := range p.active {

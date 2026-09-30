@@ -122,6 +122,11 @@ type fakeSeeder struct {
 	stayChoked        bool
 	allowedFastPieces []int
 
+	// dropFirstRequests makes each connection silently ignore (no Piece, no
+	// Reject) its first N block requests, the way a real peer does when it
+	// chokes us or its outbound queue is full.
+	dropFirstRequests int
+
 	mu     sync.Mutex
 	served int
 }
@@ -249,6 +254,7 @@ func (f *fakeSeeder) handle(conn net.Conn) {
 	}
 
 	clientUtMetadataID := 0 // learned from the client's own extended handshake
+	dropped := 0
 
 	for {
 		id, payload, err := readMsg(conn)
@@ -260,6 +266,10 @@ func (f *fakeSeeder) handle(conn net.Conn) {
 			var req peer.MsgRequestPayload
 			if err := req.Parse(payload); err != nil {
 				return
+			}
+			if dropped < f.dropFirstRequests {
+				dropped++
+				continue
 			}
 
 			start := int64(req.Index)*f.mi.Info.PieceLength + int64(req.Begin)

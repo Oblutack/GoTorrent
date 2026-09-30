@@ -265,10 +265,19 @@ type Config struct {
 	Trace *trace.Writer
 }
 
+// requestTimeout is how long a block request may go unanswered before both
+// the picker and a peerConn's own in-flight record give up on it. A var, not
+// a const, so tests can shorten it before creating a Torrent — same pattern
+// as pexInterval.
+var requestTimeout = 15 * time.Second
+
+// blockRef identifies one requested block within a torrent.
+type blockRef struct{ index, begin uint32 }
+
 // peerConn is one connected peer plus the bookkeeping the actor needs that
 // peer.Client does not itself track. It implements choker.Peer.
 //
-// pipelineTarget, outstanding, and the lastAdapt* fields are touched only
+// pipelineTarget, inflight, and the lastAdapt* fields are touched only
 // from run() (tick and onBlock), like t.peers itself — see adaptPipeline.
 type peerConn struct {
 	addr       string
@@ -285,8 +294,18 @@ type peerConn struct {
 	// of what this client tells others via BEP 11.
 	peerInfo tracker.PeerInfo
 
-	pipelineTarget int       // current desired outstanding-request count
-	outstanding    int       // requests sent to this peer, awaiting a Piece
+	pipelineTarget int // current desired outstanding-request count
+	// inflight is every request sent to this peer that has not yet been
+	// answered, rejected, expired, or discarded by a choke, with the time it
+	// was sent. It is a set with timestamps rather than a bare counter on
+	// purpose: a peer can drop a request without any message at all (it
+	// chokes us, its outbound queue is full, it is rate-limited), and a
+	// counter that only ever decrements on an answer leaks a pipeline slot
+	// for each one until tick believes every peer is saturated and stops
+	// requesting entirely. Entries that age past the picker's own timeout are
+	// pruned, so a silently dropped request frees its slot exactly when the
+	// picker gives the block back to whoever asks next.
+	inflight       map[blockRef]time.Time
 	lastAdaptBytes int64     // pc.downloaded at the last adaptation
 	lastAdaptTime  time.Time // when pipelineTarget was last recomputed
 
@@ -296,6 +315,28 @@ type peerConn struct {
 	// serves requests as they arrive), not the actor, so this is how that
 	// count reaches the actor-owned aggregate.
 	lastUploaded int64
+}
+
+// outstanding is how many requests are currently in flight to this peer.
+func (p *peerConn) outstanding() int { return len(p.inflight) }
+
+func (p *peerConn) noteRequested(r blockRef, now time.Time) {
+	if p.inflight == nil {
+		p.inflight = make(map[blockRef]time.Time)
+	}
+	p.inflight[r] = now
+}
+
+func (p *peerConn) noteAnswered(r blockRef) { delete(p.inflight, r) }
+
+// expireInflight forgets requests older than timeout: the peer is not going
+// to answer them, and the picker is about to hand the blocks out again.
+func (p *peerConn) expireInflight(now time.Time, timeout time.Duration) {
+	for r, sent := range p.inflight {
+		if now.Sub(sent) > timeout {
+			delete(p.inflight, r)
+		}
+	}
 }
 
 func (p *peerConn) ID() string             { return p.addr }
@@ -905,9 +946,10 @@ func (t *Torrent) openMetadata(mi *metainfo.MetaInfo) error {
 	}
 
 	pk, err := picker.New(picker.Config{
-		NumPieces:   mi.NumPieces(),
-		PieceLength: mi.PieceLen,
-		Strategy:    t.cfg.PickerStrategy,
+		NumPieces:      mi.NumPieces(),
+		PieceLength:    mi.PieceLen,
+		Strategy:       t.cfg.PickerStrategy,
+		RequestTimeout: requestTimeout,
 	})
 	if err != nil {
 		return fmt.Errorf("creating picker: %w", err)
