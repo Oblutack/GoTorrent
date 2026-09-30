@@ -1,6 +1,6 @@
 # GoTorrent Windows installer
 
-Phase 6.4 of `ROADMAP.md`. Produces a single `GoTorrentSetup.exe` that
+Produces a single `GoTorrentSetup.exe` that
 installs the desktop app plus `gottrentd.exe`/`gottrent.exe` (the daemon
 and CLI), per-user (no admin rights needed - the same `HKCU`-only scope
 this app's own autostart/file-association features already use).
@@ -43,6 +43,9 @@ the machine that runs the installer), then compiles
   known, deliberate gap, not silently dropped.
 - **`goreleaser` does not build this installer.** `.goreleaser.yml` (repo
   root) only builds the cross-platform Go binaries and uploads them to
-  a GitHub release; this Windows-only installer is a separate artifact,
-  built by this script and uploaded to the same release by hand (or by
-  a future CI job - not wired up yet).
+  a GitHub release; this Windows-only installer is a separate artifact.
+  It *is* wired into CI now, though: `.github/workflows/release.yml`'s
+  `windows-installer` job runs this exact script on a real Windows
+  runner and uploads `GoTorrentSetup.exe` to the same release goreleaser
+  just created, triggered by the same `v*` tag push - see the repo
+  root `README.md`'s own "Making a release" section.

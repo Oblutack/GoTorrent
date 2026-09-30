@@ -102,9 +102,10 @@ second), tagged with which node it came from:
 
 ## Status
 
-Phase 5 is done. Five of ROADMAP.md's six 5.2 features shipped (quota and
+Phase 5 is done. Five of the six 5.2 features shipped (quota and
 schedule policy — monthly caps, per-node bandwidth windows — is left open
-as an optional stretch item, same as 4.4 on the Go side):
+as an optional stretch item, same as Transmission RPC compatibility on
+the Go side):
 
 - **Torrents/session proxy** — `GET /api/v1/torrents`, `GET /api/v1/session`,
   proxied from the one node configured via `Engine:*` — proof the

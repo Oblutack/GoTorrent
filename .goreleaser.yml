@@ -29,12 +29,38 @@ builds:
     goarch:
       - amd64
       - arm64
+  - id: gottrent-tui
+    main: ./cmd/gottrent-tui
+    binary: gottrent-tui
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - windows
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+  - id: gottrent-sim
+    main: ./cmd/gottrent-sim
+    binary: gottrent-sim
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - windows
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
 
 archives:
   - id: default
     ids:
       - gottrent
       - gottrentd
+      - gottrent-tui
+      - gottrent-sim
     formats:
       - zip
     name_template: >-
