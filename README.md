@@ -22,6 +22,12 @@
     <img src="https://img.shields.io/badge/Go-1.26%2B-blue.svg" alt="Go Version">
     <img src="https://img.shields.io/badge/.NET-10-blue.svg" alt=".NET Version">
 </p>
+<p align="center">
+  <img src="assets/gotorrent-showcase.gif" alt="A 30-second tour: the desktop app, the terminal UI with themes, the swarm simulator, and the trace viewer" width="860"/>
+</p>
+<p align="center">
+  <em>A 30-second tour: the desktop app, the terminal UI, the swarm simulator, and the trace viewer.</em>
+</p>
 
 ## About The Project
 
@@ -260,9 +266,7 @@ GoTorrent/
 
 ## Demo
 
-**Desktop app** — a live transfer across a real multi-peer swarm: the torrent list, the live piece map, the swarm graph (per-peer contribution, choke state, and progress, colour-coded), and the command palette (Ctrl+K).
-
-![GoTorrent.Desktop in action](assets/gotorrent-desktop-demo.gif)
+The 30-second tour at the top of this page shows the desktop app, the terminal UI, the swarm simulator, and the trace viewer. Below is the original command-line client.
 
 **CLI**, standard mode:
 
