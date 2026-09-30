@@ -7,7 +7,7 @@ package version
 // String is this build's human-readable version. Bumped by hand for now —
 // no build-time injection via ldflags yet, that's real release-pipeline
 // work (see ROADMAP's goreleaser mention in Phase 6).
-const String = "0.1.2"
+const String = "0.1.3"
 
 // PeerIDDigits is String's Azureus-style (BEP 20) 4-digit encoding.
 const PeerIDDigits = "0100"
