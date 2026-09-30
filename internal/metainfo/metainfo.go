@@ -59,6 +59,32 @@ type MetaInfo struct {
 
 	PieceHashes []Hash
 	TotalLength int64
+
+	// MetaVersion is BEP 52's own field: 0 for a v1-only torrent, 2 for a
+	// v2 or hybrid one. Checked first during parsing, per the spec's own
+	// instruction, before any other v2 validation runs.
+	MetaVersion int
+	// V2Files is BEP 52's "file tree" flattened into path order (a
+	// sorted-key walk, matching bencode's own canonical key ordering,
+	// which is also the order files occupy in the flat piece address
+	// space). Empty unless MetaVersion == 2.
+	V2Files []V2FileInfo
+	// PieceLayers is BEP 52's top-level "piece layers" dict, keyed by
+	// each large file's own PiecesRoot — only for a file strictly larger
+	// than one piece; a file no bigger than one piece has no entry here,
+	// since its PiecesRoot field already IS its own root hash. Empty
+	// unless MetaVersion == 2.
+	PieceLayers map[Hash256][]byte
+	// InfoHashV2 is BEP 52's own SHA-256 infohash: the same InfoBytes
+	// substring InfoHash (SHA-1) is computed over, hashed with SHA-256
+	// instead — one info dictionary, two hash functions, not two
+	// dictionaries. Zero unless MetaVersion == 2.
+	InfoHashV2 Hash256
+
+	// v2Pieces is the piece-index resolver built once at parse time —
+	// see PieceFile. Unexported: NumPieces/PieceLen/PieceFile already
+	// dispatch v1 vs v2 correctly, so no caller needs this directly.
+	v2Pieces []v2PieceRun
 }
 
 // InfoDict is the info dictionary of a v1 torrent.
@@ -97,18 +123,46 @@ func (f FileInfo) IsPadding() bool {
 // IsMultiFile reports whether the torrent describes a directory of files.
 func (d *InfoDict) IsMultiFile() bool { return len(d.Files) > 0 }
 
-// NumPieces returns the number of pieces in the torrent.
-func (mi *MetaInfo) NumPieces() int { return len(mi.PieceHashes) }
+// NumPieces returns the number of pieces in the torrent. For a v1 or
+// hybrid torrent this is len(PieceHashes); for a pure-v2 torrent (no v1
+// 'pieces' field at all) it comes from the v2 piece-index resolver
+// instead, since v2's per-file piece alignment can mean more pieces than
+// a flat ceil(TotalLength/PieceLength) would (an alignment gap between
+// files is not itself a piece).
+func (mi *MetaInfo) NumPieces() int {
+	if len(mi.PieceHashes) > 0 {
+		return len(mi.PieceHashes)
+	}
+	if mi.MetaVersion == 2 {
+		return v2TotalPieces(mi.v2Pieces)
+	}
+	return 0
+}
 
 // PieceLen returns the length of a specific piece, accounting for the short
-// final one. Out-of-range indexes return 0.
+// final one. Out-of-range indexes return 0. Dispatches v1/hybrid vs
+// pure-v2 the same way NumPieces does — for hybrid, both descriptions
+// agree (validated at parse time), so which one answers never matters.
 func (mi *MetaInfo) PieceLen(index int) int64 {
-	n := len(mi.PieceHashes)
-	if index < 0 || index >= n {
+	if n := len(mi.PieceHashes); n > 0 {
+		if index < 0 || index >= n {
+			return 0
+		}
+		if index == n-1 {
+			return mi.TotalLength - int64(n-1)*mi.Info.PieceLength
+		}
+		return mi.Info.PieceLength
+	}
+	if mi.MetaVersion != 2 {
 		return 0
 	}
-	if index == n-1 {
-		return mi.TotalLength - int64(n-1)*mi.Info.PieceLength
+	fileIndex, offset, ok := mi.PieceFile(index)
+	if !ok {
+		return 0
+	}
+	remaining := mi.V2Files[fileIndex].Length - offset
+	if remaining < mi.Info.PieceLength {
+		return remaining
 	}
 	return mi.Info.PieceLength
 }
@@ -147,16 +201,27 @@ type torrentFile struct {
 	Encoding     string             `bencode:"encoding,omitempty"`
 	UrlList      []string           `bencode:"url-list,omitempty"`
 	Info         bencode.RawMessage `bencode:"info"`
+	// PieceLayers is BEP 52's own top-level field, a sibling of 'info'
+	// rather than nested inside it — it never contributes to the
+	// infohash, and its keys/values are read as raw bytes rather than
+	// via bencode struct tags since the dict is keyed by 32-byte hash,
+	// not a fixed field name.
+	PieceLayers map[string][]byte `bencode:"piece layers,omitempty"`
 }
 
 // infoDictWire mirrors the info dictionary.
 type infoDictWire struct {
 	Name        string         `bencode:"name"`
 	PieceLength int64          `bencode:"piece length"`
-	Pieces      []byte         `bencode:"pieces"`
+	Pieces      []byte         `bencode:"pieces,omitempty"`
 	Private     int64          `bencode:"private,omitempty"`
 	Length      int64          `bencode:"length,omitempty"`
 	Files       []fileDictWire `bencode:"files,omitempty"`
+	// MetaVersion and FileTree are BEP 52's own fields. FileTree is kept
+	// as raw bytes rather than a fixed struct shape, since it's an
+	// arbitrarily-deep tree of dictionaries — see parseFileTree (v2.go).
+	MetaVersion int64              `bencode:"meta version,omitempty"`
+	FileTree    bencode.RawMessage `bencode:"file tree,omitempty"`
 }
 
 type fileDictWire struct {
@@ -208,25 +273,30 @@ func Parse(data []byte) (*MetaInfo, error) {
 		CreationDate: tf.CreationDate,
 		UrlList:      tf.UrlList,
 	}
-	if err := mi.setInfo(tf.Info); err != nil {
+	if err := mi.setInfo(tf.Info, tf.PieceLayers); err != nil {
 		return nil, err
 	}
 	return mi, nil
 }
 
-// ParseInfo builds a MetaInfo from an info dictionary alone. This is the entry
-// point for BEP 9: a magnet link gives us an infohash, peers give us these
-// bytes, and the caller must have already checked that they hash to the
-// expected infohash.
+// ParseInfo builds a MetaInfo from an info dictionary alone. This is the
+// entry point for BEP 9: a magnet link gives us an infohash, peers give us
+// these bytes, and the caller must have already checked that they hash to
+// the expected infohash. There is no top-level 'piece layers' dict to pass
+// here — BEP 9 only ever exchanges the info dictionary's own bytes, never
+// that separate top-level field — so a v2/hybrid MetaInfo built this way
+// starts with PieceLayers unset; the hash-request/hashes wire exchange
+// (internal/torrent) is what fills it in afterward for a magnet-sourced v2
+// torrent.
 func ParseInfo(infoBytes []byte) (*MetaInfo, error) {
 	mi := &MetaInfo{}
-	if err := mi.setInfo(infoBytes); err != nil {
+	if err := mi.setInfo(infoBytes, nil); err != nil {
 		return nil, err
 	}
 	return mi, nil
 }
 
-func (mi *MetaInfo) setInfo(infoBytes []byte) error {
+func (mi *MetaInfo) setInfo(infoBytes []byte, pieceLayersWire map[string][]byte) error {
 	var wire infoDictWire
 	if err := bencode.Unmarshal(infoBytes, &wire); err != nil {
 		return fmt.Errorf("metainfo: bad 'info' dictionary: %w", err)
@@ -246,6 +316,40 @@ func (mi *MetaInfo) setInfo(infoBytes []byte) error {
 			wire.PieceLength, MinPieceLength, MaxPieceLength)
 	}
 	mi.Info.PieceLength = wire.PieceLength
+
+	// BEP 52: "Implementations must check this field first and indicate
+	// that a torrent is of a newer version than they can handle before
+	// performing other validations which may result in more general
+	// messages about invalid files."
+	if wire.MetaVersion != 0 && wire.MetaVersion != 2 {
+		return fmt.Errorf("metainfo: unsupported meta version %d (only 2 is known)", wire.MetaVersion)
+	}
+	mi.MetaVersion = int(wire.MetaVersion)
+
+	if mi.MetaVersion == 2 {
+		if err := mi.setV2(&wire, pieceLayersWire); err != nil {
+			return err
+		}
+	}
+
+	// A hybrid torrent has both this (v1 'pieces') and the v2 fields just
+	// parsed above; a pure-v2 torrent has neither 'pieces' and skips this
+	// whole block, its TotalLength/geometry coming entirely from setV2
+	// instead.
+	if len(wire.Pieces) == 0 {
+		if mi.MetaVersion != 2 {
+			return errors.New("metainfo: torrent has no pieces")
+		}
+		// Pure v2: no v1 'files'/'length' ever ran (setFiles is only
+		// called below, on the v1/hybrid path), so TotalLength has to
+		// come from the file tree instead.
+		var total int64
+		for _, f := range mi.V2Files {
+			total += f.Length
+		}
+		mi.TotalLength = total
+		return nil
+	}
 
 	if len(wire.Pieces)%HashSize != 0 {
 		return fmt.Errorf("metainfo: 'pieces' is %d bytes, not a multiple of %d", len(wire.Pieces), HashSize)
@@ -273,6 +377,19 @@ func (mi *MetaInfo) setInfo(infoBytes []byte) error {
 	mi.PieceHashes = make([]Hash, numPieces)
 	for i := range mi.PieceHashes {
 		copy(mi.PieceHashes[i][:], wire.Pieces[i*HashSize:(i+1)*HashSize])
+	}
+
+	if mi.MetaVersion == 2 {
+		// Both descriptions are present: this is a hybrid torrent, and
+		// BEP 52 requires them to "describe the same data in the same
+		// order." validateHybridConsistency checks structural agreement
+		// (piece count, real content length excluding v1's own BEP 47
+		// padding files) — true byte-for-byte agreement is what
+		// internal/storage's hybrid double-verification actually proves
+		// once real data is on disk, not re-derived here.
+		if err := mi.validateHybridConsistency(); err != nil {
+			return err
+		}
 	}
 	return nil
 }
