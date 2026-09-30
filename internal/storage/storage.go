@@ -155,14 +155,32 @@ func New(downloadDir string, mi *metainfo.MetaInfo, opts ...Option) (*Storage, e
 	}
 
 	// Built after options are applied: WithContentLayout must be able to
-	// influence it.
-	layout, err := NewLayout(downloadDir, mi.Info.Name, mi.Info.IsMultiFile(), s.contentLayout)
+	// influence it. mi.IsMultiFile(), not mi.Info.IsMultiFile() - the
+	// latter is blind to a pure-v2 torrent's own V2Files.
+	layout, err := NewLayout(downloadDir, mi.Info.Name, mi.IsMultiFile(), s.contentLayout)
 	if err != nil {
 		return nil, err
 	}
 	s.layout = layout
 
-	if mi.Info.IsMultiFile() {
+	switch {
+	case mi.IsPureV2():
+		// A pure-v2 torrent has no BEP 47 padding files at all - its
+		// files are packed back-to-back with no gaps in this flat disk
+		// address space, same as v1's own packing; only the *wire
+		// protocol's* piece addressing has per-file alignment gaps (see
+		// metainfo.MetaInfo.PieceFile), a completely different address
+		// space this one is deliberately not confused with.
+		var offset int64
+		for _, f := range mi.V2Files {
+			path, err := layout.Resolve(f.Path)
+			if err != nil {
+				return nil, err
+			}
+			s.files = append(s.files, FileRegion{Path: path, Offset: offset, Length: f.Length})
+			offset += f.Length
+		}
+	case mi.Info.IsMultiFile():
 		var offset int64
 		for _, f := range mi.Info.Files {
 			path, err := layout.Resolve(f.Path)
@@ -172,7 +190,7 @@ func New(downloadDir string, mi *metainfo.MetaInfo, opts ...Option) (*Storage, e
 			s.files = append(s.files, FileRegion{Path: path, Offset: offset, Length: f.Length})
 			offset += f.Length
 		}
-	} else {
+	default:
 		path, err := layout.Resolve(nil)
 		if err != nil {
 			return nil, err

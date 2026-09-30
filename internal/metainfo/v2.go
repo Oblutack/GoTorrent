@@ -278,6 +278,35 @@ func (mi *MetaInfo) validateHybridConsistency() error {
 	return nil
 }
 
+// IsPureV2 reports whether mi describes a v2-only torrent with no v1
+// 'pieces' at all (as opposed to v1-only, or hybrid — which, despite also
+// having MetaVersion == 2, is layout-compatible with plain v1 and needs
+// none of the special-casing IsPureV2 callers exist for).
+func (mi *MetaInfo) IsPureV2() bool {
+	return mi.MetaVersion == 2 && len(mi.PieceHashes) == 0
+}
+
+// IsMultiFile reports whether mi describes more than one file, correctly
+// for a pure-v2 torrent as well as v1/hybrid ones — unlike the embedded
+// InfoDict's own IsMultiFile() (len(Info.Files) > 0), which is blind to
+// mi.V2Files entirely and would wrongly report false for a genuinely
+// multi-file pure-v2 torrent, since Info.Files is never populated for one.
+//
+// Used by internal/storage and internal/torrent's own core content-path
+// construction, both central to this feature's real download/verify
+// pipeline. Deliberately NOT yet threaded through every other
+// Info.IsMultiFile() call site in the codebase (internal/api's preview/
+// detail handlers, internal/engine's move-data/incomplete-dir/seed-limit
+// auto-pause content-path checks, internal/stream, internal/webseed) — a
+// real, precisely-scoped gap for this pass, the same shape as BEP 19's
+// own single-file-only scope: those are secondary features a pure-v2
+// multi-file torrent can still be downloaded and verified without, and
+// fixing all of them is a distinct, much larger undertaking than BEP 52's
+// own core protocol scope.
+func (mi *MetaInfo) IsMultiFile() bool {
+	return mi.Info.IsMultiFile() || len(mi.V2Files) > 1
+}
+
 // PieceFile resolves a flat global piece index to which V2FileInfo entry
 // it falls in and the byte offset of that piece's first byte within that
 // file. Only meaningful when MetaVersion == 2; the caller is expected to

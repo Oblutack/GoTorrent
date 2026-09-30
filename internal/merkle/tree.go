@@ -10,8 +10,14 @@ import (
 // may be shorter).
 const BlockSize = 16 * 1024
 
+// DigestSize is the byte length of one Hash — callers slicing a
+// concatenated "piece layers" byte string into individual Hash values use
+// this rather than a bare 32, so the relationship to Hash's own size stays
+// explicit at the call site.
+const DigestSize = 32
+
 // Hash is one node's value in the tree — a raw 32-byte SHA-256 digest.
-type Hash [32]byte
+type Hash [DigestSize]byte
 
 // Leaf hashes one raw block of file content into a tree leaf.
 func Leaf(block []byte) Hash {
