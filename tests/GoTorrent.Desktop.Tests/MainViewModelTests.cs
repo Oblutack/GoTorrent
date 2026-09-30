@@ -117,6 +117,14 @@ public sealed class MainViewModelTests
         return (viewModel, updateChecker);
     }
 
+    private static (MainViewModel ViewModel, FakeHubClient HubClient, FakeSettingsStore Settings) MakeViewModelWithHubClient()
+    {
+        var hubClient = new FakeHubClient();
+        var settings = new FakeSettingsStore();
+        var viewModel = new MainViewModel(_ => new FakeEngineClient(), settings, new FakeEventStream(), TimeProvider.System, new FakeAutostartService(), new FakeFileAssociationService(), new FakeDaemonLauncher(), new FakeDesktopNotifier(), new FakeUpdateChecker(), _ => hubClient);
+        return (viewModel, hubClient, settings);
+    }
+
     [Fact]
     public void Connect_WithAValidAddress_Succeeds()
     {
@@ -2521,5 +2529,227 @@ public sealed class MainViewModelTests
 
         Assert.NotNull(warning);
         Assert.Equal("https://example.com/big.iso.torrent", client.LastPreviewedUrl);
+    }
+
+    // --- Stage 6: per-torrent notes -----------------------------------
+
+    [Fact]
+    public void GetTorrentNote_WithNoSavedNote_ReturnsEmpty()
+    {
+        var (viewModel, _, _) = MakeViewModel();
+
+        Assert.Equal(string.Empty, viewModel.GetTorrentNote("0102030405060708090a0b0c0d0e0f1011121314"));
+    }
+
+    [Fact]
+    public void SetTorrentNote_ThenGetTorrentNote_RoundTrips()
+    {
+        var (viewModel, _, _) = MakeViewModel();
+
+        viewModel.SetTorrentNote("0102030405060708090a0b0c0d0e0f1011121314", "Remember to seed this for a week.");
+
+        Assert.Equal("Remember to seed this for a week.", viewModel.GetTorrentNote("0102030405060708090a0b0c0d0e0f1011121314"));
+    }
+
+    [Fact]
+    public void SetTorrentNote_WithEmptyText_RemovesAnExistingNote()
+    {
+        var (viewModel, _, _) = MakeViewModel();
+        viewModel.SetTorrentNote("0102030405060708090a0b0c0d0e0f1011121314", "a note");
+
+        viewModel.SetTorrentNote("0102030405060708090a0b0c0d0e0f1011121314", "");
+
+        Assert.Equal(string.Empty, viewModel.GetTorrentNote("0102030405060708090a0b0c0d0e0f1011121314"));
+    }
+
+    [Fact]
+    public void SetTorrentNote_PersistsToTheSettingsStore()
+    {
+        var (viewModel, _, settings) = MakeViewModel();
+
+        viewModel.SetTorrentNote("0102030405060708090a0b0c0d0e0f1011121314", "persisted note");
+
+        Assert.Equal("persisted note", settings.Load().TorrentNotes?["0102030405060708090a0b0c0d0e0f1011121314"]);
+    }
+
+    [Fact]
+    public void Constructor_WithSavedNotes_LoadsThemImmediately()
+    {
+        var settings = new FakeSettingsStore();
+        settings.Save(new DesktopSettings(null, null, TorrentNotes: new Dictionary<string, string> { ["0102030405060708090a0b0c0d0e0f1011121314"] = "from a previous run" }));
+
+        var viewModel = new MainViewModel(_ => new FakeEngineClient(), settings);
+
+        Assert.Equal("from a previous run", viewModel.GetTorrentNote("0102030405060708090a0b0c0d0e0f1011121314"));
+    }
+
+    [Fact]
+    public async Task LoadSelectedDetailAsync_OnFreshSelection_LoadsTheSavedNote()
+    {
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        var torrent = MakeTorrent("ubuntu.iso");
+        client.Torrents.Add(torrent);
+        client.Detail = MakeDetail("ubuntu.iso");
+        await viewModel.RefreshAsync();
+        viewModel.SetTorrentNote(torrent.InfoHash, "a real saved note");
+
+        SelectOnly(viewModel, viewModel.Torrents[0]);
+        await viewModel.LoadSelectedDetailAsync();
+
+        Assert.Equal("a real saved note", viewModel.TorrentNoteText);
+    }
+
+    [Fact]
+    public async Task LoadSelectedDetailAsync_OnARepeatedRefreshOfTheSameTorrent_DoesNotOverwriteUnsavedEditedText()
+    {
+        // The real hazard this guards against: MainWindow's auto-refresh
+        // timer calls this every 2s for whatever torrent is still
+        // selected - if it unconditionally reset TorrentNoteText, it
+        // would silently discard whatever the user is mid-typing in the
+        // Notes box between keystrokes and the next LostFocus save.
+        var (viewModel, client, _) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        var torrent = MakeTorrent("ubuntu.iso");
+        client.Torrents.Add(torrent);
+        client.Detail = MakeDetail("ubuntu.iso");
+        await viewModel.RefreshAsync();
+        SelectOnly(viewModel, viewModel.Torrents[0]);
+        await viewModel.LoadSelectedDetailAsync();
+        viewModel.TorrentNoteText = "not yet saved";
+
+        await viewModel.LoadSelectedDetailAsync();
+
+        Assert.Equal("not yet saved", viewModel.TorrentNoteText);
+    }
+
+    [Fact]
+    public void SaveTorrentNoteForSelected_WithNothingSelected_DoesNotThrow()
+    {
+        var (viewModel, _, _) = MakeViewModel();
+
+        viewModel.SaveTorrentNoteForSelected();
+    }
+
+    [Fact]
+    public async Task SaveTorrentNoteForSelected_SavesAgainstTheSelectedTorrentsOwnHash()
+    {
+        var (viewModel, client, settings) = MakeViewModel();
+        viewModel.BaseAddressInput = "http://127.0.0.1:6880/";
+        viewModel.TokenInput = "a-token";
+        viewModel.ConnectCommand.Execute(null);
+        var torrent = MakeTorrent("ubuntu.iso");
+        client.Torrents.Add(torrent);
+        client.Detail = MakeDetail("ubuntu.iso");
+        await viewModel.RefreshAsync();
+        SelectOnly(viewModel, viewModel.Torrents[0]);
+        await viewModel.LoadSelectedDetailAsync();
+        viewModel.TorrentNoteText = "typed in the box";
+
+        viewModel.SaveTorrentNoteForSelected();
+
+        Assert.Equal("typed in the box", settings.Load().TorrentNotes?[torrent.InfoHash]);
+    }
+
+    // --- Stage 6: activity history (Hub-connected) --------------------
+
+    [Fact]
+    public async Task ConnectHubAsync_OnSuccess_SetsHubConnectedAndPersistsTheToken()
+    {
+        var (viewModel, hubClient, settings) = MakeViewModelWithHubClient();
+        hubClient.LoginResult = new HubLoginResult("real-jwt", DateTimeOffset.UtcNow.AddDays(1));
+
+        await viewModel.ConnectHubAsync("http://localhost:5000", "owner", "hunter2");
+
+        Assert.True(viewModel.HubConnected);
+        Assert.Equal("http://localhost:5000", viewModel.HubBaseAddress);
+        Assert.Equal("owner", hubClient.LastLoginUserName);
+        Assert.Equal("hunter2", hubClient.LastLoginPassword);
+        Assert.Equal("http://localhost:5000", settings.Load().HubBaseAddress);
+        Assert.Equal("real-jwt", settings.Load().HubToken);
+    }
+
+    [Fact]
+    public async Task ConnectHubAsync_OnFailure_ThrowsAndLeavesHubDisconnected()
+    {
+        var (viewModel, hubClient, _) = MakeViewModelWithHubClient();
+        hubClient.Failure = new HubRequestException("wrong username or password");
+
+        await Assert.ThrowsAsync<HubRequestException>(() => viewModel.ConnectHubAsync("http://localhost:5000", "owner", "wrong"));
+
+        Assert.False(viewModel.HubConnected);
+    }
+
+    [Fact]
+    public async Task DisconnectHub_ClearsStateAndSettings()
+    {
+        var (viewModel, _, settings) = MakeViewModelWithHubClient();
+        await viewModel.ConnectHubAsync("http://localhost:5000", "owner", "hunter2");
+
+        viewModel.DisconnectHub();
+
+        Assert.False(viewModel.HubConnected);
+        Assert.Null(viewModel.HubBaseAddress);
+        Assert.Null(settings.Load().HubBaseAddress);
+        Assert.Null(settings.Load().HubToken);
+    }
+
+    [Fact]
+    public async Task LoadActivityHistoryAsync_WithNoHubConfigured_SetsAnError()
+    {
+        var (viewModel, _, _) = MakeViewModel();
+
+        await viewModel.LoadActivityHistoryAsync();
+
+        Assert.NotNull(viewModel.ActivityHistoryError);
+        Assert.Empty(viewModel.ActivityHistory);
+    }
+
+    [Fact]
+    public async Task LoadActivityHistoryAsync_OnSuccess_PopulatesHistoryAndSummary()
+    {
+        var (viewModel, hubClient, _) = MakeViewModelWithHubClient();
+        await viewModel.ConnectHubAsync("http://localhost:5000", "owner", "hunter2");
+        hubClient.Completed =
+        [
+            new ActivityHistoryEntry(Guid.NewGuid(), Guid.NewGuid(), "node-a", "0102030405060708090a0b0c0d0e0f1011121314", "ubuntu.iso", "linux", 1000, 1000, 500, 0.5, DateTimeOffset.UtcNow),
+        ];
+        hubClient.Summary = new ActivityHistorySummary(1, 1000, 500);
+
+        await viewModel.LoadActivityHistoryAsync();
+
+        Assert.Null(viewModel.ActivityHistoryError);
+        Assert.Single(viewModel.ActivityHistory);
+        Assert.Equal("ubuntu.iso", viewModel.ActivityHistory[0].Name);
+        Assert.Equal(1, viewModel.ActivitySummary?.CompletedCount);
+    }
+
+    [Fact]
+    public async Task LoadActivityHistoryAsync_OnFailure_SetsAnErrorRatherThanThrowing()
+    {
+        var (viewModel, hubClient, _) = MakeViewModelWithHubClient();
+        await viewModel.ConnectHubAsync("http://localhost:5000", "owner", "hunter2");
+        hubClient.Failure = new HubRequestException("token expired");
+
+        await viewModel.LoadActivityHistoryAsync();
+
+        Assert.Equal("token expired", viewModel.ActivityHistoryError);
+    }
+
+    [Fact]
+    public void Constructor_WithSavedHubSettings_ConnectsAutomatically()
+    {
+        var settings = new FakeSettingsStore();
+        settings.Save(new DesktopSettings(null, null, HubBaseAddress: "http://localhost:5000", HubToken: "saved-hub-jwt"));
+        var hubClient = new FakeHubClient();
+
+        var viewModel = new MainViewModel(_ => new FakeEngineClient(), settings, new FakeEventStream(), TimeProvider.System, new FakeAutostartService(), new FakeFileAssociationService(), new FakeDaemonLauncher(), new FakeDesktopNotifier(), new FakeUpdateChecker(), _ => hubClient);
+
+        Assert.True(viewModel.HubConnected);
+        Assert.Equal("http://localhost:5000", viewModel.HubBaseAddress);
     }
 }

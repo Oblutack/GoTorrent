@@ -90,6 +90,31 @@
                     </StackPanel>
                 </TabItem>
 
+                <TabItem Header="Hub">
+                    <StackPanel Margin="16" Spacing="6">
+                        <TextBlock Text="GoTorrent.Hub" FontWeight="Bold" />
+                        <TextBlock Foreground="{DynamicResource GtSubtle}" TextWrapping="Wrap"
+                                   Text="Optional - connecting to a Hub unlocks the Activity History window's completed-torrent archive. This is a separate connection from the gottrentd address above." />
+
+                        <TextBlock Name="HubStatusText" Margin="0,6,0,0" />
+
+                        <TextBlock Text="Hub address" Margin="0,10,0,0" />
+                        <TextBox Name="HubAddressBox" PlaceholderText="http://localhost:5000" />
+
+                        <TextBlock Text="Username" Margin="0,10,0,0" />
+                        <TextBox Name="HubUserNameBox" />
+
+                        <TextBlock Text="Password" Margin="0,10,0,0" />
+                        <TextBox Name="HubPasswordBox" PasswordChar="•" />
+
+                        <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,10,0,0">
+                            <Button Name="HubConnectButton" Content="Connect" Click="OnHubConnectClick" />
+                            <Button Name="HubDisconnectButton" Content="Disconnect" Click="OnHubDisconnectClick" />
+                        </StackPanel>
+                        <TextBlock Name="HubErrorText" Foreground="{DynamicResource GtError}" TextWrapping="Wrap" IsVisible="False" />
+                    </StackPanel>
+                </TabItem>
+
                 <TabItem Header="Advanced">
                     <StackPanel Margin="16" Spacing="6">
                         <TextBlock Text="Advanced" FontWeight="Bold" />

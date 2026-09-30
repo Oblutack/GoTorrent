@@ -32,10 +32,60 @@ public partial class PreferencesWindow : Window
         CompactDensityCheckBox.IsChecked = mainViewModel.CompactDensity;
         RecentDirsList.ItemsSource = mainViewModel.RecentDownloadDirs;
         ConnectedAddressText.Text = $"Connected to {mainViewModel.BaseAddressInput}";
+        UpdateHubStatusText();
+        if (mainViewModel.HubBaseAddress is { } hubAddress)
+        {
+            HubAddressBox.Text = hubAddress;
+        }
         Opened += async (_, _) => await LoadCurrentLimitsAsync();
     }
 
     private void OnClearRecentDirsClick(object? sender, RoutedEventArgs e) => _mainViewModel.ClearRecentDownloadDirs();
+
+    private void UpdateHubStatusText() =>
+        HubStatusText.Text = _mainViewModel.HubConnected ? $"Connected to {_mainViewModel.HubBaseAddress}" : "Not connected.";
+
+    private async void OnHubConnectClick(object? sender, RoutedEventArgs e)
+    {
+        if (string.IsNullOrWhiteSpace(HubAddressBox.Text) || string.IsNullOrWhiteSpace(HubUserNameBox.Text) || string.IsNullOrWhiteSpace(HubPasswordBox.Text))
+        {
+            ShowHubError("Address, username, and password are all required.");
+            return;
+        }
+
+        HubConnectButton.IsEnabled = false;
+        try
+        {
+            await _mainViewModel.ConnectHubAsync(HubAddressBox.Text, HubUserNameBox.Text, HubPasswordBox.Text);
+            HubPasswordBox.Text = string.Empty;
+            UpdateHubStatusText();
+            HubErrorText.IsVisible = false;
+        }
+        catch (Exception ex)
+        {
+            ShowHubError(ex.Message);
+        }
+        finally
+        {
+            HubConnectButton.IsEnabled = true;
+        }
+    }
+
+    private void OnHubDisconnectClick(object? sender, RoutedEventArgs e)
+    {
+        _mainViewModel.DisconnectHub();
+        HubAddressBox.Text = string.Empty;
+        HubUserNameBox.Text = string.Empty;
+        HubPasswordBox.Text = string.Empty;
+        UpdateHubStatusText();
+        HubErrorText.IsVisible = false;
+    }
+
+    private void ShowHubError(string message)
+    {
+        HubErrorText.Text = message;
+        HubErrorText.IsVisible = true;
+    }
 
     private async System.Threading.Tasks.Task LoadCurrentLimitsAsync()
     {

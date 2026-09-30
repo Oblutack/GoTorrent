@@ -1,0 +1,95 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:GoTorrent.Desktop.ViewModels"
+        xmlns:chrome="using:Avalonia.Controls.Chrome"
+        xmlns:conv="using:Avalonia.Data.Converters"
+        xmlns:conv2="using:GoTorrent.Desktop.Converters"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d" d:DesignWidth="640" d:DesignHeight="480"
+        x:Class="GoTorrent.Desktop.Views.ActivityHistoryWindow"
+        x:DataType="vm:MainViewModel"
+        Width="640" Height="480" CanResize="True"
+        WindowStartupLocation="CenterOwner"
+        Background="{DynamicResource GtBackground}"
+        Icon="/Assets/app-icon.ico"
+        ExtendClientAreaToDecorationsHint="True"
+        WindowDecorations="BorderOnly"
+        ExtendClientAreaTitleBarHeightHint="-1"
+        Title="Activity History">
+
+    <!-- A read-only live display, same shape as StatisticsWindow - binds
+         DataContext straight to MainViewModel rather than the no-ViewModel
+         code-behind pattern the one-shot form dialogs use. Loaded once on
+         Opened (LoadActivityHistoryAsync), not on a recurring timer - the
+         Hub's own archive only changes when a torrent completes somewhere
+         in the fleet, not worth polling every 2s the way the primary
+         gottrentd connection's own data is. -->
+    <Window.Resources>
+        <conv2:CollectionEmptyConverter x:Key="CollectionEmpty" />
+    </Window.Resources>
+
+    <Grid RowDefinitions="32,*">
+        <Grid Grid.Row="0" ColumnDefinitions="Auto,*,Auto"
+              Background="{DynamicResource GtTitleBar}"
+              chrome:WindowDecorationProperties.ElementRole="TitleBar">
+            <Image Grid.Column="0" Source="/Assets/app-icon.ico" Width="14" Height="14" Margin="10,0,6,0" />
+            <TextBlock Grid.Column="1" Text="Activity History" VerticalAlignment="Center" FontSize="12" Foreground="{DynamicResource GtSubtle}" />
+            <Button Grid.Column="2" Classes="caption captionClose" Click="OnCloseClick"
+                    ToolTip.Tip="Close" AutomationProperties.Name="Close"
+                    chrome:WindowDecorationProperties.ElementRole="CloseButton">
+                <Path Data="M0,0 L10,10 M10,0 L0,10" StrokeThickness="1" />
+            </Button>
+        </Grid>
+
+        <Grid Grid.Row="1" Margin="16" RowDefinitions="Auto,Auto,*">
+            <TextBlock Grid.Row="0" Text="{Binding HubBaseAddress, StringFormat='Archive from {0}'}"
+                       IsVisible="{Binding HubConnected}" Foreground="{DynamicResource GtSubtle}" Margin="0,0,0,8" />
+
+            <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="16" Margin="0,0,0,10"
+                        IsVisible="{Binding ActivitySummary, Converter={x:Static conv:ObjectConverters.IsNotNull}}">
+                <TextBlock>
+                    <Run Text="Completed:" FontWeight="Bold" /> <Run Text="{Binding ActivitySummary.CompletedCount}" />
+                </TextBlock>
+                <TextBlock>
+                    <Run Text="Downloaded:" FontWeight="Bold" /> <Run Text="{Binding ActivitySummary.TotalDownloaded}" />
+                </TextBlock>
+                <TextBlock>
+                    <Run Text="Uploaded:" FontWeight="Bold" /> <Run Text="{Binding ActivitySummary.TotalUploaded}" />
+                </TextBlock>
+            </StackPanel>
+
+            <TextBlock Grid.Row="2" Classes="emptyState" Text="{Binding ActivityHistoryError}"
+                       IsVisible="{Binding ActivityHistoryError, Converter={x:Static conv:ObjectConverters.IsNotNull}}" TextWrapping="Wrap" />
+
+            <TextBlock Grid.Row="2" Classes="emptyState" Text="No completed torrents yet.">
+                <TextBlock.IsVisible>
+                    <MultiBinding Converter="{x:Static conv:BoolConverters.And}">
+                        <Binding Path="ActivityHistoryError" Converter="{x:Static conv:ObjectConverters.IsNull}" />
+                        <Binding Path="ActivityHistory" Converter="{StaticResource CollectionEmpty}" />
+                    </MultiBinding>
+                </TextBlock.IsVisible>
+            </TextBlock>
+
+            <DataGrid Grid.Row="2" ItemsSource="{Binding ActivityHistory}" IsReadOnly="True" AutoGenerateColumns="False"
+                      GridLinesVisibility="Horizontal" HeadersVisibility="Column">
+                <DataGrid.IsVisible>
+                    <MultiBinding Converter="{x:Static conv:BoolConverters.And}">
+                        <Binding Path="ActivityHistoryError" Converter="{x:Static conv:ObjectConverters.IsNull}" />
+                        <Binding Path="ActivityHistory" Converter="{StaticResource CollectionEmpty}" ConverterParameter="Invert" />
+                    </MultiBinding>
+                </DataGrid.IsVisible>
+                <DataGrid.Columns>
+                    <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="2*" />
+                    <DataGridTextColumn Header="Node" Binding="{Binding NodeName}" Width="*" />
+                    <DataGridTextColumn Header="Category" Binding="{Binding Category}" Width="*" />
+                    <DataGridTextColumn Header="Size" Binding="{Binding TotalLength}" Width="Auto" />
+                    <DataGridTextColumn Header="Uploaded" Binding="{Binding Uploaded}" Width="Auto" />
+                    <DataGridTextColumn Header="Ratio" Binding="{Binding SeedRatio, StringFormat='{}{0:F2}'}" Width="Auto" />
+                    <DataGridTextColumn Header="Completed" Binding="{Binding CompletedAt}" Width="Auto" />
+                </DataGrid.Columns>
+            </DataGrid>
+        </Grid>
+    </Grid>
+
+</Window>

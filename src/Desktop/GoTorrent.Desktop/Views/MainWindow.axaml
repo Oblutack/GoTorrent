@@ -88,7 +88,7 @@
         </StackPanel>
 
         <!-- Toolbar: shown once connected. -->
-        <Grid Grid.Row="1" IsVisible="{Binding IsConnected}" ColumnDefinitions="Auto,Auto,Auto,Auto,Auto,*,Auto,Auto,Auto,Auto"
+        <Grid Grid.Row="1" IsVisible="{Binding IsConnected}" ColumnDefinitions="Auto,Auto,Auto,Auto,Auto,*,Auto,Auto,Auto,Auto,Auto"
               Background="{DynamicResource GtPanel}" Height="48">
             <Button Grid.Column="0" Classes="toolbar" ToolTip.Tip="Add Torrent" AutomationProperties.Name="Add Torrent" Click="OnAddTorrentClick" Margin="4,0,0,0">
                 <PathIcon Data="{StaticResource IconAdd}" />
@@ -132,7 +132,10 @@
             <Button Grid.Column="8" Classes="toolbar" ToolTip.Tip="Statistics" AutomationProperties.Name="Statistics" Click="OnStatisticsClick">
                 <PathIcon Data="{StaticResource IconChart}" />
             </Button>
-            <Button Grid.Column="9" Classes="toolbar" ToolTip.Tip="Preferences" AutomationProperties.Name="Preferences" Click="OnPreferencesClick" Margin="0,0,8,0">
+            <Button Grid.Column="9" Classes="toolbar" ToolTip.Tip="Activity History" AutomationProperties.Name="Activity History" Click="OnActivityHistoryClick">
+                <PathIcon Data="{StaticResource IconHistory}" />
+            </Button>
+            <Button Grid.Column="10" Classes="toolbar" ToolTip.Tip="Preferences" AutomationProperties.Name="Preferences" Click="OnPreferencesClick" Margin="0,0,8,0">
                 <PathIcon Data="{StaticResource IconSettings}" />
             </Button>
         </Grid>
@@ -271,7 +274,7 @@
                 <TabControl Grid.Row="2" IsVisible="{Binding SelectedTorrent, Converter={x:Static conv:ObjectConverters.IsNotNull}}"
                             SelectedIndex="{Binding SelectedDetailTabIndex}">
                     <TabItem Header="General">
-                        <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto" Margin="8" RowSpacing="4" ColumnSpacing="8">
+                        <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto" Margin="8" RowSpacing="4" ColumnSpacing="8">
                             <TextBlock Grid.Row="0" Grid.Column="0" FontWeight="Bold" Text="Name" />
                             <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding DetailTorrent.Name}" />
                             <TextBlock Grid.Row="1" Grid.Column="0" FontWeight="Bold" Text="Info Hash" />
@@ -315,6 +318,11 @@
                                     </DataTemplate>
                                 </ItemsControl.ItemTemplate>
                             </ItemsControl>
+                            <TextBlock Grid.Row="14" Grid.Column="0" FontWeight="Bold" Text="Notes" VerticalAlignment="Top" Margin="0,4,0,0" />
+                            <TextBox Grid.Row="14" Grid.Column="1" Name="TorrentNoteBox" Text="{Binding TorrentNoteText}"
+                                      AcceptsReturn="True" TextWrapping="Wrap" Height="70" Margin="0,4,0,0"
+                                      PlaceholderText="Private notes about this torrent - never sent to gottrentd or the Hub."
+                                      LostFocus="OnTorrentNoteLostFocus" />
                         </Grid>
                     </TabItem>
                     <TabItem Header="Files">

@@ -7,9 +7,10 @@ namespace GoTorrent.Desktop.Services;
 /// OS's per-user app-data directory - the same "config lives outside the
 /// install/download directory" idea gottrentd's own resume data and
 /// manifest already use on the Go side. <see cref="DesktopSettings.Token"/>
-/// is encrypted at rest via <see cref="TokenProtector"/> - transparent to
-/// every caller of <see cref="Load"/>/<see cref="Save"/>, which always
-/// see the real plaintext token, exactly the same "encryption is purely a
+/// and <see cref="DesktopSettings.HubToken"/> are both encrypted at rest
+/// via <see cref="TokenProtector"/> - transparent to every caller of
+/// <see cref="Load"/>/<see cref="Save"/>, which always see the real
+/// plaintext token, exactly the same "encryption is purely a
 /// persistence-layer concern" shape the Hub's own
 /// <c>ProtectedStringConverter</c> already established for
 /// <c>EngineNode.Token</c>.
@@ -59,7 +60,15 @@ public sealed class FileSettingsStore : ISettingsStore
         {
             var json = File.ReadAllText(_filePath);
             var settings = JsonSerializer.Deserialize<DesktopSettings>(json) ?? new DesktopSettings(null, null);
-            return settings.Token is null ? settings : settings with { Token = TokenProtector.Unprotect(settings.Token) };
+            if (settings.Token is not null)
+            {
+                settings = settings with { Token = TokenProtector.Unprotect(settings.Token) };
+            }
+            if (settings.HubToken is not null)
+            {
+                settings = settings with { HubToken = TokenProtector.Unprotect(settings.HubToken) };
+            }
+            return settings;
         }
         catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
         {
@@ -94,7 +103,15 @@ public sealed class FileSettingsStore : ISettingsStore
     {
         var directory = Path.GetDirectoryName(_filePath)!;
         Directory.CreateDirectory(directory);
-        var onDisk = settings.Token is null ? settings : settings with { Token = TokenProtector.Protect(settings.Token) };
+        var onDisk = settings;
+        if (onDisk.Token is not null)
+        {
+            onDisk = onDisk with { Token = TokenProtector.Protect(onDisk.Token) };
+        }
+        if (onDisk.HubToken is not null)
+        {
+            onDisk = onDisk with { HubToken = TokenProtector.Protect(onDisk.HubToken) };
+        }
         var tempPath = Path.Combine(directory, $"settings.json.tmp-{Guid.NewGuid():N}");
         File.WriteAllText(tempPath, JsonSerializer.Serialize(onDisk));
         File.Move(tempPath, _filePath, overwrite: true);

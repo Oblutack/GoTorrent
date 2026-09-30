@@ -19,6 +19,7 @@ public partial class MainViewModel : ViewModelBase, IDisposable
     private const int MaxSpeedSamples = 300;
 
     private readonly Func<EngineOptions, IEngineClient> _clientFactory;
+    private readonly Func<HubOptions, IHubClient> _hubClientFactory;
     private readonly ISettingsStore _settingsStore;
     private readonly IEventStream _eventStream;
     private readonly TimeProvider _timeProvider;
@@ -30,7 +31,9 @@ public partial class MainViewModel : ViewModelBase, IDisposable
     private readonly HashSet<string> _notifiedCompletionHashes = [];
     private readonly HashSet<string> _pendingDeleteHashes = [];
     private readonly Dictionary<string, CancellationTokenSource> _pendingDeleteCancellations = [];
+    private readonly Dictionary<string, string> _torrentNotes = [];
     private IEngineClient? _client;
+    private IHubClient? _hubClient;
     private EngineOptions? _connectedOptions;
     private DispatcherTimer? _timer;
     private DispatcherTimer? _peerTimer;
@@ -237,6 +240,21 @@ public partial class MainViewModel : ViewModelBase, IDisposable
     [ObservableProperty]
     public partial IReadOnlyList<string> DiagnosisMessages { get; set; } = [];
 
+    /// <summary>
+    /// Stage 6's per-torrent notes - a free-text field the General tab
+    /// binds to, purely local (see <see cref="DesktopSettings.TorrentNotes"/>).
+    /// Only ever repopulated on an actual selection change
+    /// (<see cref="LoadSelectedDetailAsync"/>'s own <c>freshSelection</c>
+    /// check), never on the periodic 2s refresh of the same torrent - the
+    /// same "don't stomp on what the user might be mid-typing" reasoning
+    /// <see cref="PieceOwners"/>'s own doc comment already gives for its
+    /// per-selection (not per-refresh) reset. Saved explicitly via
+    /// <see cref="SaveTorrentNoteForSelected"/>, not on every keystroke -
+    /// <c>MainWindow</c>'s Notes <c>TextBox</c> calls it on <c>LostFocus</c>.
+    /// </summary>
+    [ObservableProperty]
+    public partial string? TorrentNoteText { get; set; }
+
     [ObservableProperty]
     public partial ObservableCollection<double> DownloadRateHistory { get; set; } = [];
 
@@ -257,6 +275,35 @@ public partial class MainViewModel : ViewModelBase, IDisposable
 
     [ObservableProperty]
     public partial bool FileAssociationEnabled { get; set; }
+
+    /// <summary>
+    /// Whether a <c>GoTorrent.Hub</c> instance is currently configured and
+    /// logged into - a completely separate connection from <c>_client</c>'s
+    /// gottrentd one (see <see cref="IHubClient"/>'s own doc comment).
+    /// Set true the moment a real client exists, in the constructor (an
+    /// already-persisted token) or after <see cref="ConnectHubAsync"/>
+    /// succeeds - not proof the token is still valid, since a JWT can
+    /// expire with no local signal; <see cref="LoadActivityHistoryAsync"/>
+    /// surfaces that the same way any other failed call does, via
+    /// <see cref="ActivityHistoryError"/>.
+    /// </summary>
+    [ObservableProperty]
+    public partial bool HubConnected { get; set; }
+
+    /// <summary>The configured Hub's address, for display - e.g. Preferences' Hub tab and <see cref="ActivityHistoryWindow"/>'s own header line.</summary>
+    [ObservableProperty]
+    public partial string? HubBaseAddress { get; set; }
+
+    /// <summary>Every completed torrent the Hub has archived, most recent first (the order <c>GetRecentAsync</c> already returns) - populated by <see cref="LoadActivityHistoryAsync"/>.</summary>
+    [ObservableProperty]
+    public partial ObservableCollection<ActivityHistoryEntry> ActivityHistory { get; set; } = [];
+
+    [ObservableProperty]
+    public partial ActivityHistorySummary? ActivitySummary { get; set; }
+
+    /// <summary>Set when <see cref="LoadActivityHistoryAsync"/> fails - a not-configured Hub, a network problem, or an expired token all surface here, rather than throwing out of a window's <c>Opened</c> handler.</summary>
+    [ObservableProperty]
+    public partial string? ActivityHistoryError { get; set; }
 
     [ObservableProperty]
     public partial bool DaemonStarting { get; set; }
@@ -453,7 +500,7 @@ public partial class MainViewModel : ViewModelBase, IDisposable
         _settingsStore.Save(_settingsStore.Load() with { HiddenColumns = hidden });
     }
 
-    public MainViewModel() : this(options => new EngineClient(options), new FileSettingsStore(), new WebSocketEventStream(), TimeProvider.System, new WindowsAutostartService(), new WindowsFileAssociationService(), new DaemonLauncher(), new WindowsDesktopNotifier(), new GitHubUpdateChecker())
+    public MainViewModel() : this(options => new EngineClient(options), new FileSettingsStore(), new WebSocketEventStream(), TimeProvider.System, new WindowsAutostartService(), new WindowsFileAssociationService(), new DaemonLauncher(), new WindowsDesktopNotifier(), new GitHubUpdateChecker(), options => new HubClient(options))
     {
     }
 
@@ -522,6 +569,18 @@ public partial class MainViewModel : ViewModelBase, IDisposable
     /// whether a newer release "exists" without a real call to GitHub.
     /// </summary>
     public MainViewModel(Func<EngineOptions, IEngineClient> clientFactory, ISettingsStore settingsStore, IEventStream eventStream, TimeProvider timeProvider, IAutostartService autostartService, IFileAssociationService fileAssociationService, IDaemonLauncher daemonLauncher, IDesktopNotifier desktopNotifier, IUpdateChecker updateChecker)
+        : this(clientFactory, settingsStore, eventStream, timeProvider, autostartService, fileAssociationService, daemonLauncher, desktopNotifier, updateChecker, options => new HubClient(options))
+    {
+    }
+
+    /// <summary>
+    /// <paramref name="hubClientFactory"/> - the same kind of seam again,
+    /// for the Hub connection (see <see cref="IHubClient"/>'s own doc
+    /// comment on why it's a completely separate client from
+    /// <paramref name="clientFactory"/>'s gottrentd one). Tests pass a
+    /// fake so activity-history loading never opens a real socket.
+    /// </summary>
+    public MainViewModel(Func<EngineOptions, IEngineClient> clientFactory, ISettingsStore settingsStore, IEventStream eventStream, TimeProvider timeProvider, IAutostartService autostartService, IFileAssociationService fileAssociationService, IDaemonLauncher daemonLauncher, IDesktopNotifier desktopNotifier, IUpdateChecker updateChecker, Func<HubOptions, IHubClient> hubClientFactory)
     {
         _clientFactory = clientFactory;
         _settingsStore = settingsStore;
@@ -532,6 +591,7 @@ public partial class MainViewModel : ViewModelBase, IDisposable
         _daemonLauncher = daemonLauncher;
         _desktopNotifier = desktopNotifier;
         _updateChecker = updateChecker;
+        _hubClientFactory = hubClientFactory;
 
         var settings = _settingsStore.Load();
         SavedSettings = settings;
@@ -553,6 +613,7 @@ public partial class MainViewModel : ViewModelBase, IDisposable
         RecentDownloadDirs = new ObservableCollection<string>(settings.RecentDownloadDirs ?? []);
         AutostartEnabled = _autostartService.IsEnabled();
         FileAssociationEnabled = _fileAssociationService.IsRegistered();
+        _torrentNotes = new Dictionary<string, string>(settings.TorrentNotes ?? new Dictionary<string, string>());
         if (settings.IsConfigured)
         {
             BaseAddressInput = settings.BaseAddress!;
@@ -561,6 +622,12 @@ public partial class MainViewModel : ViewModelBase, IDisposable
             // construction on it" seam in this class (StartAutoRefresh/
             // StartLiveEvents/CheckForUpdatesAsync are all the same shape).
             _ = TryConnectAsync(settings.BaseAddress!, settings.Token!, persist: false);
+        }
+        if (settings.IsHubConfigured)
+        {
+            HubBaseAddress = settings.HubBaseAddress;
+            _hubClient = _hubClientFactory(new HubOptions(new Uri(settings.HubBaseAddress!), settings.HubToken!));
+            HubConnected = true;
         }
     }
 
@@ -726,6 +793,115 @@ public partial class MainViewModel : ViewModelBase, IDisposable
             // to its default every time the user hits Connect.
             _settingsStore.Save(_settingsStore.Load() with { BaseAddress = baseAddress, Token = token });
         }
+    }
+
+    /// <summary>
+    /// Stage 6's activity-history feature: logs into a <c>GoTorrent.Hub</c>
+    /// instance and persists the resulting token, exactly like
+    /// <see cref="TryConnectAsync"/> does for gottrentd - a completely
+    /// separate connection, see <see cref="IHubClient"/>'s own doc
+    /// comment. Called from Preferences' Hub tab. Throws
+    /// <see cref="HubRequestException"/> (a wrong address/credentials) or
+    /// <see cref="UriFormatException"/> (a malformed address) straight
+    /// through - the caller (a plain code-behind form, matching every
+    /// other Preferences field) renders whatever it catches, the same
+    /// shape <see cref="SetSessionLimitsAsync"/> already establishes for
+    /// this dialog.
+    /// </summary>
+    public async Task ConnectHubAsync(string baseAddress, string userName, string password)
+    {
+        var baseUri = new Uri(baseAddress);
+        var loginClient = _hubClientFactory(new HubOptions(baseUri, string.Empty));
+        var result = await loginClient.LoginAsync(userName, password, CancellationToken.None);
+        (loginClient as IDisposable)?.Dispose();
+
+        (_hubClient as IDisposable)?.Dispose();
+        _hubClient = _hubClientFactory(new HubOptions(baseUri, result.AccessToken));
+        HubBaseAddress = baseAddress;
+        HubConnected = true;
+        _settingsStore.Save(_settingsStore.Load() with { HubBaseAddress = baseAddress, HubToken = result.AccessToken });
+    }
+
+    /// <summary>Forgets the configured Hub entirely - Preferences' Hub tab "Disconnect" button.</summary>
+    public void DisconnectHub()
+    {
+        (_hubClient as IDisposable)?.Dispose();
+        _hubClient = null;
+        HubConnected = false;
+        HubBaseAddress = null;
+        ActivityHistory = [];
+        ActivitySummary = null;
+        ActivityHistoryError = null;
+        _settingsStore.Save(_settingsStore.Load() with { HubBaseAddress = null, HubToken = null });
+    }
+
+    /// <summary>
+    /// Loads the completed-torrent archive plus its summary rollup -
+    /// called from <see cref="ActivityHistoryWindow"/>'s <c>Opened</c>
+    /// handler. A not-configured Hub is reported the same way a real
+    /// failure is (via <see cref="ActivityHistoryError"/>), not a thrown
+    /// exception - the window's own code-behind has nowhere better to
+    /// route one from an <c>Opened</c> handler, the same reasoning
+    /// <see cref="LoadSelectedDetailAsync"/>'s own try/catch already
+    /// follows for its periodic refresh.
+    /// </summary>
+    public async Task LoadActivityHistoryAsync()
+    {
+        if (_hubClient is not { } client)
+        {
+            ActivityHistoryError = "No Hub configured yet - connect to one from Preferences' Hub tab.";
+            return;
+        }
+        try
+        {
+            var entries = await client.GetCompletedAsync(take: 100, CancellationToken.None);
+            var summary = await client.GetSummaryAsync(CancellationToken.None);
+            ActivityHistory = new ObservableCollection<ActivityHistoryEntry>(entries);
+            ActivitySummary = summary;
+            ActivityHistoryError = null;
+        }
+        catch (Exception ex) when (ex is HubRequestException or HttpRequestException or TaskCanceledException)
+        {
+            ActivityHistoryError = ex.Message;
+        }
+    }
+
+    /// <summary>Stage 6's per-torrent notes: the note text for a given info hash, or empty if none was ever saved.</summary>
+    public string GetTorrentNote(string infoHash) => _torrentNotes.TryGetValue(infoHash, out var note) ? note : string.Empty;
+
+    /// <summary>
+    /// Saves <see cref="TorrentNoteText"/> against <see cref="SelectedTorrent"/>'s
+    /// own info hash - called from <c>MainWindow</c>'s Notes <c>TextBox</c>
+    /// on <c>LostFocus</c>, not on every keystroke. A no-op with nothing
+    /// selected, the same guard every other selection-dependent action in
+    /// this class already has.
+    /// </summary>
+    public void SaveTorrentNoteForSelected()
+    {
+        if (SelectedTorrent is null)
+        {
+            return;
+        }
+        SetTorrentNote(SelectedTorrent.InfoHash, TorrentNoteText ?? string.Empty);
+    }
+
+    /// <summary>
+    /// An empty note is removed from the dictionary entirely rather than
+    /// stored as <c>""</c> - keeps this from growing forever with blank
+    /// entries for every torrent someone ever selected and left the field
+    /// untouched.
+    /// </summary>
+    public void SetTorrentNote(string infoHash, string note)
+    {
+        if (string.IsNullOrWhiteSpace(note))
+        {
+            _torrentNotes.Remove(infoHash);
+        }
+        else
+        {
+            _torrentNotes[infoHash] = note;
+        }
+        _settingsStore.Save(_settingsStore.Load() with { TorrentNotes = new Dictionary<string, string>(_torrentNotes) });
     }
 
     /// <summary>
@@ -1231,6 +1407,7 @@ public partial class MainViewModel : ViewModelBase, IDisposable
             _pieceOwnersForHash = null;
             _detailLoadedForHash = null;
             DiagnosisMessages = [];
+            TorrentNoteText = null;
             return;
         }
         var hash = SelectedTorrent.InfoHash;
@@ -1238,6 +1415,14 @@ public partial class MainViewModel : ViewModelBase, IDisposable
         var wantFiles = freshSelection || SelectedDetailTabIndex == 1;
         var wantTrackers = freshSelection || SelectedDetailTabIndex is 0 or 3;
         var wantPieces = freshSelection || SelectedDetailTabIndex == 4;
+
+        if (freshSelection)
+        {
+            // Only on an actual selection change, never on the periodic
+            // 2s refresh of the same torrent - see TorrentNoteText's own
+            // doc comment for why.
+            TorrentNoteText = GetTorrentNote(hash);
+        }
 
         try
         {
@@ -2325,6 +2510,7 @@ public partial class MainViewModel : ViewModelBase, IDisposable
         _lifetimeCts.Cancel();
         _detailLoadCts?.Cancel();
         (_client as IDisposable)?.Dispose();
+        (_hubClient as IDisposable)?.Dispose();
         _lifetimeCts.Dispose();
     }
 }

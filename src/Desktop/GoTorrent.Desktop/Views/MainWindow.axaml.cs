@@ -374,6 +374,7 @@ public partial class MainWindow : Window
         entries.Add(new CommandPaletteEntry("Action", "Add torrent...", () => OnAddTorrentClick(this, new RoutedEventArgs())));
         entries.Add(new CommandPaletteEntry("Action", "Open preferences", () => OnPreferencesClick(this, new RoutedEventArgs())));
         entries.Add(new CommandPaletteEntry("Action", "Open statistics", () => OnStatisticsClick(this, new RoutedEventArgs())));
+        entries.Add(new CommandPaletteEntry("Action", "Open activity history", () => OnActivityHistoryClick(this, new RoutedEventArgs())));
         entries.Add(new CommandPaletteEntry("Action", "Refresh now", () => _ = mainViewModel.RefreshAsync()));
         entries.Add(new CommandPaletteEntry("Action", $"Switch to {(mainViewModel.LightTheme ? "dark" : "light")} theme", () => mainViewModel.SetLightTheme(!mainViewModel.LightTheme)));
         entries.Add(new CommandPaletteEntry("Action", $"Switch to {(mainViewModel.CompactDensity ? "comfortable" : "compact")} row density", () => mainViewModel.SetCompactDensity(!mainViewModel.CompactDensity)));
@@ -528,6 +529,16 @@ public partial class MainWindow : Window
         await dialog.ShowDialog(this);
     }
 
+    private async void OnActivityHistoryClick(object? sender, RoutedEventArgs e)
+    {
+        if (DataContext is not MainViewModel mainViewModel)
+        {
+            return;
+        }
+        var dialog = new ActivityHistoryWindow(mainViewModel);
+        await dialog.ShowDialog(this);
+    }
+
     private async void OnSetCategoryClick(object? sender, RoutedEventArgs e)
     {
         if (DataContext is not MainViewModel mainViewModel || mainViewModel.SelectedTorrents.Count == 0)
@@ -649,6 +660,19 @@ public partial class MainWindow : Window
 
             await mainViewModel.LoadSelectedDetailAsync();
             await mainViewModel.RefreshPeerRatesAsync();
+        }
+    }
+
+    /// <summary>
+    /// Saves the Notes box on <c>LostFocus</c>, not on every keystroke -
+    /// see <see cref="MainViewModel.TorrentNoteText"/>'s own doc comment
+    /// for why a periodic refresh never overwrites it mid-edit.
+    /// </summary>
+    private void OnTorrentNoteLostFocus(object? sender, RoutedEventArgs e)
+    {
+        if (DataContext is MainViewModel mainViewModel)
+        {
+            mainViewModel.SaveTorrentNoteForSelected();
         }
     }
 
