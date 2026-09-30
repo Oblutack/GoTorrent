@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -202,9 +203,14 @@ func TestListDuringPieceVerificationDoesNotDeadlock(t *testing.T) {
 	// Hammer List()/GetSummary() as fast as possible for the whole
 	// transfer — every call takes e.mu and, for this torrent, calls
 	// tr.Stats() while still holding it, exactly the shape that raced
-	// against a real piece verification in production.
+	// against a real piece verification in production. pollCount is an
+	// atomic, not a plain int — written by this goroutine, read by the
+	// main test goroutine after close(stop) with no other synchronization
+	// between the two, exactly the kind of access `go test -race` is
+	// built to catch (and did: a real, if ironic, data race in this
+	// deadlock test's own bookkeeping, caught by CI before it ever landed).
 	stop := make(chan struct{})
-	var pollCount int
+	var pollCount atomic.Int64
 	go func() {
 		for {
 			select {
@@ -213,7 +219,7 @@ func TestListDuringPieceVerificationDoesNotDeadlock(t *testing.T) {
 			default:
 				leecher.List()
 				leecher.GetSummary(hash)
-				pollCount++
+				pollCount.Add(1)
 			}
 		}
 	}()
@@ -222,7 +228,7 @@ func TestListDuringPieceVerificationDoesNotDeadlock(t *testing.T) {
 	waitForState(t, leecherTr, torrent.StateSeeding, 30*time.Second)
 	close(stop)
 
-	if pollCount == 0 {
+	if pollCount.Load() == 0 {
 		t.Fatal("test setup bug: the List()/GetSummary() hammer goroutine never ran")
 	}
 
