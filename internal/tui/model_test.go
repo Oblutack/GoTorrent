@@ -518,7 +518,7 @@ func TestFormatHelpers(t *testing.T) {
 
 func TestGradientBarAndSparklineHaveExactlyTheRequestedWidth(t *testing.T) {
 	for _, frac := range []float64{-1, 0, 0.01, 0.37, 0.5, 0.999, 1, 2} {
-		if w := lipgloss.Width(gradientBar(frac, 12, colCyan, colMagenta, nil)); w != 12 {
+		if w := lipgloss.Width(gradientBar(frac, 12, cPrimary, cSecondary, nil)); w != 12 {
 			t.Errorf("gradientBar(%v) width = %d, want 12", frac, w)
 		}
 	}
@@ -527,7 +527,7 @@ func TestGradientBarAndSparklineHaveExactlyTheRequestedWidth(t *testing.T) {
 		for i := range vals {
 			vals[i] = float64(i)
 		}
-		if w := lipgloss.Width(sparkline(vals, 12, colCyan, colMagenta)); w != 12 {
+		if w := lipgloss.Width(sparkline(vals, 12, cPrimary, cSecondary)); w != 12 {
 			t.Errorf("sparkline(%d values) width = %d, want 12", n, w)
 		}
 	}

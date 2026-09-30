@@ -183,6 +183,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if msg.String() == "ctrl+c" {
 		return m, m.quit()
 	}
+	if msg.String() == "ctrl+t" {
+		return m, m.cycleTheme(1) // works on every screen, even while typing
+	}
 	if m.modal != modalNone {
 		return m.handleModalKey(msg)
 	}
@@ -240,6 +243,10 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "?":
 		m.modal = modalHelp
 		return m, nil
+	case "t":
+		return m, m.cycleTheme(1)
+	case "T":
+		return m, m.cycleTheme(-1)
 	case "/":
 		m.searching = true
 		m.searchInput.SetValue(m.query)
@@ -411,6 +418,10 @@ func (m Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "?":
 		m.modal = modalHelp
 		return m, nil
+	case "t":
+		return m, m.cycleTheme(1)
+	case "T":
+		return m, m.cycleTheme(-1)
 	case "tab", "right", "l":
 		m.activeTab = (m.activeTab + 1) % tabCount
 		m.detailScroll = 0

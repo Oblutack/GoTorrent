@@ -58,10 +58,10 @@ func (m Model) sidebarLine(e sideEntry, selected bool, inner int) string {
 	}
 
 	bg := focused
-	marker := fg(colCyan, bg).Render("▌ ")
-	text := fg(colCyan, bg).Bold(true).Render(label)
-	cnt := fg(colCyan, bg).Render(count)
-	gap := fg(colCyan, bg).Render(strings.Repeat(" ", max(0, inner-2-lipgloss.Width(label)-lipgloss.Width(count))))
+	marker := fg(cPrimary, bg).Render("▌ ")
+	text := fg(cPrimary, bg).Bold(true).Render(label)
+	cnt := fg(cPrimary, bg).Render(count)
+	gap := fg(cPrimary, bg).Render(strings.Repeat(" ", max(0, inner-2-lipgloss.Width(label)-lipgloss.Width(count))))
 	return marker + text + gap + cnt
 }
 
@@ -135,10 +135,10 @@ func (m Model) viewTorrentPanel(w, h int) string {
 	var head []string
 	for _, c := range cols {
 		title := c.title
-		st := fg(colDim, false).Bold(true)
+		st := fg(cDim, false).Bold(true)
 		if id, ok := sortColumnID[m.sortCol]; ok && id == c.id {
 			title += " " + arrow(m.sortDesc)
-			st = fg(colCyan, false).Bold(true)
+			st = fg(cPrimary, false).Bold(true)
 		}
 		cell := padRight(st.Render(title), c.w)
 		if c.right {
@@ -168,10 +168,10 @@ func (m Model) viewTorrentPanel(w, h int) string {
 }
 
 func (m Model) emptyState(cw, rows int) []string {
-	msg1 := gradientText("No torrents yet", colCyan, colMagenta, true)
+	msg1 := gradientText("No torrents yet", brandFrom, brandTo, true)
 	msg2 := styleDim.Render("press ") + styleKey.Render("a") + styleDim.Render(" to add a magnet link or .torrent")
 	if len(m.torrents) > 0 {
-		msg1 = gradientText("Nothing matches", colCyan, colMagenta, true)
+		msg1 = gradientText("Nothing matches", brandFrom, brandTo, true)
 		msg2 = styleDim.Render("press ") + styleKey.Render("esc") + styleDim.Render(" to clear the search, or pick another filter")
 	}
 	out := make([]string, 0, rows)
@@ -200,26 +200,26 @@ func (m Model) torrentRow(t tuiclient.TorrentSummary, cols []column, cursor bool
 
 	var selBg *rgb
 	if sel {
-		selBg = &colSelBg
+		selBg = &cSelBg
 	}
-	sp := fg(colText, sel).Render(" ")
+	sp := fg(cText, sel).Render(" ")
 
 	cells := make([]string, 0, len(cols))
 	for _, c := range cols {
 		var s string
 		switch c.id {
 		case "mark":
-			cur := fg(colCyan, sel).Render(" ")
+			cur := fg(cPrimary, sel).Render(" ")
 			if cursor {
-				cur = fg(colCyan, sel).Render("▌")
+				cur = fg(cPrimary, sel).Render("▌")
 			}
-			mk := fg(colMagenta, sel).Render(" ")
+			mk := fg(cSecondary, sel).Render(" ")
 			if marked {
-				mk = fg(colMagenta, sel).Bold(true).Render("●")
+				mk = fg(cSecondary, sel).Bold(true).Render("●")
 			}
 			s = cur + mk
 		case "name":
-			st := fg(colText, sel)
+			st := fg(cText, sel)
 			if sel {
 				st = st.Bold(true)
 			}
@@ -232,25 +232,25 @@ func (m Model) torrentRow(t tuiclient.TorrentSummary, cols []column, cursor bool
 			s = fg(look.color, sel).Render(padRight(look.glyph+" "+truncate(name, c.w-2), c.w))
 		case "progress":
 			p := t.Progress()
-			s = gradientBar(p, 8, look.from, look.to, selBg) + fg(colDim, sel).Render(fmt.Sprintf(" %3.0f%%", p*100))
+			s = gradientBar(p, 8, look.from, look.to, selBg) + fg(cDim, sel).Render(fmt.Sprintf(" %3.0f%%", p*100))
 		case "down":
-			s = rateCell(down, colCyan, c.w, sel)
+			s = rateCell(down, cPrimary, c.w, sel)
 		case "up":
-			s = rateCell(up, colMagenta, c.w, sel)
+			s = rateCell(up, cSecondary, c.w, sel)
 		case "eta":
 			eta := "-"
 			if statusGroup(t.State) == "downloading" && t.Left > 0 {
 				eta = humanETA(t.Left, down)
 			}
-			s = fg(colDim, sel).Render(padLeft(eta, c.w))
+			s = fg(cDim, sel).Render(padLeft(eta, c.w))
 		case "peers":
-			col := colDim
+			col := cDim
 			if t.PeerCount > 0 {
-				col = colText
+				col = cText
 			}
 			s = fg(col, sel).Render(padLeft(itoa(t.PeerCount), c.w))
 		case "ratio":
-			s = fg(colDim, sel).Render(padLeft(ratioString(t.SeedRatio), c.w))
+			s = fg(cDim, sel).Render(padLeft(ratioString(t.SeedRatio), c.w))
 		}
 		cells = append(cells, s)
 	}
@@ -259,7 +259,7 @@ func (m Model) torrentRow(t tuiclient.TorrentSummary, cols []column, cursor bool
 
 func rateCell(bps float64, active rgb, w int, sel bool) string {
 	text := humanRate(bps)
-	c := colFaint
+	c := cFaint
 	if bps >= 1 {
 		c = active
 	}
@@ -280,13 +280,13 @@ func (m Model) selectionStrip(cw int) string {
 		styleDim.Render(humanBytes(t.TotalLength)),
 	}
 	if t.Category != "" {
-		parts = append(parts, fg(colPurple, false).Render("▪ "+t.Category))
+		parts = append(parts, fg(cTertiary, false).Render("▪ "+t.Category))
 	}
 	for _, tag := range t.Tags {
-		parts = append(parts, fg(colBlue, false).Render("#"+tag))
+		parts = append(parts, fg(cInfo, false).Render("#"+tag))
 	}
 	if t.Private {
-		parts = append(parts, fg(colAmber, false).Render("private"))
+		parts = append(parts, fg(cWarn, false).Render("private"))
 	}
 	left := strings.Join(parts, styleFaint.Render(" · "))
 	gap := max(1, cw-lipgloss.Width(left)-lipgloss.Width(pos))

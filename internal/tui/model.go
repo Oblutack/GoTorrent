@@ -131,9 +131,10 @@ type Model struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	screen screen
-	modal  modal
-	err    string // connection-level problem (list/session/live-events failing), cleared by the next success
+	screen   screen
+	modal    modal
+	themeIdx int
+	err      string // connection-level problem (list/session/live-events failing), cleared by the next success
 
 	// Connect screen.
 	addrInput  textinput.Model
@@ -252,6 +253,14 @@ func styleInput(in *textinput.Model) {
 		in.Prompt = "❯ "
 	}
 	in.PromptStyle = styleKey
+}
+
+// restyleInputs re-applies the current palette to the text inputs, which
+// capture their colours when styled rather than reading the palette live.
+func (m *Model) restyleInputs() {
+	for _, in := range []*textinput.Model{&m.addrInput, &m.tokenInput, &m.addInput, &m.searchInput} {
+		styleInput(in)
+	}
 }
 
 // Init satisfies tea.Model.

@@ -56,14 +56,14 @@ var logoRows = [3]string{
 func (m Model) viewConnect(w, h int) string {
 	var b strings.Builder
 	for _, row := range logoRows {
-		b.WriteString(gradientText(row, colCyan, colMagenta, true) + "\n")
+		b.WriteString(gradientText(row, brandFrom, brandTo, true) + "\n")
 	}
 	b.WriteString("\n" + styleDim.Render("a terminal client for gottrentd") + "\n\n")
 
 	field := func(label string, focused bool, view string) string {
-		border := colBorder
+		border := cBorder
 		if focused {
-			border = colCyan
+			border = cPrimary
 		}
 		box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(border.color()).Padding(0, 1).Width(44).Render(view)
 		return styleLabel.Render(label) + "\n" + box + "\n"
@@ -73,7 +73,7 @@ func (m Model) viewConnect(w, h int) string {
 
 	switch {
 	case m.connecting:
-		b.WriteString("\n" + lipgloss.NewStyle().Foreground(colAmber.color()).Render("◐ connecting…"))
+		b.WriteString("\n" + lipgloss.NewStyle().Foreground(cWarn.color()).Render("◐ connecting…"))
 	case m.err != "":
 		b.WriteString("\n" + styleErr.Render("✗ "+m.err))
 	default:
@@ -81,18 +81,18 @@ func (m Model) viewConnect(w, h int) string {
 	}
 	b.WriteString("\n\n" + hintLine([]hint{{"tab", "switch field"}, {"enter", "connect"}, {"ctrl+c", "quit"}}, 60))
 
-	card := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(colBorder.color()).Padding(1, 3).Render(b.String())
+	card := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(cBorder.color()).Padding(1, 3).Render(b.String())
 	return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, card)
 }
 
 func (m Model) viewAdd(w, h int) string {
 	var b strings.Builder
-	b.WriteString(gradientText("Add torrent", colCyan, colMagenta, true) + "\n\n")
+	b.WriteString(gradientText("Add torrent", brandFrom, brandTo, true) + "\n\n")
 	b.WriteString(styleLabel.Render("magnet link, .torrent URL, or a local file path") + "\n")
-	box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(colCyan.color()).Padding(0, 1).Width(64).Render(m.addInput.View())
+	box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(cPrimary.color()).Padding(0, 1).Width(64).Render(m.addInput.View())
 	b.WriteString(box + "\n")
 	b.WriteString("\n" + hintLine([]hint{{"enter", "add"}, {"esc", "cancel"}}, 60))
-	card := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(colBorder.color()).Padding(1, 3).Render(b.String())
+	card := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(cBorder.color()).Padding(1, 3).Render(b.String())
 
 	body := lipgloss.Place(w, h-footerH, lipgloss.Center, lipgloss.Center, card)
 	return lipgloss.JoinVertical(lipgloss.Left, body, m.viewFooter(w))
@@ -103,24 +103,24 @@ func (m Model) viewAdd(w, h int) string {
 func (m Model) viewHeader(w int) string {
 	inner := w - 4
 
-	logo := gradientText("◆ GoTorrent", colCyan, colMagenta, true)
+	logo := gradientText("◆ GoTorrent", brandFrom, brandTo, true)
 
 	var pills []string
 	if m.wsConnected {
-		pills = append(pills, pill("● live", colGreen))
+		pills = append(pills, pill("● live", cGood))
 	} else {
-		pills = append(pills, pill("○ polling", colAmber))
+		pills = append(pills, pill("○ polling", cWarn))
 	}
 	if m.session.DHTRunning {
-		pills = append(pills, pill(fmt.Sprintf("DHT %d", m.session.DHTNodeCount), colPurple))
+		pills = append(pills, pill(fmt.Sprintf("DHT %d", m.session.DHTNodeCount), cTertiary))
 	}
 	if m.session.PortMapped {
-		pills = append(pills, pill(fmt.Sprintf("port %d", m.session.ExternalPort), colBlue))
+		pills = append(pills, pill(fmt.Sprintf("port %d", m.session.ExternalPort), cInfo))
 	} else if m.session.ListenPort != 0 {
-		pills = append(pills, pill(fmt.Sprintf("port %d", m.session.ListenPort), colDim))
+		pills = append(pills, pill(fmt.Sprintf("port %d", m.session.ListenPort), cDim))
 	}
 	if m.session.FreeDiskBytes > 0 {
-		pills = append(pills, pill("disk "+humanBytes(m.session.FreeDiskBytes), colDim))
+		pills = append(pills, pill("disk "+humanBytes(m.session.FreeDiskBytes), cDim))
 	}
 	right := strings.Join(pills, " ")
 	for lipgloss.Width(logo)+2+lipgloss.Width(right) > inner && len(pills) > 1 {
@@ -134,11 +134,11 @@ func (m Model) viewHeader(w int) string {
 		sparkW = 10
 	}
 	down := fmt.Sprintf("%s %s %s",
-		fg(colCyan, false).Bold(true).Render("↓ "+padRight(humanRateOrZero(m.speed.down), 10)),
-		sparkline(m.speed.downHist, sparkW, colCyan, colBlue), "")
+		fg(cPrimary, false).Bold(true).Render("↓ "+padRight(humanRateOrZero(m.speed.down), 10)),
+		sparkline(m.speed.downHist, sparkW, cPrimary, cInfo), "")
 	up := fmt.Sprintf("%s %s",
-		fg(colMagenta, false).Bold(true).Render("↑ "+padRight(humanRateOrZero(m.speed.up), 10)),
-		sparkline(m.speed.upHist, sparkW, colMagenta, colPurple))
+		fg(cSecondary, false).Bold(true).Render("↑ "+padRight(humanRateOrZero(m.speed.up), 10)),
+		sparkline(m.speed.upHist, sparkW, cSecondary, cTertiary))
 	totals := styleDim.Render(fmt.Sprintf("%d torrents · %d peers · ↓ %s ↑ %s",
 		m.session.TorrentCount, m.session.TotalPeerCount,
 		humanBytes(m.session.TotalDownloaded), humanBytes(m.session.TotalUploaded)))
@@ -147,7 +147,7 @@ func (m Model) viewHeader(w int) string {
 
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(colBorder.color()).
+		BorderForeground(cBorder.color()).
 		Padding(0, 1).
 		Width(w - 2).
 		Render(line1 + "\n" + line2)
@@ -190,14 +190,14 @@ func hintLine(hints []hint, w int) string {
 func (m Model) listHints() []hint {
 	return []hint{
 		{"↑↓", "move"}, {"←→", "pane"}, {"enter", "open"}, {"space", "mark"}, {"/", "search"}, {"s", "sort"},
-		{"a", "add"}, {"p", "pause"}, {"r", "resume"}, {"d", "remove"}, {"?", "help"}, {"q", "quit"},
+		{"a", "add"}, {"p", "pause"}, {"r", "resume"}, {"d", "remove"}, {"t", "theme"}, {"?", "help"}, {"q", "quit"},
 	}
 }
 
 func (m Model) detailHints() []hint {
 	return []hint{
 		{"tab", "next tab"}, {"1-5", "jump"}, {"↑↓", "scroll"}, {"p", "pause"}, {"r", "resume"},
-		{"v", "verify"}, {"n", "reannounce"}, {"d", "remove"}, {"esc", "back"}, {"?", "help"},
+		{"v", "verify"}, {"n", "reannounce"}, {"d", "remove"}, {"t", "theme"}, {"esc", "back"}, {"?", "help"},
 	}
 }
 
@@ -212,10 +212,10 @@ func (m Model) viewFooter(w int) string {
 	default:
 		var chips []string
 		if m.query != "" {
-			chips = append(chips, pill("filter: "+truncate(m.query, 20), colCyan))
+			chips = append(chips, pill("filter: "+truncate(m.query, 20), cPrimary))
 		}
 		if n := len(m.marked); n > 0 {
-			chips = append(chips, pill(fmt.Sprintf("%d selected", n), colMagenta))
+			chips = append(chips, pill(fmt.Sprintf("%d selected", n), cSecondary))
 		}
 		left = strings.Join(chips, " ")
 	}
@@ -223,12 +223,12 @@ func (m Model) viewFooter(w int) string {
 	var right string
 	if n := len(m.toasts); n > 0 {
 		t := m.toasts[n-1]
-		glyph, c := "●", colBlue
+		glyph, c := "●", cInfo
 		switch t.kind {
 		case toastOK:
-			glyph, c = "✓", colGreen
+			glyph, c = "✓", cGood
 		case toastErr:
-			glyph, c = "✗", colRed
+			glyph, c = "✗", cBad
 		}
 		right = pill(glyph+" "+truncate(t.text, w/2), c)
 	}
@@ -252,7 +252,7 @@ func (m Model) viewFooter(w int) string {
 func (m Model) viewHelp() string {
 	section := func(title string, rows ...[2]string) string {
 		var b strings.Builder
-		b.WriteString(fg(colPurple, false).Bold(true).Render(title) + "\n")
+		b.WriteString(fg(cTertiary, false).Bold(true).Render(title) + "\n")
 		for _, r := range rows {
 			b.WriteString(styleKey.Render(padRight(r[0], 14)) + styleDim.Render(r[1]) + "\n")
 		}
@@ -278,11 +278,12 @@ func (m Model) viewHelp() string {
 		[2]string{"/", "search by name"},
 		[2]string{"s  S", "sort column  reverse"},
 		[2]string{"1-5  tab", "detail tabs"},
+		[2]string{"t  T", "cycle themes"},
 		[2]string{"?  q", "help  quit"},
 	)
 	body := lipgloss.JoinHorizontal(lipgloss.Top, left, "    ", right)
-	title := gradientText("Keyboard shortcuts", colCyan, colMagenta, true)
-	return lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(colCyan.color()).Padding(0, 3).
+	title := gradientText("Keyboard shortcuts", brandFrom, brandTo, true)
+	return lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(cPrimary.color()).Padding(0, 3).
 		Render(title + "\n\n" + strings.TrimRight(body, "\n"))
 }
 
@@ -300,7 +301,7 @@ func (m Model) viewDeleteConfirm() string {
 	if len(m.confirm) != 1 {
 		noun = fmt.Sprintf("%d torrents", len(m.confirm))
 	}
-	b.WriteString(fg(colRed, false).Bold(true).Render("Remove "+noun+"?") + "\n\n")
+	b.WriteString(fg(cBad, false).Bold(true).Render("Remove "+noun+"?") + "\n\n")
 	for i, n := range names {
 		if i == 5 {
 			b.WriteString(styleDim.Render(fmt.Sprintf("  …and %d more", len(names)-5)) + "\n")
@@ -309,5 +310,5 @@ func (m Model) viewDeleteConfirm() string {
 		b.WriteString(styleText.Render("  • "+truncate(n, 50)) + "\n")
 	}
 	b.WriteString("\n" + hintLine([]hint{{"y", "remove, keep files"}, {"D", "remove and delete files"}, {"n", "cancel"}}, 70))
-	return lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(colRed.color()).Padding(1, 3).Render(b.String())
+	return lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(cBad.color()).Padding(1, 3).Render(b.String())
 }

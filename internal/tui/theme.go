@@ -33,23 +33,31 @@ func clamp01(v float64) float64 {
 	return v
 }
 
-// The neon palette: a cyan-to-magenta gradient as the signature, on whatever
-// background the terminal already has.
+// The live palette. These are assigned by applyTheme (themes.go) and read by
+// every view; they are semantic roles, not literal colours - "primary" is
+// cyan in one theme and amber in another.
 var (
-	colCyan    = rgb{0x00, 0xe5, 0xff}
-	colMagenta = rgb{0xff, 0x2b, 0xd6}
-	colPurple  = rgb{0xb4, 0x8e, 0xff}
-	colGreen   = rgb{0x3d, 0xdc, 0x97}
-	colAmber   = rgb{0xff, 0xb4, 0x54}
-	colRed     = rgb{0xff, 0x53, 0x70}
-	colBlue    = rgb{0x6e, 0xa8, 0xfe}
+	cPrimary   rgb // the signature accent: cursor, keys, download speed
+	cSecondary rgb // the contrasting accent: upload speed, gradient end
+	cTertiary  rgb // a third accent: section headings, categories
+	cGood      rgb // seeding, healthy, success
+	cWarn      rgb // paused, caution
+	cBad       rgb // errors
+	cInfo      rgb // neutral information
 
-	colText   = rgb{0xe6, 0xed, 0xf3}
-	colDim    = rgb{0x8b, 0x94, 0x9e}
-	colFaint  = rgb{0x48, 0x4f, 0x58}
-	colBorder = rgb{0x30, 0x36, 0x3d}
-	colTrack  = rgb{0x2b, 0x31, 0x3a} // empty part of a bar / missing piece
-	colSelBg  = rgb{0x1b, 0x26, 0x3b} // selected row background
+	cText   rgb
+	cDim    rgb
+	cFaint  rgb
+	cBorder rgb
+	cTrack  rgb // empty part of a bar / missing piece
+	cSelBg  rgb // selected row background
+
+	cOnPrimary rgb // text drawn on a primary-coloured background (the active tab)
+
+	// Gradients: the logo and titles, a downloading bar, a seeding bar.
+	brandFrom, brandTo rgb
+	barFrom, barTo     rgb
+	seedFrom, seedTo   rgb
 )
 
 // gradientText colours each rune of s along a from->to gradient.
@@ -106,7 +114,7 @@ func gradientBar(frac float64, width int, from, to rgb, bg *rgb) string {
 		case i == full && part > 0:
 			b.WriteString(style(lerpRGB(from, to, t)).Render(string(partialBlocks[part])))
 		default:
-			b.WriteString(style(colTrack).Render("░"))
+			b.WriteString(style(cTrack).Render("░"))
 		}
 	}
 	return b.String()
@@ -140,7 +148,7 @@ func sparkline(vals []float64, width int, from, to rgb) string {
 			t = float64(i) / float64(width-1)
 		}
 		level := 0
-		fg := colFaint
+		fg := cFaint
 		if i >= pad && maxV > 0 {
 			v := vals[i-pad]
 			level = int(math.Round(v / maxV * float64(len(sparkLevels)-1)))
@@ -164,19 +172,19 @@ type stateLook struct {
 func lookFor(state string) stateLook {
 	switch state {
 	case "Downloading":
-		return stateLook{"▼", colCyan, colCyan, colMagenta}
+		return stateLook{"▼", cPrimary, barFrom, barTo}
 	case "Seeding":
-		return stateLook{"▲", colGreen, colGreen, colCyan}
+		return stateLook{"▲", cGood, seedFrom, seedTo}
 	case "Paused":
-		return stateLook{"‖", colAmber, colAmber, colAmber}
+		return stateLook{"‖", cWarn, cWarn, cWarn}
 	case "Error":
-		return stateLook{"×", colRed, colRed, colRed}
+		return stateLook{"×", cBad, cBad, cBad}
 	case "CheckingFiles":
-		return stateLook{"◐", colPurple, colPurple, colBlue}
+		return stateLook{"◐", cTertiary, cTertiary, cInfo}
 	case "FetchingMetadata":
-		return stateLook{"◌", colMagenta, colMagenta, colPurple}
+		return stateLook{"◌", cSecondary, cSecondary, cTertiary}
 	default:
-		return stateLook{"○", colDim, colDim, colDim}
+		return stateLook{"○", cDim, cDim, cDim}
 	}
 }
 
@@ -184,24 +192,33 @@ func lookFor(state string) stateLook {
 func fg(c rgb, selected bool) lipgloss.Style {
 	s := lipgloss.NewStyle().Foreground(c.color())
 	if selected {
-		s = s.Background(colSelBg.color())
+		s = s.Background(cSelBg.color())
 	}
 	return s
 }
 
-// Shared one-off styles.
+// Shared one-off styles, rebuilt by applyTheme whenever the palette changes.
 var (
-	styleDim   = lipgloss.NewStyle().Foreground(colDim.color())
-	styleFaint = lipgloss.NewStyle().Foreground(colFaint.color())
-	styleText  = lipgloss.NewStyle().Foreground(colText.color())
-	styleErr   = lipgloss.NewStyle().Foreground(colRed.color())
-	styleKey   = lipgloss.NewStyle().Foreground(colCyan.color()).Bold(true)
-	styleLabel = lipgloss.NewStyle().Foreground(colDim.color())
+	styleDim   lipgloss.Style
+	styleFaint lipgloss.Style
+	styleText  lipgloss.Style
+	styleErr   lipgloss.Style
+	styleKey   lipgloss.Style
+	styleLabel lipgloss.Style
 )
+
+func rebuildStyles() {
+	styleDim = lipgloss.NewStyle().Foreground(cDim.color())
+	styleFaint = lipgloss.NewStyle().Foreground(cFaint.color())
+	styleText = lipgloss.NewStyle().Foreground(cText.color())
+	styleErr = lipgloss.NewStyle().Foreground(cBad.color())
+	styleKey = lipgloss.NewStyle().Foreground(cPrimary.color()).Bold(true)
+	styleLabel = lipgloss.NewStyle().Foreground(cDim.color())
+}
 
 // pill is a small rounded-looking tag: coloured text on a dim block.
 func pill(text string, c rgb) string {
-	return lipgloss.NewStyle().Foreground(c.color()).Background(colTrack.color()).Padding(0, 1).Bold(true).Render(text)
+	return lipgloss.NewStyle().Foreground(c.color()).Background(cTrack.color()).Padding(0, 1).Bold(true).Render(text)
 }
 
 // panel draws content inside a rounded border, sized to exactly w x h cells
@@ -210,9 +227,9 @@ func panel(content string, w, h int, focused bool) string {
 	if w < 4 || h < 3 {
 		return ""
 	}
-	border := colBorder
+	border := cBorder
 	if focused {
-		border = colCyan
+		border = cPrimary
 	}
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).

@@ -34,7 +34,7 @@ func (m Model) viewDetail(w, h int) string {
 	look := lookFor(t.State)
 	down, up := m.rateFor(m.detailHash)
 
-	title := gradientText(truncate(t.Name, iw-18), colCyan, colMagenta, true)
+	title := gradientText(truncate(t.Name, iw-18), brandFrom, brandTo, true)
 	if t.Name == "" {
 		title = styleDim.Render("loading…")
 	}
@@ -56,19 +56,19 @@ func (m Model) viewDetail(w, h int) string {
 		return styleLabel.Render(label+" ") + fg(c, false).Render(val)
 	}
 	line4 := strings.Join([]string{
-		stat("↓", humanRateOrZero(down), colCyan),
-		stat("↑", humanRateOrZero(up), colMagenta),
-		stat("ETA", eta, colText),
-		stat("ratio", ratioString(t.SeedRatio), colText),
-		stat("peers", fmt.Sprintf("%d (%d seeds)", t.PeerCount, t.SeedCount), colText),
-		stat("size", humanBytes(t.TotalLength), colText),
+		stat("↓", humanRateOrZero(down), cPrimary),
+		stat("↑", humanRateOrZero(up), cSecondary),
+		stat("ETA", eta, cText),
+		stat("ratio", ratioString(t.SeedRatio), cText),
+		stat("peers", fmt.Sprintf("%d (%d seeds)", t.PeerCount, t.SeedCount), cText),
+		stat("size", humanBytes(t.TotalLength), cText),
 	}, styleFaint.Render("  ·  "))
 
 	tabs := make([]string, tabCount)
 	for i := range tabs {
 		label := fmt.Sprintf("%d %s", i+1, tabNames[i])
 		if detailTab(i) == m.activeTab {
-			tabs[i] = lipgloss.NewStyle().Foreground(lipgloss.Color("#0d1117")).Background(colCyan.color()).Bold(true).Padding(0, 1).Render(label)
+			tabs[i] = lipgloss.NewStyle().Foreground(cOnPrimary.color()).Background(cPrimary.color()).Bold(true).Padding(0, 1).Render(label)
 		} else {
 			tabs[i] = styleDim.Padding(0, 1).Render(label)
 		}
@@ -134,19 +134,19 @@ func (m Model) overviewLines(t tuiclient.TorrentSummary, iw int) []string {
 	add("Availability", val(fmt.Sprintf("%d copies of the rarest piece", t.MinAvailability)))
 	add("Peers", val(fmt.Sprintf("%d connected · %d seeds · %d leechers", t.PeerCount, t.SeedCount, t.LeechCount)))
 	if d.InEndgame {
-		add("Endgame", fg(colAmber, false).Render("yes, duplicating the last requests"))
+		add("Endgame", fg(cWarn, false).Render("yes, duplicating the last requests"))
 	}
 	if t.Private {
-		add("Private", fg(colAmber, false).Render("yes (no DHT, PEX or LSD)"))
+		add("Private", fg(cWarn, false).Render("yes (no DHT, PEX or LSD)"))
 	}
 	if t.Category != "" {
-		add("Category", fg(colPurple, false).Render(t.Category))
+		add("Category", fg(cTertiary, false).Render(t.Category))
 	}
 	if len(t.Tags) > 0 {
-		add("Tags", fg(colBlue, false).Render("#"+strings.Join(t.Tags, "  #")))
+		add("Tags", fg(cInfo, false).Render("#"+strings.Join(t.Tags, "  #")))
 	}
 	if t.ForceStart {
-		add("Queue", fg(colAmber, false).Render("force started"))
+		add("Queue", fg(cWarn, false).Render("force started"))
 	}
 	if d.SeedingDurationSeconds > 0 {
 		add("Seeding for", val((time.Duration(d.SeedingDurationSeconds) * time.Second).Round(time.Second).String()))
@@ -171,7 +171,7 @@ func (m Model) overviewLines(t tuiclient.TorrentSummary, iw int) []string {
 }
 
 var priorityColor = map[string]rgb{
-	"high": colMagenta, "normal": colText, "low": colBlue, "skip": colFaint,
+	"high": cSecondary, "normal": cText, "low": cInfo, "skip": cFaint,
 }
 
 func (m Model) fileLines(iw int) []string {
@@ -189,7 +189,7 @@ func (m Model) fileLines(iw int) []string {
 	for _, f := range real {
 		c, ok := priorityColor[f.Priority]
 		if !ok {
-			c = colText
+			c = cText
 		}
 		out = append(out, styleText.Render(padRight(truncate(strings.Join(f.Path, "/"), nameW), nameW))+
 			styleDim.Render(padLeft(humanBytes(f.Length), 12))+"  "+fg(c, false).Render(f.Priority))
@@ -233,19 +233,19 @@ func (m Model) peerLines(iw int) []string {
 
 	out := []string{styleDim.Render(padRight("ADDRESS", 22) + padRight("", 5) + padRight("PROGRESS", 16) + padLeft("DOWN", 11) + padLeft("UP", 11) + "  LINK      CLIENT")}
 	for _, p := range peers {
-		dir, dirCol := "in ", colBlue
+		dir, dirCol := "in ", cInfo
 		if p.Outbound {
-			dir, dirCol = "out", colPurple
+			dir, dirCol = "out", cTertiary
 		}
 		d, u := rate(p.Addr)
-		link := fg(colGreen, false).Render("● open  ")
+		link := fg(cGood, false).Render("● open  ")
 		if p.PeerChoking {
-			link = fg(colAmber, false).Render("○ choked")
+			link = fg(cWarn, false).Render("○ choked")
 		}
 		out = append(out, styleText.Render(padRight(truncate(p.Addr, 21), 22))+
 			fg(dirCol, false).Render(padRight(dir, 5))+
-			gradientBar(p.Progress, 10, colCyan, colMagenta, nil)+styleDim.Render(fmt.Sprintf(" %3.0f%%", p.Progress*100))+" "+
-			rateCell(d, colCyan, 11, false)+rateCell(u, colMagenta, 11, false)+"  "+link+" "+styleDim.Render(clientName(p.PeerID)))
+			gradientBar(p.Progress, 10, barFrom, barTo, nil)+styleDim.Render(fmt.Sprintf(" %3.0f%%", p.Progress*100))+" "+
+			rateCell(d, cPrimary, 11, false)+rateCell(u, cSecondary, 11, false)+"  "+link+" "+styleDim.Render(clientName(p.PeerID)))
 	}
 	return out
 }
@@ -257,13 +257,13 @@ func (m Model) trackerLines(iw int) []string {
 	now := m.detailAt
 	var out []string
 	for _, t := range m.trackers {
-		dot, c := "●", colGreen
+		dot, c := "●", cGood
 		status := fmt.Sprintf("%d seeders · %d leechers · announced %s", t.Seeders, t.Leechers, ago(t.LastAnnounce, now))
 		switch {
 		case t.LastError != "":
-			dot, c = "●", colRed
+			dot, c = "●", cBad
 		case t.LastAnnounce.IsZero():
-			dot, c = "○", colAmber
+			dot, c = "○", cWarn
 			status = "not announced yet"
 		}
 		out = append(out, fg(c, false).Render(dot)+" "+styleText.Render(truncate(t.URL, iw-4)))
@@ -285,8 +285,8 @@ func (m Model) pieceLines(iw, avail int) []string {
 	if per > 1 {
 		unit = fmt.Sprintf("each cell = %d pieces", per)
 	}
-	have := fg(colCyan, false).Render("█")
-	missing := fg(colTrack, false).Render("█")
+	have := fg(cPrimary, false).Render("█")
+	missing := fg(cTrack, false).Render("█")
 	legend := fmt.Sprintf("%s have   %s missing   %s",
 		have, missing,
 		styleDim.Render(fmt.Sprintf("%d / %d pieces · %.1f%% · %s",
@@ -349,9 +349,9 @@ func pieceMap(p tuiclient.PiecesResponse, w, h int) ([]string, int) {
 				return rgb{}, false
 			}
 			if p.Has(i) {
-				return lerpRGB(colCyan, colMagenta, pos(i)), true
+				return lerpRGB(brandFrom, brandTo, pos(i)), true
 			}
-			return colTrack, true
+			return cTrack, true
 		}
 	} else {
 		cells := w * h * 2
@@ -374,7 +374,7 @@ func pieceMap(p tuiclient.PiecesResponse, w, h int) ([]string, int) {
 			if used > 1 {
 				pos = float64(idx) / float64(used-1)
 			}
-			return lerpRGB(colTrack, lerpRGB(colCyan, colMagenta, pos), frac), true
+			return lerpRGB(cTrack, lerpRGB(brandFrom, brandTo, pos), frac), true
 		}
 	}
 

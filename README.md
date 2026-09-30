@@ -77,7 +77,7 @@ It's still, first and foremost, an educational project and a demonstration of sk
 - Bearer-token auth, a DNS-rebinding defense (Host-header allowlist), and brute-force lockout on the control API.
 
 **`gottrent-tui` — the terminal UI**
-- A Bubble Tea client on `gottrentd`'s own control API for a headless box or an SSH session, styled with a cyan-to-magenta neon palette: a dashboard with a filter sidebar (status, category, tag), live download/upload sparklines, per-torrent speed and ETA, gradient progress bars, search, sorting, multi-select bulk actions, a delete confirmation, toasts, and a help overlay. The detail view has Overview, Files, Peers (with live per-peer speeds), Trackers, and a coloured piece map. Real-time updates come over the same WebSocket stream Desktop uses.
+- A Bubble Tea client on `gottrentd`'s own control API for a headless box or an SSH session, styled with a cyan-to-magenta neon palette by default and eleven switchable colour themes (Neon, Desktop, Tokyo Night, Catppuccin, Dracula, Gruvbox, Nord, Amber, Matrix, Monochrome, Desktop Light): a dashboard with a filter sidebar (status, category, tag), live download/upload sparklines, per-torrent speed and ETA, gradient progress bars, search, sorting, multi-select bulk actions, a delete confirmation, toasts, and a help overlay. The detail view has Overview, Files, Peers (with live per-peer speeds), Trackers, and a coloured piece map. Real-time updates come over the same WebSocket stream Desktop uses.
 - This project's one deliberate external dependency (`charmbracelet/bubbletea`/`lipgloss`/`bubbles`) — every other package here is hand-rolled specifically because the stdlib had nothing or a dependency would be disproportionate; a real terminal UI's raw-mode/ANSI-rendering problem is genuinely the opposite case.
 
 **`GoTorrent.Hub` — the .NET control plane**
@@ -198,7 +198,7 @@ go build ./cmd/gottrent-tui/
 ./gottrent-tui -api-address 127.0.0.1:6880
 ```
 
-It prompts for the bearer token on first connect (pre-filled from `-token` or the default token file if either is given/found) and never auto-connects. It needs a terminal of at least 80x24 and looks best with true-colour support (Windows Terminal, iTerm2, most modern Linux terminals); it respects `NO_COLOR`. Press `?` inside for every key. The short version: `↑↓` move, `←→` switch between the filter sidebar and the list, `enter` opens a torrent (then `1`-`5` or `tab` for its tabs), `space` marks torrents for bulk `p`ause / `r`esume / `d` remove, `/` searches, `s` sorts, and `a` adds a magnet, URL, or local `.torrent` path.
+It prompts for the bearer token on first connect (pre-filled from `-token` or the default token file if either is given/found) and never auto-connects. It needs a terminal of at least 80x24 and looks best with true-colour support (Windows Terminal, iTerm2, most modern Linux terminals); it respects `NO_COLOR`. Press `t` (or `ctrl+t` anywhere) to cycle colour themes; the choice is remembered, and `-theme <name>` / `-list-themes` pick or list them from the command line. Press `?` inside for every key. The short version: `↑↓` move, `←→` switch between the filter sidebar and the list, `enter` opens a torrent (then `1`-`5` or `tab` for its tabs), `space` marks torrents for bulk `p`ause / `r`esume / `d` remove, `/` searches, `s` sorts, and `a` adds a magnet, URL, or local `.torrent` path.
 
 ---
 
