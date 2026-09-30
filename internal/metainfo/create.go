@@ -44,6 +44,18 @@ type CreateOptions struct {
 	// torrent. A single-file torrent has exactly one entry with a nil Path.
 	// Required, and at least one file must have a positive Length.
 	Files []CreateFile
+
+	// MetaVersion selects the .torrent format Build produces: 0 (the
+	// default) is byte-for-byte today's v1-only behavior; 2 builds a BEP
+	// 52 v2 torrent (see Hybrid).
+	MetaVersion int
+	// Hybrid, when MetaVersion == 2, also generates the v1 'pieces'/
+	// 'files'/'length' fields alongside the v2 ones — BEP 52's own
+	// "Upgrade Path", joinable from both a v1-only and a v2-only swarm.
+	// A multi-file hybrid torrent gets real BEP 47 padding files inserted
+	// automatically, the same mechanism 3.2's file-priority skip logic
+	// already knows how to handle. Ignored when MetaVersion != 2.
+	Hybrid bool
 }
 
 // ChoosePieceLength picks a piece length for a torrent of the given total
@@ -102,6 +114,12 @@ func Build(opts CreateOptions) (raw []byte, mi *MetaInfo, err error) {
 	}
 	if pieceLength < MinPieceLength || pieceLength > MaxPieceLength {
 		return nil, nil, fmt.Errorf("metainfo: piece length %d out of range %d..%d", pieceLength, MinPieceLength, MaxPieceLength)
+	}
+
+	if opts.MetaVersion == 2 {
+		return buildV2(opts, pieceLength)
+	} else if opts.MetaVersion != 0 {
+		return nil, nil, fmt.Errorf("metainfo: unsupported MetaVersion %d (only 0 or 2)", opts.MetaVersion)
 	}
 
 	pieces, err := hashPieces(opts.Files, pieceLength)

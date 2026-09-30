@@ -26,6 +26,10 @@ func Export(mi *MetaInfo, extraTrackers []string) ([]byte, error) {
 		CreationDate: mi.CreationDate,
 		UrlList:      mi.UrlList,
 		Info:         mi.InfoBytes,
+		// PieceLayers lives outside the info dictionary, so it never
+		// travels with mi.InfoBytes on its own — a v2/hybrid torrent
+		// re-exported without this would silently lose it.
+		PieceLayers: pieceLayersToWire(mi.PieceLayers),
 	}
 
 	seen := make(map[string]bool)

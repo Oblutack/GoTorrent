@@ -27,6 +27,8 @@ func runCreate(args []string) {
 	private := fs.Bool("private", false, "Set the private flag (BEP 27): no DHT/PEX/LSD, tracker-only peer discovery")
 	comment := fs.String("comment", "", "Optional comment embedded in the torrent")
 	createdBy := fs.String("created-by", "gottrent", "Value of the torrent's \"created by\" field")
+	v2 := fs.Bool("v2", false, "Build a BitTorrent v2 (BEP 52) torrent: SHA-256 merkle-tree piece verification, a file tree instead of a flat file list. Implied by -hybrid.")
+	hybrid := fs.Bool("hybrid", false, "With -v2 (or alone): also generate v1-compatible fields (BEP 3 'pieces' plus BEP 47 padding files where needed), so the torrent can be downloaded by v1-only, v2-only, or hybrid clients alike")
 	var trackers trackerTiers
 	fs.Var(&trackers, "tracker", "Announce URL (repeat for multiple trackers, each its own tier)")
 	var webSeeds trackerTiers
@@ -57,6 +59,10 @@ func runCreate(args []string) {
 		CreatedBy:   *createdBy,
 		UrlList:     webSeeds,
 		Files:       files,
+		Hybrid:      *hybrid,
+	}
+	if *v2 || *hybrid {
+		opts.MetaVersion = 2
 	}
 	if len(trackers) > 0 {
 		opts.Announce = trackers[0]
@@ -80,7 +86,14 @@ func runCreate(args []string) {
 
 	fmt.Printf("Wrote %s\n", outPath)
 	fmt.Printf("  Name:        %s\n", mi.Info.Name)
-	fmt.Printf("  Info hash:   %s\n", mi.InfoHash)
+	if mi.MetaVersion == 2 {
+		if *hybrid {
+			fmt.Printf("  v1 info hash: %s\n", mi.InfoHash)
+		}
+		fmt.Printf("  v2 info hash: %s\n", mi.InfoHashV2)
+	} else {
+		fmt.Printf("  Info hash:   %s\n", mi.InfoHash)
+	}
 	fmt.Printf("  Total size:  %d bytes\n", mi.TotalLength)
 	fmt.Printf("  Piece size:  %d bytes (%d pieces)\n", mi.Info.PieceLength, mi.NumPieces())
 	fmt.Printf("  Files:       %d\n", len(files))

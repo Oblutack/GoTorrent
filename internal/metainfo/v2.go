@@ -117,6 +117,22 @@ func walkFileTree(node map[string]bencode.RawMessage, prefix []string, out *[]V2
 	return nil
 }
 
+// pieceLayersToWire converts a parsed PieceLayers map back to the wire's
+// plain string-keyed shape — shared by Export (re-emitting an already-
+// parsed MetaInfo's own bytes) and Build (a freshly-created v2/hybrid
+// torrent), so a v2 or hybrid torrent's 'piece layers' field is never
+// silently dropped by either write path.
+func pieceLayersToWire(layers map[Hash256][]byte) map[string][]byte {
+	if len(layers) == 0 {
+		return nil
+	}
+	wire := make(map[string][]byte, len(layers))
+	for k, v := range layers {
+		wire[string(k[:])] = v
+	}
+	return wire
+}
+
 // parsePieceLayers decodes BEP 52's top-level "piece layers" dict.
 func parsePieceLayers(wire map[string][]byte) (map[Hash256][]byte, error) {
 	if len(wire) == 0 {
