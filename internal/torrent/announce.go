@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Oblutack/GoTorrent/internal/logger"
+	"github.com/Oblutack/GoTorrent/internal/metainfo"
 	"github.com/Oblutack/GoTorrent/internal/tracker"
 )
 
@@ -247,8 +248,75 @@ func (t *Torrent) announceTier(ctx context.Context, urls []string, event tracker
 	return nil, 0, lastErr
 }
 
-// announceOne sends one announce to one tracker URL.
+// announceOne sends one announce to one tracker URL under this torrent's
+// primary identity, and — for a genuinely hybrid torrent (both v1 and v2
+// present, see hybridV2InfoHash) — a second announce to the same URL under
+// its v2 identity, merging both into one response and one recorded
+// TrackerStatus. Real hybrid clients do this since a v1-only swarm and a
+// v2-only swarm on the same tracker can be disjoint — cheap (one extra
+// request per tracker per interval), not a protocol redesign. A pure-v2
+// torrent needs no second announce: t.infoHash already IS its v2 identity
+// (see torrent.New's own doc comment on identity selection).
 func (t *Torrent) announceOne(ctx context.Context, url string, event tracker.Event) (*tracker.AnnounceResponse, error) {
+	resp, err := t.announceOneHash(ctx, url, event, t.infoHash)
+
+	v2Hash, hybrid := t.hybridV2InfoHash()
+	if !hybrid {
+		t.recordTrackerResult(url, resp, err)
+		return resp, err
+	}
+
+	resp2, err2 := t.announceOneHash(ctx, url, event, v2Hash)
+	merged, mergedErr := mergeAnnounceResponses(resp, err, resp2, err2)
+	t.recordTrackerResult(url, merged, mergedErr)
+	return merged, mergedErr
+}
+
+// hybridV2InfoHash returns this torrent's v2 identity (truncated per BEP
+// 52) for a genuinely hybrid torrent — both v1 and v2 present in the same
+// info dict — or false when there's nothing to dual-announce: metadata not
+// known yet, a plain v1 torrent, or a pure-v2 one (already announced under
+// its v2 identity as t.infoHash itself, needing no second request).
+func (t *Torrent) hybridV2InfoHash() (metainfo.Hash, bool) {
+	mi := t.mi.Load()
+	if mi == nil || mi.MetaVersion != 2 || mi.IsPureV2() {
+		return metainfo.Hash{}, false
+	}
+	return mi.InfoHashV2.Truncated20(), true
+}
+
+// mergeAnnounceResponses combines a hybrid torrent's two per-hash announce
+// results into one: peers from both, seeder/leecher counts summed (both
+// counts describe the same logical torrent, just observed under its two
+// different identities), and the shorter of the two requested intervals.
+// A single failure is tolerated silently — the other hash's real peers are
+// still worth using — only a double failure propagates an error.
+func mergeAnnounceResponses(resp *tracker.AnnounceResponse, err error, resp2 *tracker.AnnounceResponse, err2 error) (*tracker.AnnounceResponse, error) {
+	switch {
+	case err != nil && err2 != nil:
+		return nil, err
+	case err != nil:
+		return resp2, nil
+	case err2 != nil:
+		return resp, nil
+	}
+	merged := *resp
+	merged.Peers = append(append([]tracker.PeerInfo(nil), resp.Peers...), resp2.Peers...)
+	merged.Complete += resp2.Complete
+	merged.Incomplete += resp2.Incomplete
+	if resp2.Interval > 0 && (merged.Interval == 0 || resp2.Interval < merged.Interval) {
+		merged.Interval = resp2.Interval
+	}
+	if resp2.MinInterval > merged.MinInterval {
+		merged.MinInterval = resp2.MinInterval
+	}
+	return &merged, nil
+}
+
+// announceOneHash sends one announce to one tracker URL under a specific
+// infohash — factored out of announceOne so a hybrid torrent's dual
+// announce can call it twice without duplicating the request-building.
+func (t *Torrent) announceOneHash(ctx context.Context, url string, event tracker.Event, hash metainfo.Hash) (*tracker.AnnounceResponse, error) {
 	left := int64(-1) // unknown until metadata tells us the real size
 	if mi := t.mi.Load(); mi != nil {
 		left = mi.TotalLength - t.downloaded.Load()
@@ -258,7 +326,7 @@ func (t *Torrent) announceOne(ctx context.Context, url string, event tracker.Eve
 	}
 
 	req := tracker.AnnounceRequest{
-		InfoHash:   t.infoHash,
+		InfoHash:   hash,
 		PeerID:     t.cfg.OurID,
 		Port:       t.cfg.ListenPort,
 		Uploaded:   t.uploaded.Load(),
@@ -268,9 +336,7 @@ func (t *Torrent) announceOne(ctx context.Context, url string, event tracker.Eve
 		Event:      event,
 		NumWant:    50,
 	}
-	resp, err := t.trackerClient.Announce(ctx, url, req)
-	t.recordTrackerResult(url, resp, err)
-	return resp, err
+	return t.trackerClient.Announce(ctx, url, req)
 }
 
 // supportedAnnounceURLs keeps only the schemes tracker.Client.Announce

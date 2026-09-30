@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -139,6 +140,93 @@ func TestAnnounceTiersToleratesAFullyFailedTier(t *testing.T) {
 	}
 	if len(resp.Peers) != 1 {
 		t.Fatalf("got %d peers, want 1 from the surviving tier", len(resp.Peers))
+	}
+}
+
+// TestAnnounceOneDualAnnouncesAHybridTorrent proves a hybrid torrent (both
+// v1 and v2 present in the same info dict) announces to the same tracker
+// URL twice — once under each identity — and merges both real responses
+// into one, rather than only ever using the v1 hash a plain v1 torrent
+// would. See announceOne's own doc comment for why: a v1-only swarm and a
+// v2-only swarm on the same tracker can be genuinely disjoint.
+func TestAnnounceOneDualAnnouncesAHybridTorrent(t *testing.T) {
+	var mu sync.Mutex
+	var gotHashes []string
+	peerPort := byte(0)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		gotHashes = append(gotHashes, r.URL.Query().Get("info_hash"))
+		peerPort++
+		p := peerPort
+		mu.Unlock()
+		peerRespondingHandler(t, []byte{127, 0, 0, 1, 0, p}, 60)(w, r)
+	}))
+	defer srv.Close()
+
+	files := map[string][]byte{"fileA.bin": genBytesV2(102400)}
+	mi := buildV2TestTorrent(t, 32768, true, files) // hybrid
+	if len(mi.PieceHashes) == 0 || mi.InfoHashV2.IsZero() {
+		t.Fatal("test setup: expected a real hybrid torrent with both v1 and v2 identities")
+	}
+
+	tr := &Torrent{trackerClient: tracker.NewClient(nil), infoHash: mi.InfoHash}
+	tr.mi.Store(mi)
+
+	resp, err := tr.announceOne(context.Background(), srv.URL, tracker.EventStarted)
+	if err != nil {
+		t.Fatalf("announceOne: %v", err)
+	}
+	if len(resp.Peers) != 2 {
+		t.Fatalf("got %d peers, want 2 (one real announce per identity, merged)", len(resp.Peers))
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(gotHashes) != 2 {
+		t.Fatalf("tracker received %d requests, want 2 (one per identity)", len(gotHashes))
+	}
+	wantV1 := string(mi.InfoHash[:])
+	v2Truncated := mi.InfoHashV2.Truncated20()
+	wantV2 := string(v2Truncated[:])
+	if gotHashes[0] == gotHashes[1] {
+		t.Fatalf("both announces used the same info_hash %x, want one v1 and one v2", gotHashes[0])
+	}
+	seen := map[string]bool{gotHashes[0]: true, gotHashes[1]: true}
+	if !seen[wantV1] {
+		t.Fatalf("tracker never received the v1 info_hash %x (got %x, %x)", wantV1, gotHashes[0], gotHashes[1])
+	}
+	if !seen[wantV2] {
+		t.Fatalf("tracker never received the truncated v2 info_hash %x (got %x, %x)", wantV2, gotHashes[0], gotHashes[1])
+	}
+}
+
+// TestAnnounceOneDoesNotDualAnnounceAPureV2Torrent proves a pure-v2
+// torrent (no v1 pieces at all) announces exactly once per URL — it's
+// already identified by its v2 hash (t.infoHash itself, per torrent.New's
+// own identity selection), so a second announce would be a pointless
+// duplicate rather than genuine extra swarm discovery.
+func TestAnnounceOneDoesNotDualAnnounceAPureV2Torrent(t *testing.T) {
+	var hits int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		peerRespondingHandler(t, []byte{127, 0, 0, 1, 0, 80}, 60)(w, r)
+	}))
+	defer srv.Close()
+
+	files := map[string][]byte{"fileA.bin": genBytesV2(102400)}
+	mi := buildV2TestTorrent(t, 32768, false, files) // pure v2
+	if mi.InfoHashV2.IsZero() || len(mi.PieceHashes) != 0 {
+		t.Fatal("test setup: expected a real pure-v2 torrent")
+	}
+
+	tr := &Torrent{trackerClient: tracker.NewClient(nil), infoHash: mi.InfoHashV2.Truncated20()}
+	tr.mi.Store(mi)
+
+	if _, err := tr.announceOne(context.Background(), srv.URL, tracker.EventStarted); err != nil {
+		t.Fatalf("announceOne: %v", err)
+	}
+	if got := atomic.LoadInt32(&hits); got != 1 {
+		t.Fatalf("tracker received %d requests, want exactly 1 for a pure-v2 torrent", got)
 	}
 }
 
