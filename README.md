@@ -264,6 +264,174 @@ GoTorrent/
 
 ---
 
+## Architecture
+
+A layered view of the whole project. The Go engine does all the BitTorrent work; everything else is a client of the engine's control API, so the desktop app, the terminal UI and the Hub never touch a socket to a peer.
+
+```mermaid
+flowchart TB
+    subgraph clients["Clients"]
+        direction LR
+        DESK["<b>GoTorrent.Desktop</b><br/>Avalonia, .NET 10"]
+        TUI["<b>gottrent-tui</b><br/>Bubble Tea<br/>internal/tui + tuiclient"]
+        HUB["<b>GoTorrent.Hub</b><br/>ASP.NET Core, SignalR<br/>multi-node, RSS rules, history"]
+        TV["<b>web/trace-viewer</b><br/>static page"]
+    end
+
+    CLI["<b>gottrent</b><br/>CLI fleet manager"]
+
+    subgraph daemon["gottrentd: headless daemon"]
+        API["<b>internal/api + ws</b><br/>REST + WebSocket<br/>bearer token, Host allowlist"]
+        BOOT["<b>internal/bootstrap</b><br/>shared startup sequence"]
+    end
+
+    subgraph core["Engine core"]
+        ENG["<b>internal/engine</b><br/>fleet manager: manifest, queue,<br/>dedupe, events, schedules"]
+        ACT["<b>internal/torrent</b><br/>one actor goroutine per torrent<br/>state machine, resume data"]
+    end
+
+    subgraph swarm["Swarm logic"]
+        direction LR
+        PICK["<b>picker</b><br/>rarest-first, priorities"]
+        CHOKE["<b>choker</b><br/>tit-for-tat"]
+        RATE["<b>ratelimit</b><br/>token bucket"]
+    end
+
+    subgraph wire["Wire protocol and discovery"]
+        direction LR
+        PEER["<b>peer</b><br/>BEP 3/6/10/11/21/52/55"]
+        TRK["<b>tracker</b><br/>HTTP, UDP, scrape"]
+        DHT["<b>dht</b><br/>BEP 5, 42"]
+        LSD["<b>lsd</b><br/>BEP 14"]
+        WS["<b>webseed</b><br/>BEP 19"]
+    end
+
+    subgraph net["Transport"]
+        direction LR
+        UTP["<b>utp</b><br/>BEP 29"]
+        MUX["<b>udpmux</b><br/>DHT and µTP share a port"]
+        MSE["<b>mse</b><br/>MSE/PE encryption"]
+        PRX["<b>proxy</b><br/>SOCKS5, HTTP CONNECT"]
+        PM["<b>portmap</b><br/>UPnP, NAT-PMP"]
+        IPF["<b>ipfilter</b><br/>blocklists"]
+    end
+
+    subgraph data["Data"]
+        direction LR
+        META["<b>metainfo + bencode</b><br/>v1, v2, hybrid, magnets"]
+        MRK["<b>merkle</b><br/>BEP 52 SHA-256 trees"]
+        STO["<b>storage</b><br/>layout, verify, mmap"]
+    end
+
+    SIM["<b>gottrent-sim</b><br/>swarm simulator<br/>virtual clock"]
+    TRACE[("trace.jsonl")]
+    NETWORK(["Peers, trackers, DHT, LAN"])
+    DISK[("Disk")]
+
+    DESK -->|"REST + WebSocket"| API
+    TUI -->|"REST + WebSocket"| API
+    HUB -->|"EngineClient, one per node"| API
+    DESK -.->|"optional: activity history"| HUB
+
+    CLI --> BOOT
+    API --> ENG
+    BOOT --> ENG
+    ENG -->|"spawns and supervises"| ACT
+
+    ACT --> PICK
+    ACT --> CHOKE
+    ACT --> RATE
+    ACT --> PEER
+    ACT --> TRK
+    ACT --> DHT
+    ACT --> LSD
+    ACT --> WS
+    ACT --> STO
+    ACT --> META
+
+    PEER --> MSE
+    PEER --> UTP
+    UTP --> MUX
+    DHT --> MUX
+    TRK --> PRX
+    PEER --> PRX
+    ENG --> PM
+    ENG --> IPF
+    META --> MRK
+    STO --> MRK
+
+    PRX --> NETWORK
+    MSE --> NETWORK
+    MUX --> NETWORK
+    PM --> NETWORK
+    LSD --> NETWORK
+    STO --> DISK
+
+    ACT -.->|"-trace"| TRACE
+    TRACE -.->|"loaded in the browser"| TV
+    SIM -.->|"drives the real strategies"| PICK
+    SIM -.-> CHOKE
+```
+
+### Inside a torrent
+
+Every torrent is owned by a single goroutine, so its mutable state needs no locks. Everything else talks to it over two channels, and long-running work happens off the actor.
+
+```mermaid
+flowchart LR
+    ENG["engine<br/>Pause, Resume, Stats,<br/>SetFilePriority, ..."]
+    PEERS["peer goroutines<br/>one per connection"]
+    LOOPS["announce, DHT and<br/>web-seed loops"]
+
+    subgraph actor["Torrent actor"]
+        direction TB
+        STATE["state machine"]
+        OWN["owns: picker, peer set,<br/>choker, dial list"]
+    end
+
+    VER["verifyPiece<br/>off-actor hash check"]
+    STO[("storage")]
+    SNAP["atomic snapshots<br/>bitfield, metainfo"]
+
+    ENG -->|"control channel<br/>request / reply"| actor
+    PEERS -->|"events channel<br/>fire and forget"| actor
+    LOOPS -->|"discovered peers"| actor
+    actor -->|"request blocks, Have, choke"| PEERS
+    actor -->|"write block"| STO
+    actor -->|"spawns"| VER
+    VER -->|"read back and hash"| STO
+    VER -->|"result"| actor
+    actor -->|"publishes"| SNAP
+    PEERS -.->|"serve uploads, read-only"| SNAP
+```
+
+### Torrent lifecycle
+
+```mermaid
+stateDiagram-v2
+    [*] --> Added
+    Added --> FetchingMetadata: magnet link
+    Added --> CheckingFiles: .torrent file
+    FetchingMetadata --> CheckingFiles: metadata received (BEP 9)
+    CheckingFiles --> Downloading: pieces missing
+    CheckingFiles --> Seeding: all pieces verified
+    Downloading --> Seeding: last piece verified
+    Seeding --> CheckingFiles: file priority changed
+    Downloading --> CheckingFiles: recheck
+    Downloading --> Paused
+    Seeding --> Paused: manual or seed limit
+    Paused --> Downloading: resume
+    Paused --> Seeding: resume
+    Paused --> CheckingFiles: resume
+    CheckingFiles --> Error: unrecoverable failure
+    Downloading --> Error: unrecoverable failure
+    Error --> [*]
+```
+
+A torrent can pause from any active state and resumes into whichever state it left; `Error` is reachable from any non-terminal state.
+
+---
+
 ## Demo
 
 The 30-second tour at the top of this page shows the desktop app, the terminal UI, the swarm simulator, and the trace viewer. Below is the original command-line client.
